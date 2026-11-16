@@ -76,12 +76,15 @@ type Config struct {
 	Runtime           RuntimeConfig           `yaml:"runtime"`
 	Notifications     NotificationsConfig     `yaml:"notifications"`
 
-	// Research and Specs gate the sidebar's Research and Specs surfaces
-	// together with their globally-seeded skill/agent packs: a disabled
-	// surface hides its sidebar button and unseeds the pack copies; enabling
-	// it reseeds them. Pointer-bools: unset = enabled — the packs seed
-	// exactly as they did before the gates existed. See the sidebar-packs
-	// ADR and specs/domains/{research,specs}.md.
+	// Research gates the sidebar's Research surface together with its
+	// globally-seeded skill/agent pack: a disabled gate hides the sidebar
+	// button and unseeds the pack copies; enabling it reseeds them.
+	// Specs (ADR-126) is a VISIBILITY GATE ONLY: c0wrk ships no spec
+	// skillset, seeds nothing for it, and flipping the gate never touches
+	// the disk — it shows or hides the surface whose content is whatever
+	// specification framework the workspace itself has installed.
+	// Pointer-bools: unset = enabled. See the sidebar-packs ADR,
+	// ADR-126 and specs/domains/{research,specs}.md.
 	Research SidebarPackConfig `yaml:"research"`
 	Specs    SidebarPackConfig `yaml:"specs"`
 
@@ -524,7 +527,7 @@ type LLMConfig struct {
 	Models              map[string]ModelOverride             `yaml:"models"`
 	Retry               LLMRetryConfig                       `yaml:"retry"`
 	// NetworkAutoRetrySeconds governs the network-class auto-resend interval
-	// (ADR-126): the global seconds between task-level re-sends of
+	// (ADR-128): the global seconds between task-level re-sends of
 	// connection-level provider failures (StatusCode 0 carrying one of the
 	// dns/connect/reset/timeout classes) — every provider, the fixed ones
 	// included. *int keeps the ADR's two semantics apart: nil (absent key)
@@ -532,7 +535,7 @@ type LLMConfig struct {
 	// explicit 0 stays the kill-switch ("never auto-resend on network
 	// errors") and is persisted verbatim. Like the per-provider knob this is
 	// not mapped into ToBuilderConfig — the timer lives in the c0wrk session
-	// layer. See specs/decisions/126-auto-resend-network-errors.md.
+	// layer. See specs/decisions/128-auto-resend-network-errors.md.
 	NetworkAutoRetrySeconds *int `yaml:"network_auto_retry_seconds,omitempty"`
 }
 
@@ -543,6 +546,11 @@ type AnthropicConfig struct {
 	// OutputTokenReserve overrides the per-provider output-token budget; 0
 	// inherits executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
+	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
+	// disabled); not mapped into ToBuilderConfig — the backend only
+	// classifies the failure and stamps the advisory deadline, the UI owns
+	// the countdown. See ADR-127.
+	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 }
 
 // OpenAICompatibleConfig holds OpenAI-compatible provider configuration.
@@ -557,10 +565,10 @@ type OpenAICompatibleConfig struct {
 	// OutputTokenReserve overrides the per-provider output-token budget; 0
 	// inherits executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
-	// AutoRetrySeconds enables the c0wrk-layer auto-resend timer (seconds
-	// between re-sends; 0 = disabled); compatible providers only, not mapped
-	// into ToBuilderConfig — the timer lives in the c0wrk session layer.
-	// See ADR-065.
+	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
+	// disabled); not mapped into ToBuilderConfig — the backend only
+	// classifies the failure and stamps the advisory deadline, the UI owns
+	// the countdown. See ADR-127.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 	// TimeoutClass is the adaptive request budget's class override
 	// (ADR-071 D3): "local" or "remote"; empty = infer (loopback base_url is
@@ -574,7 +582,7 @@ type OpenAICompatibleConfig struct {
 const maxAutoRetrySeconds = 3600
 
 // defaultNetworkAutoRetrySeconds materializes for an absent
-// llm.network_auto_retry_seconds (ADR-126): the middle of the 60–120 s band,
+// llm.network_auto_retry_seconds (ADR-128): the middle of the 60–120 s band,
 // longer than and separate from the rate-limit cadence because
 // connection-level outages heal on minutes-scale with no server-signposted
 // window. Unlike the per-provider knob (omitted = disabled), omission here
@@ -638,10 +646,10 @@ type AnthropicCompatibleConfig struct {
 	// OutputTokenReserve overrides the per-provider output-token budget; 0
 	// inherits executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
-	// AutoRetrySeconds enables the c0wrk-layer auto-resend timer (seconds
-	// between re-sends; 0 = disabled); compatible providers only, not mapped
-	// into ToBuilderConfig — the timer lives in the c0wrk session layer.
-	// See ADR-065.
+	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
+	// disabled); not mapped into ToBuilderConfig — the backend only
+	// classifies the failure and stamps the advisory deadline, the UI owns
+	// the countdown. See ADR-127.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 	// TimeoutClass is the adaptive request budget's class override
 	// (ADR-071 D3): "local" or "remote"; empty = infer (loopback base_url is
@@ -674,6 +682,11 @@ type ChatGPTConfig struct {
 	// OutputTokenReserve overrides the per-provider output-token budget; 0
 	// inherits executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
+	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
+	// disabled); not mapped into ToBuilderConfig — the backend only
+	// classifies the failure and stamps the advisory deadline, the UI owns
+	// the countdown. See ADR-127.
+	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 }
 
 const (
@@ -697,10 +710,15 @@ type KimiAuthConfig struct {
 // uses the Moonshot platform; oauth mode pins the Kimi for Coding endpoint in
 // the builder adapter and ignores APIKey on the wire.
 type KimiConfig struct {
-	APIKey             string         `yaml:"api_key"`
-	Models             []string       `yaml:"models"`
-	Auth               KimiAuthConfig `yaml:"auth,omitempty"`
-	OutputTokenReserve int            `yaml:"output_token_reserve"`
+	APIKey string         `yaml:"api_key"`
+	Models []string       `yaml:"models"`
+	Auth   KimiAuthConfig `yaml:"auth,omitempty"`
+	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
+	// disabled); not mapped into ToBuilderConfig — the backend only
+	// classifies the failure and stamps the advisory deadline, the UI owns
+	// the countdown. See ADR-127.
+	AutoRetrySeconds   int `yaml:"auto_retry_seconds,omitempty"`
+	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
 // MaxModelContextWindow is the sanity ceiling for a llm.models.<name>
@@ -2210,14 +2228,16 @@ func (c PromptSuggestionsConfig) SuggestionsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
-// SidebarPackConfig gates one sidebar feature surface (Research or Specs)
-// together with its globally-seeded skill/agent pack: a disabled surface
-// hides its sidebar button and unseeds its pack copies; enabling it reseeds
-// them (seedGlobalPacks). See the sidebar-packs ADR and
-// specs/domains/{research,specs}.md.
+// SidebarPackConfig gates one sidebar feature surface. For Research the gate
+// also owns the surface's globally-seeded skill/agent pack: a disabled gate
+// hides the sidebar button and unseeds the pack copies; enabling it reseeds
+// them (seedGlobalPacks). For Specs the gate is visibility-only (ADR-126 —
+// no shipped skillset, no seed, no unseed). See the sidebar-packs ADR,
+// ADR-126 and specs/domains/{research,specs}.md.
 type SidebarPackConfig struct {
 	// Enabled is the surface's master gate; nil defaults to true — explicit
-	// false is the only way the pack goes unseeded.
+	// false is the only way the Research pack goes unseeded (Specs never
+	// seeds anything).
 	Enabled *bool `yaml:"enabled"`
 }
 
@@ -2559,8 +2579,8 @@ type ProviderWithModels struct {
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).
 	OutputTokenReserve int
-	// AutoRetrySeconds is the per-provider auto-retry knob (0 = disabled;
-	// fixed providers always report 0). See ADR-065.
+	// AutoRetrySeconds is the session-layer resend interval (0 = disabled).
+	// See specs/domains/llm-providers.md.
 	AutoRetrySeconds int
 	// TimeoutClass is the adaptive budget's class override (ADR-071 D3;
 	// empty = infer; fixed providers always report "").
@@ -2595,13 +2615,13 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 	sort.Strings(anthropicKeys)
 	entries := make([]providerEntry, 0, 2+len(openaiKeys)+len(anthropicKeys)+1)
 	entries = append(entries,
-		providerEntry{name: "anthropic", apiKey: c.Anthropic.APIKey, models: c.Anthropic.Models, outputTokenReserve: c.Anthropic.OutputTokenReserve},
-		providerEntry{name: "chatgpt", apiKey: c.ChatGPT.APIKey, models: c.ChatGPT.Models, outputTokenReserve: c.ChatGPT.OutputTokenReserve},
+		providerEntry{name: "anthropic", apiKey: c.Anthropic.APIKey, models: c.Anthropic.Models, outputTokenReserve: c.Anthropic.OutputTokenReserve, autoRetrySeconds: c.Anthropic.AutoRetrySeconds},
+		providerEntry{name: "chatgpt", apiKey: c.ChatGPT.APIKey, models: c.ChatGPT.Models, outputTokenReserve: c.ChatGPT.OutputTokenReserve, autoRetrySeconds: c.ChatGPT.AutoRetrySeconds},
 	)
 	_, openAIKimi := c.OpenAICompatible["kimi"]
 	_, anthropicKimi := c.AnthropicCompatible["kimi"]
 	if !openAIKimi && !anthropicKimi {
-		entries = append(entries, providerEntry{name: "kimi", apiKey: c.Kimi.APIKey, baseURL: KimiAPIKeyBaseURL, models: c.Kimi.Models, outputTokenReserve: c.Kimi.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: "kimi", apiKey: c.Kimi.APIKey, baseURL: KimiAPIKeyBaseURL, models: c.Kimi.Models, outputTokenReserve: c.Kimi.OutputTokenReserve, autoRetrySeconds: c.Kimi.AutoRetrySeconds})
 	}
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
@@ -2889,11 +2909,11 @@ func validate(cfg *Config) error {
 		)
 	}
 
-	// Validate per-provider auto_retry_seconds (ADR-065): [0, 3600] seconds;
-	// 0 disables. Out-of-range values would arm time.AfterFunc on an unusable
-	// window (years) while the banner still promises an auto-resend. The
-	// Settings UI clamps to the same range; YAML/RPC edits go through this
-	// check instead of trusting the clamp.
+	// Validate the fixed Kimi entry even when a legacy compatible entry hides it.
+	if seconds := cfg.LLM.Kimi.AutoRetrySeconds; seconds < 0 || seconds > maxAutoRetrySeconds {
+		return fmt.Errorf("llm provider %q auto_retry_seconds must be within [0, %d], got %d", "kimi", maxAutoRetrySeconds, seconds)
+	}
+	// The UI clamps input; hand-edited YAML must pass the same bound.
 	for _, p := range cfg.LLM.allProviderEntries() {
 		if p.autoRetrySeconds < 0 || p.autoRetrySeconds > maxAutoRetrySeconds {
 			return fmt.Errorf(
@@ -2907,7 +2927,7 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate the global network-class auto-retry interval (ADR-126): the
+	// Validate the global network-class auto-retry interval (ADR-128): the
 	// same inclusive [0, 3600] window as the per-provider knob, shared for
 	// the same reason. validate() runs after ApplyDefaults, so a nil pointer
 	// here means a hand-built config bypassed defaults — treat absent as the

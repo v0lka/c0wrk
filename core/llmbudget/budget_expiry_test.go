@@ -10,7 +10,7 @@ import (
 
 // TestOwnBudgetExpiryWrapperMessageUnchanged pins the wrapper's message at
 // byte-identity with the pre-marker format: the message IS the classification
-// seam (ADR-126 — transient-provider predicates couple to its shape, there is
+// seam (ADR-128 — transient-provider predicates couple to its shape, there is
 // deliberately no sentinel), so ownBudgetExpiryMarker and the format string
 // above must not drift apart.
 func TestOwnBudgetExpiryWrapperMessageUnchanged(t *testing.T) {

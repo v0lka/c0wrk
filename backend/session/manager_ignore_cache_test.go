@@ -10,12 +10,19 @@ import (
 	"github.com/v0lka/sp4rk/ignore"
 )
 
-// storeFakeResolver puts a non-nil resolver into the cache under root,
-// simulating a completed background build. The invalidation logic never
-// inspects the resolver value — only the key (resolved root) — so a bare
-// &ignore.Resolver{} is sufficient.
+// storeFakeResolver puts a finished entry with a non-nil resolver into the
+// cache under root, simulating a completed build. The invalidation logic
+// never inspects the resolver value — only the key (resolved root) — so a
+// bare &ignore.Resolver{} is sufficient.
 func storeFakeResolver(m *Manager, root string) {
-	m.ignoreCache.Store(root, &ignore.Resolver{})
+	storeFakeEntry(m, root, &ignore.Resolver{})
+}
+
+// storeFakeEntry puts a finished entry holding r into the cache under root.
+func storeFakeEntry(m *Manager, root string, r *ignore.Resolver) {
+	e := &ignoreResolverEntry{done: make(chan struct{}), r: r}
+	close(e.done)
+	m.ignoreCache.Store(root, e)
 }
 
 func TestInvalidateIgnoreCache_GitignoreAtRootEvicts(t *testing.T) {
@@ -138,13 +145,13 @@ func TestStartIgnoreBuild_CachesWorkingResolver(t *testing.T) {
 	if !ok {
 		t.Fatal("expected resolver cached after the background build")
 	}
-	resolver, ok := v.(*ignore.Resolver)
-	if !ok || resolver == nil {
-		t.Fatalf("cache must hold a non-nil *ignore.Resolver, got %T", v)
+	entry, ok := v.(*ignoreResolverEntry)
+	if !ok || entry.r == nil {
+		t.Fatalf("cache must hold a finished *ignoreResolverEntry, got %T", v)
 	}
-	// The build must have replaced the "building" sentinel with a working
+	// The build must have completed the in-flight entry with a working
 	// resolver: a path matching the rule is reported ignored.
-	if !resolver.Ignored(filepath.Join(root, "x.log"), false) {
+	if !entry.r.Ignored(filepath.Join(root, "x.log"), false) {
 		t.Fatal("cached resolver does not honour the root's .gitignore rules")
 	}
 }

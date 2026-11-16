@@ -117,11 +117,11 @@ type TaskFailedResumableData struct {
 	// AutoRetryAt, when non-zero, schedules the UI's auto-resend countdown —
 	// stamped for a classified retryable llm.Error: the rate-limit/overload
 	// class (429/529 or ErrKind rate_limit/overloaded) from a provider with
-	// auto_retry_seconds > 0, or (ADR-126) a connection-class failure
+	// auto_retry_seconds > 0, or (ADR-128) a connection-class failure
 	// (StatusCode 0 carrying dns/connect/reset/timeout) under the global
 	// llm.network_auto_retry_seconds — every provider, fixed ones included.
-	// There is no backend timer (ADR-065, ADR-126, see
-	// specs/decisions/126-auto-resend-network-errors.md): the deadline is
+	// There is no backend timer (ADR-065, ADR-128, see
+	// specs/decisions/128-auto-resend-network-errors.md): the deadline is
 	// advisory; 0 means the manual decision is final.
 	AutoRetryAt int64 `json:"auto_retry_at,omitempty"`
 }

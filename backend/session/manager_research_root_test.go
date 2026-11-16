@@ -21,7 +21,7 @@ import (
 // workspace-less sessions stay research-off.
 func TestResearchProjectInfo_UsesSessionWorkspace(t *testing.T) {
 	m := NewManager(
-		func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		func(core.Emitter, *slog.Logger, string, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 			return nil, nil
 		},
 		func(Event) {},

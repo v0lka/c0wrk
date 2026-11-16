@@ -4,15 +4,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // ListSkills returns lightweight descriptors for all available skills,
-// including the active project's .agents/skills entries. Cache-served;
-// invalidated on project switches and by the skill directory watchers.
+// including the active project's .agents/skills entries and the skill
+// directories the project's detected SDD framework declares (e.g.
+// .claude/skills). Cache-served; invalidated on project switches and by the
+// skill directory watchers, and keyed on the discovery SET so a project change
+// that alters the set always re-scans.
 // See specs/domains/capabilities.md.
 func (f *FrontendAPI) ListSkills() []SkillDescriptorDTO {
 	b := f.builder()
@@ -24,21 +27,22 @@ func (f *FrontendAPI) ListSkills() []SkillDescriptorDTO {
 	wsPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
 
-	projectSkillDir := ""
-	if wsPath != "" {
-		projectSkillDir = config.ProjectSkillsPath(wsPath)
-	}
+	// activeProjectPath is the project checkout (project.WorkspacePath), so it
+	// serves as both the discovery workspace and the checkout-local operator
+	// DSL root here.
+	dirs := b.SkillDirsForWorkspace(wsPath, wsPath)
+	dirsKey := strings.Join(dirs, "\n")
 
 	gen := atomic.LoadUint64(&f.skillCacheGen)
 	f.skillCacheMu.Lock()
-	if f.skillCache != nil && f.skillCacheGenSnapshot == gen && f.skillCacheProjectDir == projectSkillDir {
+	if f.skillCache != nil && f.skillCacheGenSnapshot == gen && f.skillCacheDirsKey == dirsKey {
 		cached := f.skillCache
 		f.skillCacheMu.Unlock()
 		return cached
 	}
 	f.skillCacheMu.Unlock()
 
-	descriptors := b.GetSkillDescriptors(projectSkillDir)
+	descriptors := b.GetSkillDescriptors(dirs)
 	result := make([]SkillDescriptorDTO, len(descriptors))
 	for i, d := range descriptors {
 		result[i] = SkillDescriptorDTO{Name: d.Name, Description: d.Description}
@@ -47,7 +51,7 @@ func (f *FrontendAPI) ListSkills() []SkillDescriptorDTO {
 	f.skillCacheMu.Lock()
 	f.skillCache = result
 	f.skillCacheGenSnapshot = gen
-	f.skillCacheProjectDir = projectSkillDir
+	f.skillCacheDirsKey = dirsKey
 	f.skillCacheMu.Unlock()
 
 	return result
@@ -74,18 +78,15 @@ func (f *FrontendAPI) ResolveSkillResourcePath(skill, path string) (string, erro
 		return "", errors.New("backend is not ready")
 	}
 
-	// Same workspace snapshot ListSkills uses: the active project's
-	// .agents/skills directory joins the front of the discovery set.
+	// Same workspace snapshot ListSkills uses: the RPC resolves over the
+	// workspace's full ordered discovery set — .agents/skills, the detected
+	// SDD framework's directories (.claude/skills included), then the shared
+	// base dirs — so the card opens the copy the tool actually read.
 	f.activeProjectMu.RLock()
 	wsPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
 
-	projectSkillDir := ""
-	if wsPath != "" {
-		projectSkillDir = config.ProjectSkillsPath(wsPath)
-	}
-
-	return b.ResolveSkillResourcePath(projectSkillDir, skill, path)
+	return b.ResolveSkillResourcePath(wsPath, skill, path)
 }
 
 // The c0wrk-owned skill packs (research-* and study-paper) are seeded into the

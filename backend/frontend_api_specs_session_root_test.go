@@ -1,13 +1,13 @@
 package backend
 
-// Session-root coherence for the Specs panel (the "specs root follows the
-// active session" protocol, mirroring the research/papers one — ADR-099):
-// the agent writes specs inside its session tree, and a managed worktree
-// lives OUTSIDE the checkout, so GetSpecsStatus must parse the ACTIVE
-// SESSION's specs/ tree and read the ADR add dates from that SAME tree's git
-// context (a worktree's HEAD differs from the checkout's), falling back to
-// the project checkout when no session of the project resolves. Reuses the
-// wtHarness (real git repository + real FrontendAPI/manager) from
+// Session-root coherence for the Specs panel (the "SDD tree follows the active
+// session" protocol, mirroring the research/papers one — ADR-116):
+// the agent writes specs inside its session tree, and a managed worktree lives
+// OUTSIDE the checkout, so GetSpecsStatus must parse the ACTIVE SESSION's tree
+// and read the decision add dates from that SAME tree's git context (a
+// worktree's HEAD differs from the checkout's), falling back to the project
+// checkout when no session of the project resolves. Reuses the wtHarness (real
+// git repository + real FrontendAPI/manager) from
 // frontend_api_worktrees_test.go.
 
 import (
@@ -21,23 +21,23 @@ import (
 
 // TestGetSpecsStatus_FollowsActiveSession pins the session-following
 // contract end to end: before any session exists the checkout fallback holds
-// (neutral present=false — the checkout carries no specs/ tree), a
-// managed-worktree session flips the root to ITS OWN tree, the ADR add dates
-// come from the worktree's git context (the worktree-only commit is
-// invisible to the checkout's HEAD, so a checkout-rooted enrichment would
-// leave every ADR undated), and a newer local session flips the root back to
-// the checkout.
+// (no tree), a managed-worktree session flips the root to ITS OWN tree, the
+// decision add dates come from the worktree's git context (the worktree-only
+// commit is invisible to the checkout's HEAD, so a checkout-rooted enrichment
+// would leave every decision undated), and a newer local session flips the
+// root back to the checkout.
 func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 	h := newWTHarness(t, wtFactory())
+	seedGlobalSkill(t, h.agentDir, "spec-check")
 	checkoutRoot := filepath.Join(h.project.WorkspacePath, "specs")
 
-	// No sessions yet: the checkout fallback.
+	// No sessions yet: the checkout fallback, with no tree.
 	status, err := h.api.GetSpecsStatus(h.project.ID)
 	if err != nil {
 		t.Fatalf("GetSpecsStatus (no session): %v", err)
 	}
-	if status.Present {
-		t.Error("Present = true, want false for the checkout fallback without a specs/ tree")
+	if status.TreePresent {
+		t.Error("TreePresent = true, want false for the checkout fallback without a specs/ tree")
 	}
 	if status.Root != checkoutRoot {
 		t.Errorf("Root = %q, want the checkout %q", status.Root, checkoutRoot)
@@ -52,10 +52,10 @@ func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 	sessionRoot := filepath.Join(tree, "specs")
 
 	// Precondition: the worktree-only commit is NOT visible from the
-	// checkout, so the dated ADRs below prove the enrichment ran against the
-	// worktree's git context.
+	// checkout, so the dated decisions below prove the enrichment ran against
+	// the worktree's git context.
 	probeCtx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
-	dates := specsADRDates(probeCtx, nil, h.project.WorkspacePath)
+	dates := specsADRDates(probeCtx, nil, h.project.WorkspacePath, []string{"specs/decisions"})
 	cancel()
 	if len(dates) != 0 {
 		t.Fatalf("precondition broken: the checkout's git log sees %v", dates)
@@ -65,18 +65,22 @@ func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus (managed session): %v", err)
 	}
-	if !status.Present {
-		t.Fatalf("Present = false, want true for the session tree's specs/ root")
+	if !status.TreePresent {
+		t.Fatal("TreePresent = false, want true for the session tree's specs/ root")
 	}
 	if status.Root != sessionRoot {
 		t.Fatalf("Root = %q, want the session tree's %q", status.Root, sessionRoot)
 	}
-	for slug, date := range adrDateBySlug(status) {
+	dates = adrDateBySlug(status)
+	if len(dates) == 0 {
+		t.Fatal("no decision documents in the session tree")
+	}
+	for slug, date := range dates {
 		if date != "2025-06-01" {
-			t.Errorf("ADR %q date = %q, want 2025-06-01 from the worktree's git context", slug, date)
+			t.Errorf("decision %q date = %q, want 2025-06-01 from the worktree's git context", slug, date)
 		}
 	}
-	assertSpecsWireShape(t, status)
+	assertSDDWireShape(t, status)
 
 	// A newer LOCAL session (the checkout workspace) flips the root back.
 	// The activity timestamp is stamped an hour ahead explicitly: wall-clock
@@ -95,8 +99,8 @@ func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus (local session): %v", err)
 	}
-	if status.Present {
-		t.Error("Present = true, want false after the root flipped back to the checkout")
+	if status.TreePresent {
+		t.Error("TreePresent = true, want false after the root flipped back to the checkout")
 	}
 	if status.Root != checkoutRoot {
 		t.Errorf("Root = %q, want the checkout %q after the local session took over", status.Root, checkoutRoot)
@@ -106,10 +110,11 @@ func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 // TestGetSpecsStatus_ForeignSessionDoesNotSteer: a session of a DIFFERENT
 // project must never steer the specs root — the resolver lists the requesting
 // project's sessions only, so the checkout fallback holds (the checkout's own
-// tree parses present=true; a steered root would resolve into the foreign
-// workspace and come back neutral).
+// tree parses tree_present=true; a steered root would resolve into the foreign
+// workspace and come back empty).
 func TestGetSpecsStatus_ForeignSessionDoesNotSteer(t *testing.T) {
 	h := newWTHarness(t, wtFactory())
+	seedGlobalSkill(t, h.agentDir, "spec-check")
 	checkoutRoot := filepath.Join(h.project.WorkspacePath, "specs")
 	writeSpecsTree(t, h.project.WorkspacePath)
 
@@ -136,8 +141,8 @@ func TestGetSpecsStatus_ForeignSessionDoesNotSteer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus: %v", err)
 	}
-	if !status.Present {
-		t.Fatalf("Present = false — a foreign session steered the root away from the checkout")
+	if !status.TreePresent {
+		t.Fatalf("TreePresent = false — a foreign session steered the root away from the checkout")
 	}
 	if status.Root != checkoutRoot {
 		t.Errorf("Root = %q, want the checkout %q", status.Root, checkoutRoot)
@@ -164,20 +169,20 @@ func TestGetSpecsStatus_NoProjectNeutralWithLiveManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus (No Project): %v", err)
 	}
-	if status.Present {
-		t.Error("Present = true, want false for No Project")
+	if status.Present || status.TreePresent {
+		t.Errorf("present=%v tree_present=%v, want the neutral false state", status.Present, status.TreePresent)
 	}
 	if status.Root != "" {
 		t.Errorf("Root = %q, want \"\" for No Project", status.Root)
 	}
-	if status.Files == nil || len(status.Files) != 0 {
-		t.Errorf("Files = %v, want a non-nil empty slice", status.Files)
+	if status.Documents == nil || len(status.Documents) != 0 {
+		t.Errorf("Documents = %v, want a non-nil empty slice", status.Documents)
 	}
-	if status.ADRs == nil || len(status.ADRs) != 0 {
-		t.Errorf("ADRs = %v, want a non-nil empty slice", status.ADRs)
+	if status.Findings == nil || len(status.Findings) != 0 {
+		t.Errorf("Findings = %v, want a non-nil empty slice", status.Findings)
 	}
 	if status.Counts.FindingsByKind == nil || len(status.Counts.FindingsByKind) != 0 {
 		t.Errorf("Counts.FindingsByKind = %v, want a non-nil empty map", status.Counts.FindingsByKind)
 	}
-	assertSpecsWireShape(t, status)
+	assertSDDWireShape(t, status)
 }

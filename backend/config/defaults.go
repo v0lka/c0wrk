@@ -110,7 +110,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
-	// Network-class auto-resend interval (ADR-126): an absent key
+	// Network-class auto-resend interval (ADR-128): an absent key
 	// materializes the default 90 — omission ≠ off (unlike the per-provider
 	// auto_retry_seconds knob, where omitted = disabled). An explicit 0 stays
 	// the kill-switch: *int keeps "never wrote this" distinct from "wrote 0",

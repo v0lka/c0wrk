@@ -2,7 +2,7 @@ package core
 
 // Delegation-launcher auto-retry tests (specs/domains/orchestration/
 // delegation.md): a blocking delegation whose execution error classifies
-// transient (ADR-065/ADR-126 class) is re-launched ONCE after a fixed backoff
+// transient (ADR-065/ADR-128 class) is re-launched ONCE after a fixed backoff
 // BEFORE the outcome settles the unit failed — the durable ledger never
 // observes failed→running (ADR-048). Non-transient errors settle failed
 // immediately; a retried leg that pauses settles as a pause; a retry that
@@ -36,7 +36,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Classification: the ADR-065/ADR-126 transient provider class
+// Classification: the ADR-065/ADR-128 transient provider class
 // ---------------------------------------------------------------------------
 
 // TestIsTransientProviderError_ClassTaxonomy pins the class membership once,
@@ -87,7 +87,7 @@ func TestIsTransientProviderError_BudgetDeathWrappedDeep(t *testing.T) {
 		fmt.Errorf("llmbudget: request failed: adaptive request budget exhausted: 45s armed for %q (%s): %w",
 			"m", "own budget expiry, not a provider abort; the next budget escalates", context.DeadlineExceeded))
 	if IsTransientProviderError(fmt.Errorf("subagent failed: %w", budgetDeath)) {
-		t.Fatal("a wrapped budget death must never classify transient (ADR-126 carve-out)")
+		t.Fatal("a wrapped budget death must never classify transient (ADR-128 carve-out)")
 	}
 	providerTimeout := llm.NewError("p", 0, false, fmt.Errorf("do request: %w", context.DeadlineExceeded))
 	if !IsTransientProviderError(fmt.Errorf("subagent failed: %w", providerTimeout)) {

@@ -137,9 +137,12 @@ func sessionTempDir(agentDir, projectID, sessionID string) string {
 }
 
 // OrchestratorFactory builds the session's Orchestrator. The workspace path is
-// the project workspace (so the worktree factory captures it); a nil bbFactory
-// means an in-memory MapBlackboard.
-type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error)
+// the session's execution workspace (the managed worktree when the session is
+// bound to one); sddCheckoutPath is the project's repository checkout — the
+// root the checkout-local SDD operator DSL (specs.yaml) is read from, which is
+// repository data and must not follow the session tree. A nil bbFactory means
+// an in-memory MapBlackboard.
+type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, sddCheckoutPath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error)
 
 // TokenPersistFunc is called with cumulative session token totals after each
 // LLM call; fillPercent is the conductor's context-window fill percent (0-100).
@@ -210,9 +213,12 @@ type Manager struct {
 	converterMu      sync.Mutex            // guards lazy converter initialization
 	modelProfiles    ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
 
-	// ignoreCache caches one ignore.Resolver per symlink-resolved root so the
-	// directory tree is walked once per root, not per SendMessage.
-	ignoreCache sync.Map // string (resolved root) → *ignore.Resolver
+	// ignoreCache caches one ignore resolver build per symlink-resolved root
+	// (in-flight and finished entries alike), so the directory tree is walked
+	// once per root and shared by every consumer — the agent path
+	// (injectIgnoreChecker) and the file tree's ListDirectory
+	// (IgnoreResolverFor). Entry protocol at ignoreResolverEntry.
+	ignoreCache sync.Map // string (resolved root) → *ignoreResolverEntry
 
 	// ignoreResolverBuild defaults to ignore.NewResolverContext; overridable in
 	// tests. Callers must go through startIgnoreBuild.
@@ -271,7 +277,7 @@ type Manager struct {
 	// (specs/decisions/065-auto-resend-retryable-errors.md).
 	autoRetryResolver func(provider string) int
 	// networkAutoRetryResolver resolves the GLOBAL network-class interval in
-	// seconds (0 = kill-switch; ADR-126) — the class covers every provider,
+	// seconds (0 = kill-switch; ADR-128) — the class covers every provider,
 	// so unlike autoRetryResolver there is no per-provider argument. Same
 	// live-only contract: the resolver reads the app's atomic snapshot.
 	networkAutoRetryResolver func() int
@@ -868,7 +874,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	dumpFile, stepDumpTracker := m.openDumpArtifacts(info.ProjectID, id)
 
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
+	orchestrator, err := factory(emitter, logger, workspacePath, projectPath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
@@ -1237,7 +1243,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 
 	// The factory runs outside the lock — it can be slow.
 	phaseStart()
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
+	orchestrator, err := factory(emitter, logger, workspacePath, repositoryPath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()

@@ -21,11 +21,11 @@ import (
 )
 
 // TestIsAutoRetryableCause pins the retryable-class taxonomy (ADR-065 +
-// ADR-126): rate-limit (429 / ErrKind rate_limit) and overload (529 /
+// ADR-128): rate-limit (429 / ErrKind rate_limit) and overload (529 /
 // ErrKind overloaded) qualify on BOTH transports — the HTTP status code
 // (openai_compatible) and the transport-independent ErrKind
 // (anthropic_compatible, whose SDK-parsed APIError carries no status); and
-// (ADR-126) a StatusCode-0 failure whose wrapped chain carries one of the
+// (ADR-128) a StatusCode-0 failure whose wrapped chain carries one of the
 // four transient connection classes — dns, connect (refused/unreachable),
 // reset, timeout — qualifies for the network class. Everything else —
 // transient-but-unclassified 5xx (500/503/504), the excluded TransportKind
@@ -109,7 +109,7 @@ func TestMaybeAutoRetryAt_QualifyingCauseStampsDeadline(t *testing.T) {
 // TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero pins every no-arm
 // branch: nil cause, a non-llm cause, a classified cause outside the
 // retryable class, a qualifying cause from a provider with NO interval
-// (fixed providers resolve to 0), and a nil resolver.
+// (unset intervals resolve to 0), and a nil resolver.
 func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 	rateLimitErr := &llm.Error{
 		Provider:   "selfhosted",
@@ -154,7 +154,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 
 	t.Run("qualifying cause, provider without interval", func(t *testing.T) {
 		manager, _, _ := testManager(t)
-		// Fixed providers (anthropic, chatgpt) resolve to 0: no auto-resend.
+		// A disabled provider resolves to 0: no auto-resend.
 		manager.SetAutoRetryResolver(func(string) int { return 0 })
 		if got := manager.maybeAutoRetryAt(rateLimitErr); got != 0 {
 			t.Errorf("zero interval returned %d, want 0", got)
@@ -286,7 +286,7 @@ func TestEmitTaskComplete_DegradedCauseStampsAutoRetryAt(t *testing.T) {
 	}
 }
 
-// TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval pins the ADR-126 knob
+// TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval pins the ADR-128 knob
 // split: a connection-class failure rides the GLOBAL network interval on
 // EVERY provider — the fixed providers included, whose rate-limit answer is
 // always 0 — and the network kill-switch (0) silences the class without
@@ -334,7 +334,7 @@ func TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval(t *testing.T) {
 }
 
 // TestMaybeAutoRetryAt_RateLimitSemanticsUnchanged pins that the rate-limit
-// class keeps its per-provider knob EXACTLY as ADR-065 defined it (ADR-126's
+// class keeps its per-provider knob EXACTLY as ADR-065 defined it (ADR-128's
 // explicit invariant): the global network interval never multiplexes into it,
 // in either direction.
 func TestMaybeAutoRetryAt_RateLimitSemanticsUnchanged(t *testing.T) {
@@ -389,7 +389,7 @@ func (s *stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 // a live armed budget) and returns the exact error the session layer sees.
 // The test fails loudly if the transport's wrapper signature drifts — that
 // drift is precisely what would silently re-admit budget deaths to the
-// network class (ADR-126's "one seam" coupling).
+// network class (ADR-128's "one seam" coupling).
 func realBudgetDeathError(t *testing.T) error {
 	t.Helper()
 	tr := llmbudget.NewTransport(&stubRoundTripper{err: context.DeadlineExceeded}, llmbudget.TransportOptions{
@@ -418,7 +418,7 @@ func realBudgetDeathError(t *testing.T) error {
 	return berr
 }
 
-// TestMaybeAutoRetryAt_RealBudgetDeathNeverArms pins the ADR-126 budget-death
+// TestMaybeAutoRetryAt_RealBudgetDeathNeverArms pins the ADR-128 budget-death
 // carve-out against the REAL llmbudget transport error (not a restatement of
 // its format string): the wrapper chains a context.DeadlineExceeded that
 // would satisfy the timeout class, but a budget death must never arm a
@@ -459,4 +459,47 @@ func TestMaybeAutoRetryAt_RealBudgetDeathNeverArms(t *testing.T) {
 			t.Error("provider-side timeout returned no deadline; want the global network interval")
 		}
 	})
+}
+
+func TestMaybeAutoRetryAtFixedProviderNames(t *testing.T) {
+	// The want column pins the classification independently of
+	// isAutoRetryableCause: deriving the expectation from the classifier
+	// itself would let a Retryable-only regression flip the branch silently.
+	for _, provider := range []string{"anthropic", "chatgpt", "kimi"} {
+		for _, tc := range []struct {
+			name  string
+			cause *llm.Error
+			want  bool
+		}{
+			{"429 rate limit", &llm.Error{StatusCode: 429}, true},
+			{"529 overloaded", &llm.Error{StatusCode: 529}, true},
+			{"rate_limit kind, no status", &llm.Error{ErrKind: llm.ErrKindRateLimit}, true},
+			{"overloaded kind, no status", &llm.Error{ErrKind: llm.ErrKindOverloaded}, true},
+			{"503 retryable-only", &llm.Error{StatusCode: 503, Retryable: true}, false},
+			{"retryable-only, no status", &llm.Error{Retryable: true}, false},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", provider, tc.name), func(t *testing.T) {
+				manager, _, _ := testManager(t)
+				manager.SetAutoRetryResolver(func(name string) int {
+					if name == provider {
+						return 30
+					}
+					return 0
+				})
+				cause := *tc.cause
+				cause.Provider = provider
+				before := time.Now().Unix()
+				got := manager.maybeAutoRetryAt(fmt.Errorf("terminal request: %w", &cause))
+				if !tc.want {
+					if got != 0 {
+						t.Errorf("maybeAutoRetryAt(%s, %+v) = %d, want 0", provider, &cause, got)
+					}
+					return
+				}
+				if got < before+30 || got > time.Now().Unix()+30 {
+					t.Errorf("maybeAutoRetryAt(%s, %+v) = %d, want now+30", provider, &cause, got)
+				}
+			})
+		}
+	}
 }

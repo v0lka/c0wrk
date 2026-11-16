@@ -21,10 +21,12 @@ This ADR supersedes [ADR-114](./114-sidebar-surface-gates.md) and restates its d
 
 Restated from ADR-114:
 
-- The config gates `research.enabled` / `specs.enabled` (pointer bools, nil = on) gate each surface's sidebar tab AND its globally-seeded packs (`research-*` + `study-paper` + the research Subagent Profile; `spec-*` + the specs Subagent Profile), as Settings → General toggles under Prompt Suggestions.
+- The config gates `research.enabled` / `specs.enabled` (pointer bools, nil = on) gate each surface's sidebar tab AND its globally-seeded packs (`research-*` + `study-paper` + the research Subagent Profile — the Specs half carries no pack any more, see the ADR-126 amendment below), as Settings → General toggles under Prompt Suggestions.
 - `SetResearchEnabled` / `SetSpecsEnabled` persist AND apply in one beat: a same-value request is a no-op, a failed config write rolls the in-memory value back, success runs the pack side-effect and announces `config:updated`.
 - Unseeding is the non-destructive mirror of the seeding classification (`core/seedpack.UnseedTarget`): a copy byte-identical to the current pack (any marker state) or a pack-marked truncated subset is removed; a marker-less diverging copy (user-owned) and a pack-marked diverging copy (a local edit) are preserved, the modified ones named in a visible warning.
 - The tab strip follows the gates live through `sidebarPacksStore`, with the remembered-tab fallback the indexing gate established; the research root, the specs root, and every read RPC stay untouched.
+
+The `specs.enabled` half is amended by [ADR-126](./126-sdd-framework-dsl.md): c0wrk ships no spec skill set (the vendored `spec-*` pack and its Subagent Profile are gone), so that gate is a pure VISIBILITY gate — it shows or hides the Specs tab, which additionally requires a recognised SDD framework, and it neither seeds nor unseeds anything on disk. Every pack sentence in this ADR therefore applies to `research.enabled` only; a `spec-*` copy left on disk by an earlier version is not touched by the toggle.
 
 New in this ADR:
 

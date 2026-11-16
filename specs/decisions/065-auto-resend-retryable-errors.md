@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded in part by [127](./127-fixed-provider-auto-resend.md) (the compatible-only provider scope only; every other decision below — UI-owned countdown, the absent backend timer, the `auto_retry_live` discriminator and the stop-on-manual-click rule — stands unchanged)
 
 ## Context
 
@@ -81,4 +81,4 @@ A failure qualifies only when the terminal cause is a classified `*llm.Error` (s
 
 ## Historical Note
 
-2026-11-15: the retryable-class set and its provider coverage named above have been extended by [ADR-126](126-auto-resend-network-errors.md): connection-level network errors (`StatusCode` 0 with the sp4rk `dns`/`connect`/`reset`/`timeout` classification, still excluding `tls`/`eof`/`other`) now also surface a deadline, for ALL providers including the fixed ones, under a new global `llm.network_auto_retry_seconds` interval (default 90, `0` = off) separate from the per-provider `auto_retry_seconds`; ADR-071 budget-deaths are excluded. The ownership split, live-only deadline and `0 = off, no bool` pattern above stand unchanged.
+2026-11-15: the retryable-class set and its provider coverage named above have been extended by [ADR-128](128-auto-resend-network-errors.md): connection-level network errors (`StatusCode` 0 with the sp4rk `dns`/`connect`/`reset`/`timeout` classification, still excluding `tls`/`eof`/`other`) now also surface a deadline, for ALL providers including the fixed ones, under a new global `llm.network_auto_retry_seconds` interval (default 90, `0` = off) separate from the per-provider `auto_retry_seconds`; ADR-071 budget-deaths are excluded. The ownership split, live-only deadline and `0 = off, no bool` pattern above stand unchanged.

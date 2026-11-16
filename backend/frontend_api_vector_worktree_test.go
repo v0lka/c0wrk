@@ -80,7 +80,7 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 		t.Fatalf("register project: %v", err)
 	}
 
-	factory := session.OrchestratorFactory(func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := session.OrchestratorFactory(func(core.Emitter, *slog.Logger, string, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{}), nil
 	})
 	manager := session.NewManager(factory, func(session.Event) {}, agentDir)

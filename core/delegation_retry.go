@@ -19,7 +19,7 @@ import (
 // failed — the durable ledger never observes failed→running (ADR-048's
 // one-directional lifecycle). Non-transient errors settle failed immediately.
 //
-// The transient class is the ADR-065/ADR-126 taxonomy: rate_limit/overloaded
+// The transient class is the ADR-065/ADR-128 taxonomy: rate_limit/overloaded
 // (HTTP 429/529 or the transport-independent ErrKind) plus connection-level
 // failures in sp4rk's dns/connect/reset/timeout set (StatusCode 0) — with the
 // llmbudget transport's own-budget-expiry wrapper carved out (ADR-071 owns
@@ -30,7 +30,7 @@ import (
 // delegationRetryBackoff is the fixed pause between a blocking delegation's
 // transient failure and its single re-launch. Deliberately not configurable:
 // one retry, one cadence, no knob to keep operational (the class taxonomy is
-// already the price ADR-065/ADR-126 accepted). 30s matches the ADR-065
+// already the price ADR-065/ADR-128 accepted). 30s matches the ADR-065
 // rate-limit cadence — the fastest-healing class in the set — and sits far
 // under any delegation's own runtime; the delegate tool is on the executor's
 // per-tool-call exempt set, so the pause never competes with a watchdog
@@ -39,11 +39,11 @@ import (
 var delegationRetryBackoff = 30 * time.Second
 
 // IsTransientProviderError reports whether the error chain carries the
-// transient provider class (ADR-065/ADR-126): a terminal *llm.Error with
+// transient provider class (ADR-065/ADR-128): a terminal *llm.Error with
 // HTTP 429/529, the rate_limit/overloaded ErrKind, or — at StatusCode 0 — a
 // wrapped chain classifying dns/connect/reset/timeout under llm.TransportKind.
 // The llmbudget own-budget-expiry signature is excluded in BOTH directions
-// (ADR-126): a budget death escalates in-flight (ADR-071) and never
+// (ADR-128): a budget death escalates in-flight (ADR-071) and never
 // qualifies, while a provider-side timeout still does. tls/eof/other and
 // every non-provider error are false. The class is defined ONCE, here: the
 // task-level auto-resend classifier (backend/session/manager_auto_retry.go)
@@ -70,7 +70,7 @@ func IsTransientProviderError(err error) bool {
 }
 
 // IsTransientNetworkClassError reports whether the error chain carries the
-// connection-level subclass of the transient provider class (ADR-126): a
+// connection-level subclass of the transient provider class (ADR-128): a
 // terminal *llm.Error at StatusCode 0 — no HTTP response at all — whose
 // wrapped chain classifies dns/connect/reset/timeout under llm.TransportKind.
 // tls/eof/other stay out, and budget deaths are excluded like in the parent

@@ -21,7 +21,7 @@ llm:
   # the intended provider unambiguously.
   default_model: "anthropic/claude-sonnet-4-20250514"
 
-  # Automatic resend on connection-level failures (ADR-126): when a task dies
+  # Automatic resend on connection-level failures (ADR-128): when a task dies
   # of a network-class provider error — DNS failure, refused/unreachable
   # endpoint, reset connection, stalled/timed-out connection (no HTTP response
   # at all) — the session waits this many seconds, then re-sends the task
@@ -38,6 +38,9 @@ llm:
   network_auto_retry_seconds: 90
 
   anthropic:
+    # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
+    # 0 / omitted = off; engine in-flight retry remains separate (ADR-127).
+    # auto_retry_seconds: 30
     api_key: "${ANTHROPIC_API_KEY}"
     models:
       - "claude-sonnet-4-20250514"
@@ -90,11 +93,12 @@ llm:
       #   and takes effect again once the proxy stops dialing for the host.
       # tls_fingerprint: ""
       #
-      # Optional: automatic retry timer for this provider (compatible
-      # providers only). After a failed LLM request the session waits this
+      # Optional: automatic retry timer for this provider.
+      # After a rate-limit/overload task failure the UI waits this
       # many seconds, then re-sends automatically instead of asking how to
       # proceed. 0 / omitted = disabled (the default). Not a router-level
-      # retry knob: the timer lives in the c0wrk session layer.
+      # retry knob: no backend timer exists — the UI owns the countdown and
+      # the resume.
       # auto_retry_seconds: 30
       #
       # Optional: request-budget timeout class for this provider (ADR-071).
@@ -124,8 +128,8 @@ llm:
     #   # proxy.bypass_list to pin and proxy simultaneously.
     #   # tls_fingerprint: ""
     #   # Same automatic retry timer as openai_compatible above
-    #   # (auto_retry_seconds, compatible providers only; 0 / omitted =
-    #   # disabled). After a failed request the session waits this many
+    #   # (auto_retry_seconds; 0 / omitted =
+    #   # disabled). After a rate-limit/overload task failure the UI waits this many
     #   # seconds, then re-sends automatically.
     #   # auto_retry_seconds: 30
     #   # Same request-budget timeout class as openai_compatible above
@@ -134,6 +138,10 @@ llm:
     #   # timeout_class: local
 
   chatgpt:
+    # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
+    # 0 / omitted = off; API-key and OAuth modes share this interval; the
+    # engine's in-flight retry remains separate (ADR-127).
+    # auto_retry_seconds: 30
     api_key: "${OPENAI_API_KEY}"
     models: []
     # Authentication mode for this provider:
@@ -152,6 +160,10 @@ llm:
     #   mode: api_key
 
   kimi:
+    # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
+    # 0 / omitted = off; API-key and OAuth modes share this interval; the
+    # engine's in-flight retry remains separate (ADR-127).
+    # auto_retry_seconds: 30
     # Moonshot AI platform API key. Existing openai_compatible /
     # anthropic_compatible Moonshot entries remain supported and do not migrate.
     api_key: "${MOONSHOT_API_KEY}"
@@ -1446,22 +1458,30 @@ orchestration:
 # Sidebar Packs (Research / Specs)
 # ---------------------------------------------------------------------------
 # Gates for the sidebar's Research and Specs surfaces (Settings → General).
-# Each surface ships a globally-seeded pack — Research: the seven research-*
-# skills, the study-paper skill and the research Subagent Profile; Specs: the
-# six spec-* skills and the specs Subagent Profile — materialized into
-# ~/.c0wrk/.agents/{skills,agents} at launch. Disabling a surface hides its
+# The two surfaces differ in what the gate does:
+#
+# Research ships a globally-seeded pack — the seven research-* skills, the
+# study-paper skill and the research Subagent Profile — materialized into
+# ~/.c0wrk/.agents/{skills,agents} at launch. Disabling Research hides its
 # sidebar button and removes its seeded pack copies from disk; re-enabling
-# reseeds them. The launch seed reconciles both ways: enabled surfaces seed,
-# disabled surfaces unseed (converging any copy a failed removal left
+# reseeds them. The launch seed reconciles both ways: an enabled gate seeds,
+# a disabled gate unseeds (converging any copy a failed removal left
 # behind). Removal is non-destructive by content: only copies that are
 # byte-identical to the shipped pack (or a pack-marked, interrupted partial
 # copy) are deleted — a marker-less user-authored copy and a locally edited
 # copy (marker present, content diverged) are always preserved (edited copies
 # are named in a warning log).
 #
+# Specs is a VISIBILITY GATE ONLY (ADR-126): c0wrk ships no spec skillset and
+# seeds nothing for it. The gate hides or shows the Specs sidebar surface —
+# the specification framework the workspace has installed (its own skills,
+# e.g. .agents/skills) decides what the surface actually contains. Flipping
+# it never touches the disk.
+#
 #   enabled (default true) — surface master gate; false hides the sidebar
-#                            button and unseeds the surface's pack copies
-#                            (at the toggle and again at every launch).
+#                            button (Research additionally unseeds its pack
+#                            copies at the toggle and again at every launch;
+#                            Specs never writes to disk).
 #
 # research:
 #   enabled: true

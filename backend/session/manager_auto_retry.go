@@ -13,9 +13,9 @@ import (
 // the llmbudget transport's own-budget-expiry wrapper — via the EXPORTED
 // signature predicate (`llmbudget.IsOwnBudgetExpiry`), the same predicate the
 // delegation transient-class seam uses; there is no local re-statement of the
-// wrapper's message here (ADR-126: one signature, shared predicate). A
+// wrapper's message here (ADR-128: one signature, shared predicate). A
 // provider-side timeout (no wrapper) does not match, so the two timeout
-// senses stay distinguishable (ADR-126 commitment 4).
+// senses stay distinguishable (ADR-128 commitment 4).
 func isBudgetExpiryCause(llmErr *llm.Error) bool {
 	return llmErr != nil && llmbudget.IsOwnBudgetExpiry(llmErr.Err)
 }
@@ -32,7 +32,7 @@ func isAutoRetryableNetworkCause(llmErr *llm.Error) bool {
 
 // isAutoRetryableCause reports whether an *llm.Error qualifies for automatic
 // resend. The transient provider class is defined ONCE —
-// core.IsTransientProviderError (the ADR-065/ADR-126 taxonomy: a terminal
+// core.IsTransientProviderError (the ADR-065/ADR-128 taxonomy: a terminal
 // *llm.Error with HTTP 429/529, the rate_limit/overloaded ErrKind, or at
 // StatusCode 0 a wrapped chain classifying dns/connect/reset/timeout under
 // llm.TransportKind) — and this seam consumes it, adding only the interval
@@ -51,10 +51,13 @@ func isAutoRetryableCause(llmErr *llm.Error) bool {
 
 // SetAutoRetryResolver sets the callback resolving a provider name (the
 // logical config key carried by *llm.Error.Provider) to its rate-limit class
-// auto-resend interval in seconds; a nil resolver or a 0 answer (fixed
-// providers have no auto_retry_seconds) keeps the RATE-LIMIT class off. NO
-// backend timer exists (ADR-065, specs/domains/llm-providers.md): the UI owns
-// the countdown and the resume.
+// auto-resend interval in seconds; a nil resolver or a 0 answer (a provider
+// without a configured interval) keeps the RATE-LIMIT class off. Fixed
+// providers resolve to their own configured interval too (ADR-127), while the
+// connection-level class never consults this resolver at all — it rides the
+// global network interval (SetNetworkAutoRetryResolver, ADR-128). NO backend
+// timer exists (ADR-065, specs/domains/llm-providers.md): the UI owns the
+// countdown and the resume.
 func (m *Manager) SetAutoRetryResolver(fn func(provider string) int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -63,7 +66,7 @@ func (m *Manager) SetAutoRetryResolver(fn func(provider string) int) {
 
 // SetNetworkAutoRetryResolver sets the callback resolving the GLOBAL
 // network-class auto-resend interval in seconds (llm.network_auto_retry_
-// seconds, ADR-126); 0 is the kill-switch. The network class applies to every
+// seconds, ADR-128); 0 is the kill-switch. The network class applies to every
 // provider — the fixed ones included — so unlike the rate-limit class there
 // is no per-provider argument. Same atomic-snapshot seam and live-only
 // contract as SetAutoRetryResolver.
@@ -100,11 +103,11 @@ func (m *Manager) networkAutoRetryInterval() int {
 
 // maybeAutoRetryAt classifies the terminal failure cause and returns the
 // auto-resend deadline as unix seconds, or 0 when it does not qualify. The
-// class decides the knob (ADR-126): a connection-level failure rides the
+// class decides the knob (ADR-128): a connection-level failure rides the
 // global network interval, the rate-limit class keeps the per-provider knob
 // (fixed providers resolve 0 — no deadline). The caller stamps the deadline
 // into the task_failed_resumable payload; nothing is scheduled on the backend
-// (specs/domains/llm-providers.md, ADR-065, ADR-126).
+// (specs/domains/llm-providers.md, ADR-065, ADR-128).
 func (m *Manager) maybeAutoRetryAt(cause error) int64 {
 	if cause == nil {
 		return 0

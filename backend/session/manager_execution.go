@@ -275,6 +275,29 @@ func (m *Manager) researchProjectInfo(sess *Session) (string, bool) {
 	return config.ProjectResearchPath(sess.WorkspacePath), true
 }
 
+// ignoreResolverEntry is one ignoreCache slot: a build in flight (done open)
+// or a finished one (done closed; r/err valid). r/err are written before
+// close(done), so joiners read them after <-done without synchronization.
+// Eviction deletes the slot; a builder whose slot was evicted mid-build does
+// not re-store — its walk may predate the ignore-file edit.
+type ignoreResolverEntry struct {
+	done chan struct{}
+	r    *ignore.Resolver
+	err  error
+}
+
+// ignoreCacheKey canonicalizes a root for ignoreCache: symlink-resolved, with
+// the raw path as fallback (a not-yet-created workspace). Every cache touch —
+// the agent path, the blocking IgnoreResolverFor, prewarm, eviction — derives
+// the key here, so all surfaces share one entry per physical root.
+func ignoreCacheKey(root string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return root, err
+	}
+	return resolved, nil
+}
+
 // injectIgnoreChecker builds a multi-root ignore resolver (workspace + work
 // directories) and attaches it via sdktools.WithIgnoreChecker; glob/ripgrep
 // consult it to honour each root's own .gitignore/.aiignore (read_file stays
@@ -299,10 +322,9 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 	roots := make([]string, 0, len(rawRoots))
 	seen := make(map[string]struct{}, len(rawRoots))
 	for _, r := range rawRoots {
-		resolved, err := filepath.EvalSymlinks(r)
+		resolved, err := ignoreCacheKey(r)
 		if err != nil {
 			m.log().Debug("ignore checker: root symlink resolution failed, using raw path", "path", r, "error", err)
-			resolved = r
 		}
 		if _, dup := seen[resolved]; dup {
 			continue
@@ -313,16 +335,23 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 
 	// Uncached roots build asynchronously: the resolver walk is expensive, and
 	// blocking SendMessage on a huge directory (the Go module cache) causes
-	// multi-minute hangs. The first message after startup may run without
-	// ignore filtering; later messages pick up the finished walk's resolver.
+	// multi-minute hangs. A root whose build is still in flight goes without
+	// ignore filtering for this message; later messages pick up the finished
+	// walk's resolver.
 	resolvers := make([]*ignore.Resolver, 0, len(roots))
 	for _, root := range roots {
 		if cached, loaded := m.ignoreCache.Load(root); loaded {
-			r, ok := cached.(*ignore.Resolver)
+			e, ok := cached.(*ignoreResolverEntry)
 			if !ok {
 				continue
 			}
-			resolvers = append(resolvers, r)
+			select {
+			case <-e.done:
+				if e.r != nil {
+					resolvers = append(resolvers, e.r)
+				}
+			default:
+			}
 			continue
 		}
 		// Kick off the async build (deduplicated inside startIgnoreBuild).
@@ -389,18 +418,17 @@ func (m *Manager) detectCaseInsensitive(path string) bool {
 }
 
 // startIgnoreBuild launches a background walk of root and caches its
-// ignore.Resolver, deduplicated via a LoadOrStore sentinel (a concurrent or
-// completed build makes this a no-op). The goroutine is manager-tracked
-// (background.go) so Shutdown joins it, and derives from the manager's
-// shutdown context: on a huge root (module cache / vendor tree) the walk runs
-// for minutes with no other cancellation, so shutdownCancel aborts it BEFORE
-// stopBackground joins instead of burning stopTimeout on the quiescing main
-// thread. Read-only walk: a straggler cannot add to a removed directory.
-// See specs/domains/workspace.md (per-root ignore resolver cache).
+// ignore resolver, deduplicated via a LoadOrStore in-flight entry (a
+// concurrent or completed build makes this a no-op). The goroutine is
+// manager-tracked (background.go) so Shutdown joins it, and derives from the
+// manager's shutdown context: on a huge root (module cache / vendor tree) the
+// walk runs for minutes with no other cancellation, so shutdownCancel aborts
+// it BEFORE stopBackground joins instead of burning stopTimeout on the
+// quiescing main thread. Read-only walk: a straggler cannot add to a removed
+// directory. See specs/domains/workspace.md (per-root ignore resolver cache).
 func (m *Manager) startIgnoreBuild(root string) {
-	sentinel := &ignore.Resolver{}
-	if actual, loaded := m.ignoreCache.LoadOrStore(root, sentinel); loaded {
-		_ = actual
+	entry := &ignoreResolverEntry{done: make(chan struct{})}
+	if _, loaded := m.ignoreCache.LoadOrStore(root, entry); loaded {
 		return
 	}
 
@@ -412,16 +440,85 @@ func (m *Manager) startIgnoreBuild(root string) {
 			} else {
 				m.log().Debug("ignore checker: background resolver build failed", "root", root, "error", err)
 			}
-			// Remove the sentinel so a future call can retry.
-			m.ignoreCache.Delete(root)
+			entry.err = err
+			close(entry.done)
+			// Remove the slot so a future call can retry — only our own: an
+			// eviction + re-store mid-build leaves a newer entry in place.
+			m.ignoreCache.CompareAndDelete(root, entry)
 			return
 		}
-		m.ignoreCache.Store(root, r)
+		entry.r = r
+		close(entry.done)
 	}) {
-		// Shutting down: drop the sentinel so the cache is not left holding a
-		// permanently "building" root.
-		m.ignoreCache.Delete(root)
+		// Shutting down: drop the slot so the cache is not left holding a
+		// permanently "building" root, and release any joiner.
+		entry.err = errIgnoreBuildNotStarted
+		close(entry.done)
+		m.ignoreCache.CompareAndDelete(root, entry)
 	}
+}
+
+// errIgnoreBuildNotStarted completes an in-flight entry whose background
+// build never started (manager already shutting down).
+var errIgnoreBuildNotStarted = errors.New("ignore resolver build not started: manager shutting down")
+
+// IgnoreResolverFor returns the ignore resolver for root, building it
+// synchronously on a miss and joining an in-flight build otherwise
+// (singleflight). It is the blocking entry point for the file tree's
+// ListDirectory; the agent path stays non-blocking (injectIgnoreChecker).
+// Build errors are not cached — the next call retries. A build whose slot was
+// evicted mid-flight (an ignore-file edit during the walk) is returned to its
+// caller but not stored. ctx bounds only the WAIT and a caller-owned build:
+// on shutdown the app context cancels the walk mid-way.
+func (m *Manager) IgnoreResolverFor(ctx context.Context, root string) (*ignore.Resolver, error) {
+	if root == "" {
+		return nil, errors.New("session: empty ignore resolver root")
+	}
+	key, err := ignoreCacheKey(root)
+	if err != nil {
+		m.log().Debug("ignore checker: root symlink resolution failed, using raw path", "path", root, "error", err)
+	}
+
+	entry := &ignoreResolverEntry{done: make(chan struct{})}
+	if actual, loaded := m.ignoreCache.LoadOrStore(key, entry); loaded {
+		e, ok := actual.(*ignoreResolverEntry)
+		if !ok {
+			return nil, fmt.Errorf("session: unexpected ignore cache entry %T", actual)
+		}
+		select {
+		case <-e.done:
+			return e.r, e.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// This call owns the build: run it synchronously under the caller's
+	// context.
+	r, buildErr := m.ignoreResolverBuild(ctx, key)
+	entry.r, entry.err = r, buildErr
+	close(entry.done)
+	if buildErr != nil {
+		// Errors are not cached: the next caller starts a fresh build. Only
+		// our own slot — a newer entry stored after a mid-build eviction stays.
+		m.ignoreCache.CompareAndDelete(key, entry)
+		return nil, buildErr
+	}
+	return r, nil
+}
+
+// PrewarmIgnoreResolver starts the tracked background resolver build for root
+// so a later blocking IgnoreResolverFor (a file-tree expand) joins an
+// in-flight or finished build instead of paying the walk synchronously.
+func (m *Manager) PrewarmIgnoreResolver(root string) {
+	if root == "" {
+		return
+	}
+	key, err := ignoreCacheKey(root)
+	if err != nil {
+		m.log().Debug("ignore checker: root symlink resolution failed, using raw path", "path", root, "error", err)
+	}
+	m.startIgnoreBuild(key)
 }
 
 // ignoreFileNames are the files whose change invalidates a cached resolver:
@@ -436,7 +533,8 @@ var ignoreFileNames = map[string]struct{}{
 // InvalidateIgnoreCache evicts cached resolvers whose root contains a changed
 // ignore-rule file (.gitignore/.aiignore/.ignore) — the invalidation half of
 // the async cache; without it ignore edits stay invisible until restart. It
-// only DELETEs entries: the next injectIgnoreChecker rebuilds lazily, so at
+// only DELETEs entries: the next injectIgnoreChecker/IgnoreResolverFor
+// rebuilds lazily, so at
 // worst the first message after invalidation runs without ignore filtering.
 // changedPaths are absolute (watcher form); pathutil.IsWithinPath resolves
 // both sides against symlink-resolved roots, so the match holds behind a
@@ -474,6 +572,29 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 				m.ignoreCache.Delete(root)
 				m.log().Debug("ignore checker: invalidated root after ignore-file change", "root", root, "trigger", ignoreFile)
 			}
+		}
+		return true
+	})
+}
+
+// InvalidateIgnoreCacheOverlapping evicts every cached resolver whose root
+// contains root or lies within it. Called when the workspace watcher starts
+// covering root: ignore-file edits made while it was unwatched (another
+// project active) produced no watcher event, so a cached walk may be stale.
+func (m *Manager) InvalidateIgnoreCacheOverlapping(root string) {
+	if root == "" {
+		return
+	}
+	m.ignoreCache.Range(func(key, _ any) bool {
+		cached, ok := key.(string)
+		if !ok {
+			return true
+		}
+		contains, err1 := pathutil.IsWithinPath(cached, root)
+		inside, err2 := pathutil.IsWithinPath(root, cached)
+		if contains || inside || err1 != nil || err2 != nil {
+			m.ignoreCache.Delete(cached)
+			m.log().Debug("ignore checker: evicted root on watcher re-scope", "root", cached, "watch_root", root)
 		}
 		return true
 	})

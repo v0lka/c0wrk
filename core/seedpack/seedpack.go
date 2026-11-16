@@ -1,5 +1,5 @@
 // Package seedpack is the crash-safe, hash-verified seeding core shared by
-// every embedded pack consumer (core/research, core/papers, core/specs):
+// every embedded pack consumer (core/research, core/papers):
 // every write lands in a hidden sibling staging directory swapped in by a
 // single rename, and classification compares CONTENT HASHES against the
 // embedded pack (never mtime/size, never the marker alone). Consumers keep

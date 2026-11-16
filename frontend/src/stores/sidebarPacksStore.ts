@@ -14,7 +14,9 @@ import { create } from 'zustand'
  * behavior). While `loaded` is false (config not yet read — the
  * splash/startup race), the gated tabs therefore render as they always did
  * and snap to the persisted values once the config lands; only an explicit
- * opt-out hides a tab (and unseeds its skill/agent pack, backend-side).
+ * opt-out hides a tab (and, for the Research gate, unseeds its skill/agent
+ * pack backend-side — the Specs gate is pure visibility, because c0wrk ships
+ * no spec pack, ADR-126).
  */
 interface SidebarPacksState {
   research: boolean

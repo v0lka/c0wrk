@@ -1,13 +1,20 @@
 // Sidebar surface gates: SetResearchEnabled / SetSpecsEnabled persist the
-// config research.enabled / specs.enabled toggles (Settings → General) and
-// apply their pack side-effect in the same beat — enabling seeds the
-// surface's packs, disabling unseeds them. The apply runs under
-// researchSeedMu (configMu → researchSeedMu) and writes the gate mirror
-// under the same lock before its disk pass, so the launch seed — which
-// re-reads that mirror inside its own critical section — can never act on a
-// stale gate; a disabled surface is unseeded at launch too, reconciling any
-// drift a failed toggle-time removal left behind. See the sidebar-packs ADR
-// and specs/domains/{research,specs}.md.
+// config research.enabled / specs.enabled toggles (Settings → General).
+//
+// The two surfaces are deliberately NOT symmetric any more:
+//
+//   - research.enabled still carries a PACK side-effect. Enabling seeds the
+//     research/paper packs, disabling unseeds them. The apply runs under
+//     researchSeedMu (configMu → researchSeedMu) and writes the gate mirror
+//     under the same lock before its disk pass, so the launch seed — which
+//     re-reads that mirror inside its own critical section — can never act on
+//     a stale gate.
+//   - specs.enabled is a PURE visibility gate. The spec-* skillset is no longer
+//     seeded or unseeded by c0wrk: an installed copy is ordinary agent skill
+//     data, recognition happens through SDD detection wherever the skills live,
+//     and nothing on disk is touched by the toggle.
+//
+// See the sidebar-packs ADR and specs/domains/{research,specs}.md.
 package backend
 
 import (
@@ -17,7 +24,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/research"
-	"github.com/v0lka/c0wrk/core/specs"
 )
 
 // SetResearchEnabled toggles the research sidebar surface gate (config
@@ -54,8 +60,16 @@ func (f *FrontendAPI) SetResearchEnabled(enabled bool) error {
 }
 
 // SetSpecsEnabled toggles the specs sidebar surface gate (config
-// specs.enabled) and persists it — the SetResearchEnabled contract applied
-// to the specs surface (the six spec-* skills + the specs Subagent Profile).
+// specs.enabled) and persists it. The gate is a PURE visibility switch: it
+// carries no pack side-effect, because the spec-* skillset is no longer
+// seeded or unseeded by c0wrk — the skills are plain agent skills that the
+// detection layer recognises wherever they are installed (an already-seeded
+// copy keeps working, and removing one never happens behind the operator's
+// back). A request matching the stored EFFECTIVE value is a no-op (nil
+// default counts as on); a failed disk write rolls the in-memory value back.
+// On success config:updated is announced, which is what makes the sidebar tab
+// (and the panel's next GetSpecsStatus, whose `present` folds this gate in)
+// follow the flip live.
 func (f *FrontendAPI) SetSpecsEnabled(enabled bool) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -76,22 +90,21 @@ func (f *FrontendAPI) SetSpecsEnabled(enabled bool) error {
 		f.config.Specs.Enabled = prev
 		return fmt.Errorf("failed to persist specs config: %w", err)
 	}
-	f.applySpecsPacksLocked(enabled)
 	f.emitConfigUpdated()
 	return nil
 }
 
-// sidebarPackGates reads the two sidebar surface gates (research.enabled /
-// specs.enabled) under configMu — seedGlobalPacks runs outside the config
-// lock. A nil config fail-opens: unset gates mean on, matching the pack
-// defaults that predate the gates.
-func (f *FrontendAPI) sidebarPackGates() (researchOn, specsOn bool) {
+// researchPackGate reads the research sidebar gate (research.enabled) under
+// configMu — seedGlobalPacks runs outside the config lock. A nil config
+// fail-opens: an unset gate means on, matching the pack defaults that predate
+// the gate.
+func (f *FrontendAPI) researchPackGate() bool {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 	if f.config == nil {
-		return true, true
+		return true
 	}
-	return f.config.Research.PackEnabled(), f.config.Specs.PackEnabled()
+	return f.config.Research.PackEnabled()
 }
 
 // applyResearchPacksLocked seeds or unseeds the research surface's packs —
@@ -194,77 +207,6 @@ func (f *FrontendAPI) runResearchPacks(on bool) {
 
 	// The seeded/unseeded directories are c0wrk-owned content; drop any
 	// cached skill/agent listing so the next read rescans them.
-	f.invalidateSkillCache()
-	f.invalidateAgentCache()
-}
-
-// applySpecsPacksLocked seeds or unseeds the specs surface's packs — the
-// spec skill pack plus the specs Subagent Profile — to match `enabled`,
-// under the same contract as applyResearchPacksLocked (configMu held by the
-// caller; the pass serialized on researchSeedMu, the gate mirror written
-// before the disk pass).
-func (f *FrontendAPI) applySpecsPacksLocked(enabled bool) {
-	f.researchSeedMu.Lock()
-	defer f.researchSeedMu.Unlock()
-	f.packGateSpecs = &enabled
-	f.runSpecsPacks(enabled)
-}
-
-// runSpecsPacks performs the specs surface's disk pass — the spec skill
-// pack plus the specs Subagent Profile — under the same contract as
-// runResearchPacks: callers must hold researchSeedMu; no locks are taken
-// here; per-pack failures are logged and never fatal; the skill/agent
-// caches are invalidated afterwards.
-func (f *FrontendAPI) runSpecsPacks(on bool) {
-	skillsDir := config.SkillsDir(f.agentDir)
-	agentsDir := config.AgentsDir(f.agentDir)
-
-	if on {
-		if res, err := specs.SeedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("spec skill-pack seeding failed",
-				"skills_dir", skillsDir, "error", err)
-		} else {
-			f.log().Info("spec skill-pack seeded",
-				"skills_dir", skillsDir,
-				"seeded", len(res.Seeded), "updated", len(res.Updated),
-				"current", len(res.Current), "preserved", len(res.Preserved))
-		}
-		if res, err := specs.SeedAgents(agentsDir, f.log()); err != nil {
-			f.log().Warn("spec agent-pack seeding failed",
-				"agents_dir", agentsDir, "error", err)
-		} else {
-			f.log().Info("spec agent-pack seeded",
-				"agents_dir", agentsDir,
-				"seeded", len(res.Seeded), "updated", len(res.Updated),
-				"current", len(res.Current), "preserved", len(res.Preserved))
-		}
-	} else {
-		if res, err := specs.UnseedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("spec skill-pack unseed failed",
-				"skills_dir", skillsDir, "error", err)
-		} else {
-			f.log().Info("spec skill-pack unseeded",
-				"skills_dir", skillsDir,
-				"removed", len(res.Removed),
-				"missing", len(res.Missing),
-				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified),
-				"failed", len(res.Failed))
-		}
-		if res, err := specs.UnseedAgents(agentsDir, f.log()); err != nil {
-			f.log().Warn("spec agent-pack unseed failed",
-				"agents_dir", agentsDir, "error", err)
-		} else {
-			f.log().Info("spec agent-pack unseeded",
-				"agents_dir", agentsDir,
-				"removed", len(res.Removed),
-				"missing", len(res.Missing),
-				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified),
-				"failed", len(res.Failed))
-		}
-	}
-
 	f.invalidateSkillCache()
 	f.invalidateAgentCache()
 }

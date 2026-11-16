@@ -102,8 +102,9 @@ Also owns domain services:
 - `core/llmbudget/` — adaptive per-model LLM request budgets learned from live traffic
 - `core/llmtls/` — per-provider TLS verification overrides (certificate pinning) for self-signed LLM endpoints
 - `core/gittrust/` — the process-wide registry of user-trusted git repository roots the hardened spawn layer consults
-- `core/research/`, `core/papers/`, `core/specs/` — the document domains behind the Research, Papers and Specs panels: in-memory models, parsers, atomic containment-checked writers, and the embedded skill/Subagent packs
-- `core/seedpack/` — the crash-safe, hash-verified global pack-seeding core shared by `core/research`, `core/papers` and `core/specs`
+- `core/research/`, `core/papers/` — the document domains behind the Research and Papers panels: in-memory models, parsers, atomic containment-checked writers, and the embedded skill/Subagent packs
+- `core/sdd/` — the SDD framework engine behind the Specs panel: the declarative `sdd-framework/v1` DSL and its embedded catalog, skill-based framework detection, and the read-only, containment-checked specification-tree parser (no embedded packs; [ADR-126](../decisions/126-sdd-framework-dsl.md))
+- `core/seedpack/` — the crash-safe, hash-verified global pack-seeding core shared by `core/research` and `core/papers`
 - `core/memlimit/` — GC soft-memory-limit policy (`runtime.memory_soft_limit_mb`): `Setup` plus the per-OS RAM probes (`memlimit_ram_*.go`)
 - `core/csp/` — the production Content-Security-Policy (`Policy`) stamped by the desktop CSP middleware and the web-access sidecar
 - `core/savedialog/` — pure save-dialog decisions: default-directory resolution, write-path normalization, the attachment file-filter pattern

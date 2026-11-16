@@ -44,7 +44,10 @@ type ProjectUIState struct {
 	SavedSessionID string   `json:"saved_session_id"`
 	OpenTabs       []string `json:"open_tabs"`
 	ActiveFile     string   `json:"active_file"`
-	UpdatedAt      string   `json:"updated_at"`
+	// ActiveSDD is the operator's selected SDD framework id for this
+	// project; "" means the detection default applies.
+	ActiveSDD string `json:"active_sdd"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // WorkDirectoryRecord is the persistence record for an auxiliary working
@@ -78,6 +81,14 @@ type ProjectStore interface {
 	LoadUIState(ctx context.Context, projectID string) (*ProjectUIState, error)
 	// SaveSavedSessionID updates only saved_session_id, preserving open tabs.
 	SaveSavedSessionID(ctx context.Context, projectID, sessionID string) error
+
+	// SaveActiveSDD updates only active_sdd, preserving every other
+	// project_ui_state column; an unknown/cleared id is stored as "".
+	SaveActiveSDD(ctx context.Context, projectID, sddID string) error
+
+	// LoadActiveSDD returns the persisted active SDD framework id for a
+	// project; "" when no row (or no selection) exists.
+	LoadActiveSDD(ctx context.Context, projectID string) (string, error)
 
 	// App-level key-value state (e.g. last active project for restart restore)
 	SaveAppState(ctx context.Context, key, value string) error

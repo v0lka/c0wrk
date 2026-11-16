@@ -1,51 +1,85 @@
-// Tier-1 deterministic findings (ADR-106 D5, ADR-109): the nine parse-time
-// integrity categories. Renders NOTHING when clean — the header's badge is
-// the clean signal; this list appears only when there is something to see.
+// The findings section of the active framework: every failed DECLARED check,
+// in model order. Renders NOTHING when clean — the header's badge is the clean
+// signal; this list appears only when there is something to see.
+//
+// Both the label and the kind of a finding belong to the framework document:
+// `message` is the check's declared operator-facing explanation (rendered when
+// present) and `kind` its own token (readable-ized otherwise). A framework the
+// frontend has never heard of renders its own words, and the per-finding fix
+// badge is a BUTTON only when that framework declared the findings-fix gesture
+// — otherwise it renders inert.
 
 import { AlertTriangle } from 'lucide-react'
-import type { SpecFinding } from '@/types/models'
+import type { SDDAction, SDDFinding, SDDView } from '@/types/models'
 import { CopyIconButton } from '@/components/CopyIconButton'
-import { findingKindLabel } from './specsPaths'
-import { findingLine } from './specsActions'
+import { findingLabel } from './specsPaths'
+import {
+  NO_FIX_FINDINGS_DECLARED_REASON,
+  findingLine,
+  findingsFixDispatch,
+  inertActionReason,
+  type SpecsDispatch,
+} from './specsActions'
 
-/** One finding card, cascading on two rows: row 1 carries the fix badge —
- *  a BUTTON (the icon + kind chip, the header badge's warning styling)
- *  dispatching the per-finding spec-update task — and the file link
- *  (clickable — opens in the file viewer through the panel's onOpen
- *  callback), row 2 the detail text (flex-1 — a long detail must never
- *  squeeze the row-1 controls) with the hover-revealed copy button pinned
- *  to its trailing edge: the card is the Tailwind hover `group`, the copy
- *  wrapper sits at opacity-0 until the card is hovered (or focused into —
- *  focus-within) and copies the verbatim findingLine — the exact bullet
- *  the dispatched fix prompt carries, so the clipboard never drifts from
- *  what the task sees (ADR-109 D7). The reveal is opacity-only and the
- *  wrapper always occupies its layout slot: hovering must not move a
- *  single pixel (the MessageFooter pattern). */
+/** One finding card, cascading on two rows: row 1 carries the fix badge (the
+ *  icon + the finding's label) and the file link (opens in the file viewer),
+ *  row 2 the detail text with the hover-revealed copy button pinned to its
+ *  trailing edge — copying the verbatim findingLine, the exact bullet the
+ *  dispatched fix prompt carries, so the clipboard never drifts from what the
+ *  task sees. The reveal is opacity-only and the wrapper always occupies its
+ *  layout slot: hovering must not move a single pixel (the MessageFooter
+ *  pattern). */
 function FindingRow({
   finding,
+  fixAction,
   onOpen,
-  onFixFinding,
+  onDispatch,
 }: {
-  finding: SpecFinding
-  onOpen: (relPath: string) => void
-  onFixFinding: (finding: SpecFinding, newSession: boolean) => void
+  finding: SDDFinding
+  fixAction: SDDAction | null
+  onOpen: (modelPath: string) => void
+  onDispatch: (dispatch: SpecsDispatch, newSession: boolean) => void
 }) {
+  const label = findingLabel(finding)
+  const dispatch = findingsFixDispatch(fixAction, [finding])
+  // Three states, one truth: dispatchable → a button; declared → inert WITH
+  // THE REASON (no skill to run, or requirements unmet — the workflow's next
+  // step stays visible); nothing declared → inert with the declaration fact.
+  const inertTitle =
+    fixAction !== null
+      ? inertActionReason(fixAction)
+      : NO_FIX_FINDINGS_DECLARED_REASON
   return (
     <div
       data-testid="specs-finding"
+      data-kind={finding.kind}
       className="group flex flex-col gap-0.5 rounded bg-secondary/40 px-1.5 py-1"
     >
       <div className="flex items-center gap-1.5 text-xs">
-        <button
-          type="button"
-          data-testid="specs-finding-fix"
-          title="Fix this finding in the chat — Shift = new session"
-          onClick={(e) => onFixFinding(finding, e.shiftKey)}
-          className="inline-flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1 text-xs text-warning transition-colors hover:bg-warning/20"
-        >
-          <AlertTriangle className="size-3" />
-          {findingKindLabel(finding.kind)}
-        </button>
+        {dispatch !== null ? (
+          <button
+            type="button"
+            data-testid="specs-finding-fix"
+            data-action={fixAction?.kind ?? ''}
+            data-skill={dispatch.skill}
+            title="Fix this finding in the chat — Shift = new session"
+            onClick={(e) => onDispatch(dispatch, e.shiftKey)}
+            className="inline-flex min-w-0 shrink items-center gap-1 rounded bg-warning/10 px-1 text-xs text-warning transition-colors hover:bg-warning/20"
+          >
+            <AlertTriangle className="size-3 shrink-0" />
+            <span className="truncate">{label}</span>
+          </button>
+        ) : (
+          <span
+            data-testid="specs-finding-fix"
+            data-inert="true"
+            title={inertTitle}
+            className="inline-flex min-w-0 shrink items-center gap-1 rounded bg-warning/10 px-1 text-xs text-warning"
+          >
+            <AlertTriangle className="size-3 shrink-0" />
+            <span className="truncate">{label}</span>
+          </span>
+        )}
         <button
           type="button"
           data-testid="specs-finding-file"
@@ -75,29 +109,41 @@ function FindingRow({
   )
 }
 
-/** The findings section: every parse-time finding, in parse order. */
+/** The findings (or checks) section: every failed declared check, in model
+ *  order, under the section's own declared heading. */
 export function SpecsFindings({
+  section,
   findings,
+  fixAction,
   onOpen,
-  onFixFinding,
+  onDispatch,
 }: {
-  findings: SpecFinding[]
-  onOpen: (relPath: string) => void
-  onFixFinding: (finding: SpecFinding, newSession: boolean) => void
+  section: SDDView
+  findings: SDDFinding[]
+  /** The framework's declared findings-fix action, or null — the fix badges
+   *  then render inert. */
+  fixAction: SDDAction | null
+  onOpen: (modelPath: string) => void
+  onDispatch: (dispatch: SpecsDispatch, newSession: boolean) => void
 }) {
   if (findings.length === 0) return null
   return (
-    <section data-testid="specs-findings" className="flex flex-col gap-0.5">
+    <section
+      data-testid="specs-findings"
+      data-view={section.id}
+      className="flex flex-col gap-0.5"
+    >
       <div className="flex items-center gap-1 px-0.5 text-xs uppercase tracking-wide text-muted-foreground">
         <AlertTriangle className="size-3" />
-        Findings
+        {section.label}
       </div>
       {findings.map((finding, i) => (
         <FindingRow
           key={`${finding.kind}-${finding.file}-${i}`}
           finding={finding}
+          fixAction={fixAction}
           onOpen={onOpen}
-          onFixFinding={onFixFinding}
+          onDispatch={onDispatch}
         />
       ))}
     </section>

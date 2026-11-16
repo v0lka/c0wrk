@@ -16,6 +16,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/sdd"
 	"github.com/v0lka/c0wrk/core/toolmanager"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
@@ -104,11 +105,11 @@ type Application struct {
 	hitlHandler agent.HITLHandler
 
 	// autoRetryIntervals is the published auto-retry snapshot (ADR-065 +
-	// ADR-126): every provider's auto_retry_seconds (the rate-limit class,
+	// ADR-128): every provider's auto_retry_seconds (the rate-limit class,
 	// keyed by logical provider name) plus the global network-class interval.
 	// Immutable once stored; the pointer swap is the only synchronization.
 	// See specs/decisions/065-auto-resend-retryable-errors.md and
-	// specs/decisions/126-auto-resend-network-errors.md.
+	// specs/decisions/128-auto-resend-network-errors.md.
 	autoRetryIntervals atomic.Pointer[autoRetrySnapshot]
 
 	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-081),
@@ -239,13 +240,41 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 3b. Skill discovery directories. The builder creates a per-session
-	// SkillManager on each Build() and always prepends the current project's
-	// `.agents/skills` directory (see core/builder.go); here only the shared
-	// base dirs from config are resolved and registered.
+	// SkillManager on each Build() over the session's discovery set
+	// (SkillDirsForWorkspace): the project's `.agents/skills`, the skill
+	// directories the project's detected SDD framework declares (e.g.
+	// `.claude/skills`), and these shared base dirs; here only the shared base
+	// dirs from config are resolved and registered.
 	if len(cfg.Config.Skills.Dirs) > 0 {
 		skillDirs := resolveCatalogDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars, cfg.Logger)
 		builder.SetSkillDirs(skillDirs)
+	} else {
+		// An explicitly empty skills.dirs stays empty (defaults.go keeps the
+		// operator's choice): the builder gets the empty set too, so skill
+		// discovery and skill activation read the same configuration — an
+		// empty shared set means no shared dirs on either side.
+		builder.SetSkillDirs(nil)
 	}
+
+	// 3b+. The SDD framework catalog sessions use for skill discovery: the
+	// same merged load the Specs panel's detection runs (built-ins + global +
+	// checkout-local operator DSL), so an operator framework's declared skill
+	// directories reach activation, listing and detection alike. Load
+	// warnings are logged here — the Specs panel surfaces them through its
+	// DTO, but skill discovery has no other channel, and a degraded operator
+	// file must not silently narrow the framework catalog.
+	agentDir := cfg.AgentDir
+	catalogLogger := cfg.Logger
+	builder.SetSDDCatalog(func(workspacePath string) []sdd.Framework {
+		load := sdd.Load(config.SDDPath(agentDir), config.ProjectSDDPath(workspacePath))
+		for _, warning := range load.Warnings {
+			if catalogLogger != nil {
+				catalogLogger.Warn("SDD framework catalog loaded with warnings; some operator frameworks may be missing from skill discovery",
+					"workspace", workspacePath, "warning", warning)
+			}
+		}
+		return frameworksOf(load.Frameworks)
+	})
 
 	// 3c. Subagent Profile discovery directories — mirrors the skill dirs
 	// wiring (the builder prepends the project's `.agents/agents` per Build();
@@ -313,7 +342,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	})
 
 	// 5. Orchestrator factory closure for the session manager.
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, sddCheckoutPath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		// Converted under FrontendAPI's configMu once NewFrontendAPI wires the
 		// provider (see sessionBuilderConfig): the factory runs on Wails call
 		// goroutines and must not range the live config's maps unlocked.
@@ -327,7 +356,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		// creation); propagate it so any future Build-side consumer sees the
 		// closure instead of a zero value.
 		orchCfg.MarkitdownPythonPath = markitdownPython
-		orch, err := builder.Build(orchCfg, emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
+		orch, err := builder.Build(orchCfg, emitter, logger, workspacePath, sddCheckoutPath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
 		if err != nil {
 			return nil, err
 		}
@@ -383,13 +412,14 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// Auto-retry resolver: resolves a provider name to its auto_retry_seconds
 	// interval from the ATOMIC snapshot — the manager calls it without
 	// configMu, and reading the live config maps would race Settings saves
-	// (a fatal concurrent-map-access crash). Fixed providers resolve to 0.
+	// (a fatal concurrent-map-access crash). Fixed and compatible providers
+	// resolve from the published snapshot.
 	// See specs/decisions/065-auto-resend-retryable-errors.md.
 	app.publishAutoRetryIntervals(cfg.Config)
 	manager.SetAutoRetryResolver(func(provider string) int {
 		return app.autoRetryIntervalSnapshot()[provider]
 	})
-	// The network class (ADR-126) is one global interval covering every
+	// The network class (ADR-128) is one global interval covering every
 	// provider — the fixed ones included — so it rides the same snapshot
 	// without a per-provider argument.
 	manager.SetNetworkAutoRetryResolver(func() int {
@@ -676,7 +706,7 @@ func (a *Application) LastToolCallID(sessionID string) (id, tool string) {
 }
 
 // autoRetrySnapshot is the immutable auto-retry snapshot published under the
-// autoRetryIntervals pointer (ADR-065 + ADR-126). Both fields answer 0 for
+// autoRetryIntervals pointer (ADR-065 + ADR-128). Both fields answer 0 for
 // "off": providerIntervals for a provider without auto_retry_seconds (the
 // fixed providers always), networkInterval for the network kill-switch.
 type autoRetrySnapshot struct {
@@ -688,17 +718,15 @@ type autoRetrySnapshot struct {
 // struct is immutable by convention — every consumer of the published pointer
 // treats it read-only.
 // See specs/decisions/065-auto-resend-retryable-errors.md and
-// specs/decisions/126-auto-resend-network-errors.md.
+// specs/decisions/128-auto-resend-network-errors.md.
 func buildAutoRetrySnapshot(cfg *config.Config) autoRetrySnapshot {
 	if cfg == nil {
 		return autoRetrySnapshot{providerIntervals: map[string]int{}}
 	}
-	intervals := make(map[string]int, len(cfg.LLM.OpenAICompatible)+len(cfg.LLM.AnthropicCompatible))
-	for name, c := range cfg.LLM.OpenAICompatible {
-		intervals[name] = c.AutoRetrySeconds
-	}
-	for name, f := range cfg.LLM.AnthropicCompatible {
-		intervals[name] = f.AutoRetrySeconds
+	providers := cfg.LLM.GetAllProviderConfigs()
+	intervals := make(map[string]int, len(providers))
+	for _, provider := range providers {
+		intervals[provider.Name] = provider.AutoRetrySeconds
 	}
 	snapshot := autoRetrySnapshot{providerIntervals: intervals}
 	// ApplyDefaults materializes the default 90 for an absent key, so a nil
@@ -715,7 +743,7 @@ func buildAutoRetrySnapshot(cfg *config.Config) autoRetrySnapshot {
 // publishAutoRetryIntervals rebuilds and stores the atomic snapshot from the
 // given config — at Application construction and after every committed LLM
 // config mutation. See specs/decisions/065-auto-resend-retryable-errors.md
-// and specs/decisions/126-auto-resend-network-errors.md.
+// and specs/decisions/128-auto-resend-network-errors.md.
 func (a *Application) publishAutoRetryIntervals(cfg *config.Config) {
 	snapshot := buildAutoRetrySnapshot(cfg)
 	a.autoRetryIntervals.Store(&snapshot)

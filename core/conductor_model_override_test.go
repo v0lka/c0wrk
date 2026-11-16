@@ -407,9 +407,9 @@ func TestBuildSubAgentTask_EmptyProviderCompositeIgnoredWithWarn(t *testing.T) {
 	}
 }
 
-// TestBuildSubAgentTask_EmptyModelInheritsSessionModel verifies an empty
-// profile model never touches the override path: the caller stays unwrapped
-// (the subagent inherits the session's active model) and nothing is logged.
+// TestBuildSubAgentTask_EmptyModelInheritsSessionModel covers session fallback
+// when neither the task nor the profile supplies a model override.
+// See specs/domains/orchestration/delegation.md (Model Override Resolution).
 func TestBuildSubAgentTask_EmptyModelInheritsSessionModel(t *testing.T) {
 	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer"})
 	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}

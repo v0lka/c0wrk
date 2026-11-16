@@ -73,6 +73,7 @@ specs/
 │   ├── prompt-suggestions.md
 │   ├── research.md
 │   ├── review.md
+│   ├── sdd-dsl.md
 │   ├── session-lifecycle.md
 │   ├── session-worktrees.md
 │   ├── specs.md

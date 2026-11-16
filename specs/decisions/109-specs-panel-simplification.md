@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+Accepted → **re-sourced from the DSL by
+[ADR-126](./126-sdd-framework-dsl.md)** (the panel is preserved in shape):
+the fixed sidebar tree and its hard-coded tier-1 check vocabulary are
+replaced by the active framework's declared views and checks; this ADR's
+panel contracts survive in declared form — the findings badge is the
+framework's `fix-findings` gesture (decision 2), actions carry declared short
+labels (decision 3), and the overview page stays removed (decision 1).
 
 ## Context
 

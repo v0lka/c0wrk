@@ -4325,12 +4325,8 @@ func TestNotificationBannerTimeoutDefault(t *testing.T) {
 	}
 }
 
-// TestAutoRetrySeconds_ParsesAndSurfacesInProviderList pins the compatible-only
-// schema of the per-provider automatic retry timer: llm.openai_compatible.<name>
-// .auto_retry_seconds and llm.anthropic_compatible.<name>.auto_retry_seconds
-// parse from YAML, absent keys read as 0, and GetAllProviderConfigs surfaces
-// the value for compatible providers while the fixed providers (anthropic,
-// chatgpt — which have no such knob in their schema) always report 0.
+// TestAutoRetrySeconds_ParsesAndSurfacesInProviderList verifies compatible
+// intervals and the default-off posture of providers with no interval.
 func TestAutoRetrySeconds_ParsesAndSurfacesInProviderList(t *testing.T) {
 	content := `llm:
   default_model: "selfhosted/qwen3"
@@ -4398,8 +4394,8 @@ func TestAutoRetrySeconds_ParsesAndSurfacesInProviderList(t *testing.T) {
 		"gateway":    30,
 		"plain":      0,
 		"plain-gw":   0,
-		"anthropic":  0, // fixed providers: no knob, always 0
-		"chatgpt":    0, // fixed providers: no knob, always 0
+		"anthropic":  0, // omitted interval defaults off
+		"chatgpt":    0, // omitted interval defaults off
 	}
 	for name, wantSeconds := range want {
 		got, ok := retry[name]
@@ -4439,7 +4435,7 @@ func TestAutoRetrySeconds_SaveRoundTripAndOmitEmpty(t *testing.T) {
 	}
 	// Exactly two auto_retry_seconds keys: the two timer-enabled providers.
 	// A third would mean omitempty is not doing its job. The count anchors on
-	// a leading space so ADR-126's section-level llm.network_auto_retry_
+	// a leading space so ADR-128's section-level llm.network_auto_retry_
 	// seconds (materialized by ApplyDefaults) cannot ride the substring.
 	if got := strings.Count(string(raw), " auto_retry_seconds:"); got != 2 {
 		t.Errorf("saved YAML has %d auto_retry_seconds keys, want 2 (omitempty must drop disabled providers)\n%s", got, raw)
@@ -4530,7 +4526,7 @@ func TestAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
 	}
 }
 
-// TestNetworkAutoRetrySeconds_DefaultAndKillSwitch pins the ADR-126 semantics
+// TestNetworkAutoRetrySeconds_DefaultAndKillSwitch pins the ADR-128 semantics
 // of llm.network_auto_retry_seconds: an absent key materializes the default
 // 90 via ApplyDefaults (omission ≠ off — deliberately unlike the
 // per-provider auto_retry_seconds knob, where omitted = disabled), while an
@@ -4576,7 +4572,7 @@ func TestNetworkAutoRetrySeconds_DefaultAndKillSwitch(t *testing.T) {
 }
 
 // TestNetworkAutoRetrySeconds_RejectsOutOfRange pins the inclusive [0, 3600]
-// bound (ADR-126): the global network knob shares the per-provider knob's
+// bound (ADR-128): the global network knob shares the per-provider knob's
 // window — an out-of-range value would arm the banner's promised re-send on
 // an unusable timescale.
 func TestNetworkAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
@@ -4627,7 +4623,7 @@ func TestNetworkAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
 	}
 }
 
-// TestNetworkAutoRetrySeconds_SaveRoundTrip pins persistence (ADR-126): the
+// TestNetworkAutoRetrySeconds_SaveRoundTrip pins persistence (ADR-128): the
 // materialized default is written back on save (so the key becomes explicit),
 // and an explicit 0 — the kill-switch — is preserved as 0, never dropped:
 // omitempty on a *int drops only a nil pointer, never a pointed-at zero.

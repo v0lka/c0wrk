@@ -292,7 +292,7 @@ const ownBudgetExpiryMarker = "own budget expiry, not a provider abort; the next
 // IsOwnBudgetExpiry reports whether the error chain carries this transport's
 // own-budget-expiry wrapper: the adaptive request budget's OWN deadline
 // expiry (ADR-071 D9), not a provider abort. Transient-provider
-// classification seams must exclude this signature explicitly (ADR-126 — a
+// classification seams must exclude this signature explicitly (ADR-128 — a
 // budget death escalates in-flight instead of qualifying as a provider-side
 // timeout), because the chained context.DeadlineExceeded would otherwise
 // satisfy any naive timeout predicate.

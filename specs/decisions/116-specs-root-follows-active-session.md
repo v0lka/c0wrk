@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Amends [ADR-106](./106-specs-sidebar-panel.md) by reference — decision 2's "unconditionally `<workspace>/specs`" root now resolves through the ACTIVE SESSION's workspace with the project checkout as fallback; the wire shape, the read-only rule, the tolerant-parser contract and every other ADR-106 decision stand unchanged.
+Accepted. Amends [ADR-106](./106-specs-sidebar-panel.md) by reference — decision 2's "unconditionally `<workspace>/specs`" root now resolves through the ACTIVE SESSION's workspace with the project checkout as fallback; the wire shape, the read-only rule, the tolerant-parser contract and every other ADR-106 decision stand unchanged. [ADR-126](./126-sdd-framework-dsl.md) reuses the session-following protocol and redefines the root itself: it is now the active framework's first declared root instead of the fixed `<workspace>/specs`, still resolved session-workspace-first with the checkout as fallback (the DSL parse behind `GetSpecsStatus`).
 
 ## Context
 

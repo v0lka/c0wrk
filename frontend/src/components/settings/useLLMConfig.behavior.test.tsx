@@ -498,9 +498,32 @@ describe('useLLMConfig TLS pin round-trip', () => {
   })
 })
 
-// --- Auto-retry interval (compatible providers only) ---
+// --- Auto-retry interval ---
 
 describe('useLLMConfig auto-retry interval', () => {
+  it.each([
+    ['anthropic', 'api_key'], ['chatgpt', 'api_key'], ['chatgpt', 'oauth'],
+    ['kimi', 'api_key'], ['kimi', 'oauth'],
+  ])('round-trips %s/%s retry interval independently of endpoint fields', async (provider, mode) => {
+    mocks.getConfig.mockResolvedValue({ loaded: true, llm: {
+      auto_retry_max_seconds: 3600, default_model: `${provider}/model`,
+      [provider!]: { api_key: 'k', models: ['model'], auth_mode: mode, auto_retry_seconds: 30 },
+    } })
+    act(() => root.render(<HookHarness />))
+    await flush()
+    expect(result.providerConfigs[provider!]?.auto_retry_seconds).toBe(30)
+    act(() => result.updateProviderConfig(provider!, { auto_retry_seconds: 60 }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    let entry = mocks.updateLLMConfig.mock.lastCall![0][provider!]
+    expect(entry.auto_retry_seconds).toBe(60)
+    expect(entry).not.toHaveProperty('base_url')
+    expect(entry).not.toHaveProperty('tls_fingerprint')
+    act(() => result.updateProviderConfig(provider!, { auto_retry_seconds: 0 }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    entry = mocks.updateLLMConfig.mock.lastCall![0][provider!]
+    expect(entry.auto_retry_seconds).toBe(0)
+  })
+
   beforeEach(() => {
     useProxyDraftStore.setState({ active: null })
   })
@@ -528,11 +551,11 @@ describe('useLLMConfig auto-retry interval', () => {
     expect(result.providerConfigs.timed?.auto_retry_seconds).toBe(30)
     expect(result.providerConfigs.gateway?.auto_retry_seconds).toBe(45)
     expect(result.providerConfigs.plain?.auto_retry_seconds).toBeUndefined()
-    // Fixed providers never carry the field (backend reports 0 → omitted).
+    // An absent interval remains undefined, including on fixed providers.
     expect(result.providerConfigs.anthropic?.auto_retry_seconds).toBeUndefined()
   })
 
-  it('sends the interval only for compatible providers on save', async () => {
+  it('preserves an omitted fixed interval while saving compatible providers', async () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
@@ -559,7 +582,7 @@ describe('useLLMConfig auto-retry interval', () => {
       { auto_retry_seconds?: number }
     >
     expect(compatible.timed?.auto_retry_seconds).toBe(30)
-    // The fixed provider entry must not grow an auto_retry_seconds field.
+    // An omitted interval must not become an explicit zero.
     const fixed = req.anthropic as unknown as Record<string, unknown>
     expect(fixed).not.toHaveProperty('auto_retry_seconds')
   })

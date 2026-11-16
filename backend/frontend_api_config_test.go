@@ -146,8 +146,13 @@ type mockBuilder struct {
 	// RebuildRouter, in call order (guarded by m.mu).
 	rebuildRouterCfgs []string
 
-	getSkillDescriptorsCalls  int
-	getSkillDescriptorsRes    []skills.SkillDescriptor
+	getSkillDescriptorsCalls int
+	getSkillDescriptorsRes   []skills.SkillDescriptor
+	// skillDirsRes is what SkillDirsForWorkspace returns (the per-workspace
+	// discovery set the RPC layer forwards to GetSkillDescriptors), and
+	// getSkillDescriptorsDirs captures the set the last scan was handed.
+	skillDirsRes              []string
+	getSkillDescriptorsDirs   []string
 	resolveSkillResourceCalls int
 	// resolveSkillResourceArgs captures the last call's
 	// (projectSkillDir, skillName, relPath) for wiring assertions.
@@ -376,10 +381,16 @@ func (m *mockBuilder) GetBaseSkillDirs() []string {
 	m.mu.Unlock()
 	return nil
 }
-func (m *mockBuilder) GetSkillDescriptors(string) []skills.SkillDescriptor {
+func (m *mockBuilder) SkillDirsForWorkspace(string, string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.skillDirsRes
+}
+func (m *mockBuilder) GetSkillDescriptors(dirs []string) []skills.SkillDescriptor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.getSkillDescriptorsCalls++
+	m.getSkillDescriptorsDirs = append([]string(nil), dirs...)
 	return m.getSkillDescriptorsRes
 }
 func (m *mockBuilder) ResolveSkillResourcePath(projectSkillDir, skillName, relPath string) (string, error) {
@@ -531,7 +542,7 @@ func TestUpdateLLMConfig_RepublishesAutoRetryIntervals(t *testing.T) {
 	}
 }
 
-// TestUpdateLLMConfig_RepublishesNetworkAutoRetryInterval pins the ADR-126
+// TestUpdateLLMConfig_RepublishesNetworkAutoRetryInterval pins the ADR-128
 // wiring on the Settings path: the global network-class interval rides the
 // SAME published snapshot (a nil config pointer resolves to the materialized
 // default), survives a provider-only UpdateLLMConfig commit — the candidate
@@ -4693,13 +4704,13 @@ func TestResolveTLSFingerprint(t *testing.T) {
 	}
 }
 
-// --- Per-provider auto-retry interval (compatible providers only) ---
+// --- Per-provider auto-retry interval ---
 
 func intPtr(i int) *int { return &i }
 
 // newAutoRetryTestAPI returns a test API whose config already holds one
 // openai-compatible and one anthropic-compatible provider with a persisted
-// auto-retry interval, plus the fixed providers (which never carry one).
+// auto-retry interval, plus fixed providers with the default-off interval.
 func newAutoRetryTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder) {
 	t.Helper()
 	f, mock, _ := newTestAPI(t)
@@ -4723,8 +4734,8 @@ func newAutoRetryTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder) {
 }
 
 // GetConfig (buildLLMResponse) must round-trip the persisted interval for
-// compatible providers so the settings form can show it; providers without
-// an interval — and the fixed anthropic/chatgpt providers — report 0.
+// providers so the settings form can show it; providers without an interval
+// report the default 0.
 func TestGetConfig_ExposesAutoRetrySeconds(t *testing.T) {
 	f, _ := newAutoRetryTestAPI(t)
 	f.config.LLM.OpenAICompatible["plain"] = config.OpenAICompatibleConfig{
@@ -4742,7 +4753,7 @@ func TestGetConfig_ExposesAutoRetrySeconds(t *testing.T) {
 	if got := resp.OpenAICompatible["plain"].AutoRetrySeconds; got != 0 {
 		t.Errorf("unconfigured provider interval = %d, want 0", got)
 	}
-	// The fixed providers never carry an interval: the field stays 0/empty.
+	// The untouched fixed providers retain the default-off interval.
 	if got := resp.Anthropic.AutoRetrySeconds; got != 0 {
 		t.Errorf("fixed anthropic interval = %d, want 0", got)
 	}

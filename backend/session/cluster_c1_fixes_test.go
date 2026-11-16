@@ -593,7 +593,7 @@ func TestReadImageFileCappedRejectsOversizedFile(t *testing.T) {
 func TestDeleteSessionClosesStepDumpTracker(t *testing.T) {
 	var captured *orchestration.StepDumpTracker
 	m := NewManager(
-		func(_ core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, sdt *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		func(_ core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, sdt *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 			captured = sdt
 			return nil, nil
 		},
@@ -952,7 +952,7 @@ func TestRestoreStoreReadsAreBounded(t *testing.T) {
 	m.SetProjectResolver(func(string) (string, error) { return runtimeTempDir(t), nil })
 	// The restore wires task persistence into the orchestrator, so the factory
 	// must return a real one (unlike testManager's nil placeholder).
-	m.SetFactory(func(_ core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	m.SetFactory(func(_ core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		cfg := core.OrchestratorConfig{Model: "test-model"}
 		deps := core.OrchestratorDeps{
 			TokenCounter:  llm.NewSimpleTokenCounter(),

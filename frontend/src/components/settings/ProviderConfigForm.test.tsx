@@ -35,6 +35,7 @@ vi.mock('@/api/config', () => ({
 }))
 
 import { ProviderConfigForm } from './ProviderConfigForm'
+import type { SubscriptionPresentation } from './providers/ProviderAccordion'
 import { useProxyDraftStore } from '@/stores/proxyDraftStore'
 
 const pin = 'k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g='
@@ -61,6 +62,7 @@ afterEach(() => {
 })
 
 interface RenderOpts {
+  subscription?: SubscriptionPresentation
   provider?: string
   baseUrl?: string
   fingerprint?: string
@@ -82,6 +84,7 @@ interface RenderOpts {
 }
 
 function render({
+  subscription,
   provider = 'selfhosted',
   baseUrl = 'https://llm.lan:8443/v1',
   fingerprint = '',
@@ -97,6 +100,7 @@ function render({
     root.render(
       <ProviderConfigForm
         activeProvider={provider}
+        subscription={subscription}
         config={{ api_key: apiKey, base_url: baseUrl, tls_fingerprint: fingerprint, auto_retry_seconds: autoRetry }}
         apiKeyDirty={false}
         hasRequiredCredentials={true}
@@ -360,7 +364,7 @@ describe('ProviderConfigForm proxy gate', () => {
   })
 })
 
-// --- Auto-retry interval (compatible providers only) ---
+// --- Auto-retry interval ---
 
 describe('ProviderConfigForm auto-retry interval', () => {
   function retryInput(): HTMLInputElement | null {
@@ -407,15 +411,24 @@ describe('ProviderConfigForm auto-retry interval', () => {
     })
   }
 
-  it('is absent for fixed providers (anthropic, chatgpt)', () => {
-    for (const provider of ['anthropic', 'chatgpt']) {
-      render({ provider, baseUrl: '' })
-      expect(retryInput()).toBeNull()
-      expect(retryLabel()).toBeNull()
-      // And neither the caption nor the presets button exist.
-      expect(container.textContent).not.toContain('auto-resend off')
-      expect(retryPresetsButton()).toBeNull()
-    }
+  it.each([
+    ['anthropic', false], ['chatgpt', false], ['chatgpt', true], ['kimi', false], ['kimi', true],
+  ])('renders and edits %s interval with OAuth=%s without opening endpoint controls', (provider, oauth) => {
+    render({ provider, baseUrl: '', autoRetry: 30, subscription: oauth ? {
+      models: [], source: 'preset', providerLabel: provider, liveCatalog: true,
+    } : undefined })
+    expect(retryInput()?.value).toBe('30')
+    expect(retryInput()?.disabled).toBe(false)
+    expect(retryLabel()).toBe('Auto-retry interval')
+    // The presets dropdown and the off caption render on the fixed path too.
+    expect(retryPresetsButton()).not.toBeNull()
+    expect(container.textContent).toContain('auto-resend off')
+    expect(fingerprintInput()).toBeNull()
+    expect(container.textContent).not.toContain('Base URL')
+    expect(container.textContent).not.toContain('Pin TLS certificate')
+    typeRetry('0')
+    pressRetry('Enter')
+    expect(changes).toEqual([{ auto_retry_seconds: 0 }])
   })
 
   it('renders for a compatible provider with the persisted value from GetConfig', () => {
@@ -490,6 +503,27 @@ describe('ProviderConfigForm auto-retry interval', () => {
       item!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(changes).toEqual([{ auto_retry_seconds: 120 }])
+  })
+
+  // The same clamp on the fixed path: fixed forms always render the presets
+  // block, and a regression in the filter here would offer a value the save
+  // RPC rejects wholesale.
+  it('offers clamped presets and the off caption for a fixed provider', async () => {
+    render({ provider: 'anthropic', baseUrl: '', autoRetryMax: 60 })
+    await openRetryPresets()
+
+    const menu = document.body.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    const offered = Array.from(menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')).map(
+      (o) => o.textContent ?? '',
+    )
+    // 60 survives (inclusive bound), everything above it is gone.
+    for (const allowed of ['0', '5', '10', '30', '60']) {
+      expect(offered.some((t) => t.trim() === allowed || t.includes(allowed))).toBe(true)
+    }
+    for (const dropped of ['120', '300']) {
+      expect(offered.some((t) => t.includes(dropped))).toBe(false)
+    }
   })
 
   it('commits a preset pick through onConfigChange', async () => {
