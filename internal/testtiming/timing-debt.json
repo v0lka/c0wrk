@@ -114,7 +114,6 @@
   "frontend/src/components/settings/UIScaleSelector.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,
   "frontend/src/components/settings/VectorIndexSettings.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,
   "frontend/src/components/settings/VectorIndexSettings.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 650))": 1,
-  "frontend/src/components/settings/providers/ProviderAccordion.test.tsx | promise-delay: new Promise((resolve) =\u003e setTimeout(resolve, 50))": 1,
   "frontend/src/components/ui/EditableCombobox.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 2,
   "frontend/src/components/ui/ModelPickerMenu.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,
   "frontend/src/components/ui/combobox.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,

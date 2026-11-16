@@ -28,7 +28,7 @@ export interface ProviderConfig {
   auth_region?: 'global' | 'mainland_cn'
 }
 
-interface ProviderAccordionProps {
+export interface ProviderAccordionProps {
   provider: string
   label: string
   config: ProviderConfig
@@ -85,6 +85,7 @@ export function ProviderAccordion({
   const liveSubscriptionCatalog = subscription?.liveCatalog ?? true
   const {
     models,
+    modelsMetadata,
     modelsLoading,
     modelsError,
     apiKeyDirty,
@@ -289,9 +290,13 @@ export function ProviderAccordion({
                 // window and reasoning flag, from GetChatGPTModelPreset/GetKimiModelPreset.
                 // Metadata is fail-soft — zeros mean the async registry had
                 // nothing to say, and zeros render no badge.
+                // Api-key mode: the detector-chain view of the same listing
+                // (ListProviderModels metadata) supplies the same badges.
                 const preset = isOAuth ? presetByName.get(model) : undefined
-                const presetCtx = preset?.context_window ?? 0
-                const presetOut = preset?.output_limit ?? 0
+                const endpointMeta = !isOAuth ? modelsMetadata?.[model] : undefined
+                const metaCtx = preset?.context_window ?? endpointMeta?.context_window ?? 0
+                const metaOut = preset?.output_limit ?? endpointMeta?.output_limit ?? 0
+                const metaReasoning = preset?.reasoning ?? endpointMeta?.capabilities?.reasoning ?? false
                 return (
                   <label
                     key={model}
@@ -304,17 +309,17 @@ export function ProviderAccordion({
                       className="h-3.5 w-3.5"
                     />
                     <span className="flex-1">{model}</span>
-                    {preset?.reasoning && (
+                    {metaReasoning && (
                       <span className="rounded bg-info/10 px-1.5 py-0.5 text-xs font-medium text-info">
                         reasoning
                       </span>
                     )}
-                    {preset && presetCtx > 0 && (
+                    {metaCtx > 0 && (
                       <span
                         className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                        title={`Context window: ${presetCtx.toLocaleString('en')} tokens${presetOut > 0 ? ` · output limit: ${presetOut.toLocaleString('en')}` : ''}`}
+                        title={`Context window: ${metaCtx.toLocaleString('en')} tokens${metaOut > 0 ? ` · output limit: ${metaOut.toLocaleString('en')}` : ''}`}
                       >
-                        {formatContextWindow(presetCtx)}
+                        {formatContextWindow(metaCtx)}
                       </span>
                     )}
                     {isDefault && (

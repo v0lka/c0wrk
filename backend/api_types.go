@@ -324,6 +324,29 @@ type ListProviderModelsRequest struct {
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
 }
 
+// ProviderModelsResponse is the ListProviderModels reply: the provider's
+// deduplicated model names plus the detector-chain metadata parsed from the
+// same raw listing entries (specs/domains/llm-providers.md, "Detector
+// chain"). Metadata is keyed by the exact model name as it appears in
+// Models; models absent from the map had no detector match — the UI falls
+// back to catalog/factory defaults for them. The metadata is display/prefill
+// data only and is never auto-persisted into the config.
+type ProviderModelsResponse struct {
+	Models   []string                     `json:"models"`
+	Metadata map[string]ModelMetadataInfo `json:"metadata"`
+}
+
+// ModelMetadataInfo is one listing entry's detector-chain view, surfaced for
+// settings badges and Configure-dialog prefill. Zero/nil fields mean "not
+// declared by the listing".
+type ModelMetadataInfo struct {
+	ContextWindow int `json:"context_window"`
+	OutputLimit   int `json:"output_limit"`
+	// Capabilities mirrors the listing's declared modalities; nil when the
+	// declaration is partial (the UI must not assert unsupported features).
+	Capabilities *llm.ModelCapabilities `json:"capabilities,omitempty"`
+}
+
 // GetProviderTLSCertificateRequest asks the backend to connect (draft
 // BaseURL, else the persisted one) and report the certificate the server
 // presents right now — deliberately unverified and pin-independent

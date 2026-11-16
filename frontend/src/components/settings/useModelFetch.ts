@@ -2,9 +2,16 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { listProviderModels } from '@/api/mcp'
 import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
 import type { ProviderConfig } from './useLLMConfig'
+import type { ModelMetadataInfo } from '@/types/models'
 
 interface UseModelFetchResult {
     models: string[]
+    /** Detector-chain metadata for the fetched listing, keyed by the exact
+     *  model name (specs/domains/llm-providers.md, "Detector chain").
+     *  Undefined until a fetch succeeds / when the endpoint exposed nothing
+     *  parseable. Feeds the accordion badges only — the Configure dialog
+     *  stays the explicit-override editor and never reads it. */
+    modelsMetadata: Record<string, ModelMetadataInfo> | undefined
     modelsLoading: boolean
     modelsError: string | null
     apiKeyDirty: boolean
@@ -14,6 +21,7 @@ interface UseModelFetchResult {
 
 export function useModelFetch(activeProvider: string, providerConfigs: Record<string, ProviderConfig>): UseModelFetchResult {
     const [models, setModels] = useState<string[]>([])
+    const [modelsMetadata, setModelsMetadata] = useState<Record<string, ModelMetadataInfo> | undefined>(undefined)
     const [modelsLoading, setModelsLoading] = useState(false)
     const [modelsError, setModelsError] = useState<string | null>(null)
     const [apiKeyDirty, setApiKeyDirty] = useState(true)
@@ -26,6 +34,7 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
     useEffect(() => {
         fetchIdRef.current += 1
         setModels([])
+        setModelsMetadata(undefined)
         setModelsError(null)
         setApiKeyDirty(true)
     }, [credentialKey])
@@ -69,12 +78,14 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
                 tls_fingerprint: config.tls_fingerprint,
             })
             if (myId !== fetchIdRef.current) return
-            setModels(list || [])
+            setModels(list.models || [])
+            setModelsMetadata(list.metadata)
             setApiKeyDirty(false)
         } catch (err) {
             if (myId !== fetchIdRef.current) return
             setModelsError(err instanceof Error ? err.message : String(err))
             setModels([])
+            setModelsMetadata(undefined)
         } finally {
             if (myId === fetchIdRef.current) setModelsLoading(false)
         }
@@ -82,6 +93,7 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
 
     return {
         models,
+        modelsMetadata,
         modelsLoading,
         modelsError,
         apiKeyDirty,

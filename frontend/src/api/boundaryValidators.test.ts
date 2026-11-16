@@ -74,8 +74,26 @@ describe('#11 array wrappers validate element shape', () => {
   })
 
   it('listProviderModels drops non-string elements instead of passing them through', async () => {
-    mockApp.ListProviderModels = vi.fn(() => Promise.resolve(['m1', 42, null, 'm2']))
-    await expect(listProviderModels({ provider: 'p' } as never)).resolves.toEqual(['m1', 'm2'])
+    mockApp.ListProviderModels = vi.fn(() => Promise.resolve({ models: ['m1', 42, null, 'm2'] }))
+    await expect(listProviderModels({ provider: 'p' } as never)).resolves.toEqual({
+      models: ['m1', 'm2'],
+      metadata: undefined,
+    })
+  })
+
+  it('listProviderModels drops malformed metadata entries instead of passing them through', async () => {
+    mockApp.ListProviderModels = vi.fn(() => Promise.resolve({
+      models: ['good', 'bad'],
+      metadata: {
+        good: { context_window: 512000, output_limit: 32000 },
+        bad: { context_window: 'not-a-number', output_limit: 1 },
+        // Complete capability declarations pass the guard; partial ones do not.
+        partialCaps: { context_window: 1, output_limit: 1, capabilities: { attachment: true } },
+        fullCaps: { context_window: 1, output_limit: 1, capabilities: { attachment: true, reasoning: false, temperature: false, tool_call: false } },
+      },
+    }))
+    const result = await listProviderModels({ provider: 'p' } as never)
+    expect(Object.keys(result.metadata ?? {})).toEqual(['good', 'fullCaps'])
   })
 
   it('searchVectorStore degrades to [] when an entry lacks a string content field', async () => {

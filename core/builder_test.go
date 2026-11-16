@@ -600,13 +600,16 @@ func TestListProviderModels_DeduplicatesOpenAI(t *testing.T) {
 		}
 	})
 
-	names, err := b.ListProviderModels(context.Background(), "local", cfg)
+	listing, err := b.ListProviderModels(context.Background(), "local", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{"m-a", "m-b"}
-	if !reflect.DeepEqual(names, want) {
-		t.Errorf("names = %v, want %v (duplicates must be collapsed)", names, want)
+	if !reflect.DeepEqual(listing.Models, want) {
+		t.Errorf("names = %v, want %v (duplicates must be collapsed)", listing.Models, want)
+	}
+	if len(listing.Metadata) != 0 {
+		t.Errorf("metadata = %v, want empty (bare id-only entries match no detector)", listing.Metadata)
 	}
 }
 
@@ -643,13 +646,16 @@ func TestListProviderModels_DeduplicatesAnthropicCompatible(t *testing.T) {
 		}
 	})
 
-	names, err := b.ListProviderModels(context.Background(), "proxy", cfg)
+	listing, err := b.ListProviderModels(context.Background(), "proxy", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{"claude-x", "claude-y"}
-	if !reflect.DeepEqual(names, want) {
-		t.Errorf("names = %v, want %v (duplicates must be collapsed)", names, want)
+	if !reflect.DeepEqual(listing.Models, want) {
+		t.Errorf("names = %v, want %v (duplicates must be collapsed)", listing.Models, want)
+	}
+	if listing.Metadata != nil {
+		t.Errorf("metadata = %v, want nil (anthropic-compatible listings carry no detector metadata)", listing.Metadata)
 	}
 }
 

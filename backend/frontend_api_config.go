@@ -1895,33 +1895,60 @@ func (f *FrontendAPI) SetNotificationBannerTimeout(seconds int) error {
 	return nil
 }
 
-// ListProviderModels returns available model names for a provider (Anthropic:
-// registry list; ChatGPT/OpenAI-compatible: provider API). Draft credentials
+// ListProviderModels returns a provider's model listing — deduplicated names
+// plus, for OpenAI-compatible endpoints, the detector-chain metadata parsed
+// from the same raw listing entries (specs/domains/llm-providers.md,
+// "Detector chain"). Metadata is re-keyed from the builder's lowercased ids
+// to the exact names in Models so the UI can look entries up directly; models
+// without a detector match are simply absent from the map. Draft credentials
 // on req are merged into a throwaway BuilderConfig copy so the settings UI
 // can list models for a not-yet-persisted provider. See
 // specs/contracts/desktop-frontend.md.
-func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]string, error) {
+func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) (ProviderModelsResponse, error) {
 	if req.Provider == "" {
-		return nil, errors.New("provider is required")
+		return ProviderModelsResponse{}, errors.New("provider is required")
 	}
 
 	f.configMu.RLock()
 	if f.config == nil {
 		f.configMu.RUnlock()
-		return nil, errors.New("config not initialized")
+		return ProviderModelsResponse{}, errors.New("config not initialized")
 	}
 	b := f.builder()
 	if b == nil {
 		f.configMu.RUnlock()
-		return nil, errors.New("application not initialized")
+		return ProviderModelsResponse{}, errors.New("application not initialized")
 	}
 	cfg := f.toBuilderConfigLocked()
 	f.configMu.RUnlock()
 
 	if err := applyListProviderModelsOverrides(cfg, req); err != nil {
-		return nil, err
+		return ProviderModelsResponse{}, err
 	}
-	return b.ListProviderModels(context.Background(), req.Provider, cfg)
+	listing, err := b.ListProviderModels(context.Background(), req.Provider, cfg)
+	if err != nil {
+		return ProviderModelsResponse{}, err
+	}
+	resp := ProviderModelsResponse{Models: listing.Models}
+	if len(listing.Metadata) > 0 {
+		resp.Metadata = make(map[string]ModelMetadataInfo, len(listing.Metadata))
+		for _, name := range listing.Models {
+			meta, ok := listing.Metadata[strings.ToLower(name)]
+			if !ok {
+				continue
+			}
+			info := ModelMetadataInfo{
+				ContextWindow: meta.ContextWindow,
+				OutputLimit:   meta.OutputLimit,
+			}
+			if meta.Capabilities != nil {
+				caps := *meta.Capabilities
+				info.Capabilities = &caps
+			}
+			resp.Metadata[name] = info
+		}
+	}
+	return resp, nil
 }
 
 // GetProviderTLSCertificate dials the provider's endpoint and returns the

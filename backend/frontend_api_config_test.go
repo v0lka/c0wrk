@@ -102,7 +102,7 @@ type mockBuilder struct {
 	rebuildProxyErr         error
 	reconfigureMCPErr       error
 	updateShellBlocklistErr error
-	listProviderModelsRes   []string
+	listProviderModelsRes   core.ProviderModelsListing
 	listProviderModelsErr   error
 	// listProviderModelsLastProvider / LastCfg capture the most recent
 	// ListProviderModels arguments so tests can assert draft-credential merges.
@@ -282,7 +282,7 @@ func (m *mockBuilder) ReconfigureMCPCtx() context.Context {
 	defer m.mu.Unlock()
 	return m.reconfigureMCPCtx
 }
-func (m *mockBuilder) ListProviderModels(_ context.Context, provider string, cfg *core.BuilderConfig) ([]string, error) {
+func (m *mockBuilder) ListProviderModels(_ context.Context, provider string, cfg *core.BuilderConfig) (core.ProviderModelsListing, error) {
 	m.mu.Lock()
 	m.listProviderModelsCalls++
 	m.listProviderModelsLastProvider = provider
@@ -3733,17 +3733,34 @@ func TestSetLogLevel_InvalidLevel(t *testing.T) {
 
 func TestListProviderModels_Delegates(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	mock.listProviderModelsRes = []string{"model-a", "model-b"}
+	mock.listProviderModelsRes = core.ProviderModelsListing{
+		Models: []string{"model-a", "model-b"},
+		Metadata: map[string]llm.ModelMetadata{
+			"model-a": {ContextWindow: 512000},
+		},
+	}
 
-	models, err := f.ListProviderModels(ListProviderModelsRequest{Provider: "anthropic"})
+	resp, err := f.ListProviderModels(ListProviderModelsRequest{Provider: "anthropic"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if mock.listProviderModelsCalls != 1 {
 		t.Errorf("ListProviderModels called %d times, want 1", mock.listProviderModelsCalls)
 	}
-	if len(models) != 2 || models[0] != "model-a" || models[1] != "model-b" {
-		t.Errorf("models = %v, want [model-a model-b]", models)
+	if len(resp.Models) != 2 || resp.Models[0] != "model-a" || resp.Models[1] != "model-b" {
+		t.Errorf("models = %v, want [model-a model-b]", resp.Models)
+	}
+	// Metadata must be re-keyed from the builder's lowercased ids to the
+	// exact names in Models.
+	info, ok := resp.Metadata["model-a"]
+	if !ok {
+		t.Fatalf("metadata[model-a] missing: %+v", resp.Metadata)
+	}
+	if info.ContextWindow != 512000 {
+		t.Errorf("metadata[model-a].context_window = %d, want 512000", info.ContextWindow)
+	}
+	if _, present := resp.Metadata["model-b"]; present {
+		t.Errorf("metadata[model-b] present, want absent (no detector match)")
 	}
 }
 
@@ -3754,9 +3771,9 @@ func TestListProviderModels_Delegates(t *testing.T) {
 // where saves are blocked until a default_model is chosen.
 func TestListProviderModels_DraftCompatibleProvider(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	mock.listProviderModelsRes = []string{"gpt-custom"}
+	mock.listProviderModelsRes = core.ProviderModelsListing{Models: []string{"gpt-custom"}}
 
-	models, err := f.ListProviderModels(ListProviderModelsRequest{
+	resp, err := f.ListProviderModels(ListProviderModelsRequest{
 		Provider: "custom",
 		APIKey:   "sk-draft",
 		BaseURL:  "https://api-llm.example.com/v1",
@@ -3765,8 +3782,8 @@ func TestListProviderModels_DraftCompatibleProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(models) != 1 || models[0] != "gpt-custom" {
-		t.Errorf("models = %v, want [gpt-custom]", models)
+	if len(resp.Models) != 1 || resp.Models[0] != "gpt-custom" {
+		t.Errorf("models = %v, want [gpt-custom]", resp.Models)
 	}
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -3799,7 +3816,7 @@ func TestListProviderModels_MaskedKeyFallsBackToSaved(t *testing.T) {
 			Models:  []string{"local"},
 		},
 	}
-	mock.listProviderModelsRes = []string{"local"}
+	mock.listProviderModelsRes = core.ProviderModelsListing{Models: []string{"local"}}
 
 	_, err := f.ListProviderModels(ListProviderModelsRequest{
 		Provider: "lmstudio",

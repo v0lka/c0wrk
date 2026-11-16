@@ -1,11 +1,13 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/v0lka/sp4rk/llm"
@@ -448,5 +450,205 @@ func TestLookupOpenAIProviderBaseURL_ExcludesSubscriptionAuth(t *testing.T) {
 	}
 	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-5.5", expand); ok {
 		t.Fatal("subscription-auth entry matched the probe lookup — the retained static API key would be stamped onto the vendor probe path")
+	}
+}
+
+// aggregatorV1Listing assembles a /v1/models listing in the aggregator shape:
+// the full real-world entry plus two partial-declaration variants.
+func aggregatorV1Listing(t *testing.T) []byte {
+	t.Helper()
+	return []byte(`{"data":[` +
+		aggregatorListingEntry + `,` +
+		`{"id":"other/model-a","limit":{"context":128000,"output":8192},"capabilities":{"temperature":true},"modalities":{"input":["text"]}},` +
+		`{"id":"other/model-b","limit":{"context":4096}}` +
+		`]}`)
+}
+
+// newDiscriminatingProbeServer serves a 404 LM Studio path and the given
+// /v1/models body — the standard self-hosted (non-LM Studio) probe shape.
+func newDiscriminatingProbeServer(t *testing.T, v1Body []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(v1Body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestBuildLocalModelProbe_WritesTargetOnly pins the write scope at the
+// builder level: the probe writes ONLY the probe target's record, even though
+// the fetched listing carries every model the server lists — those entries
+// are parsed (for the target-skip check) but never written. A chat request
+// discovers its own model; the settings Fetch Models surface is the
+// full-listing metadata consumer. Per-target subtests also pin the
+// registry-level metadata semantics: a full declaration is authoritative, a
+// sparse capabilities block inherits as guessed, and a bare limit entry gets
+// the window/4 output heuristic.
+func TestBuildLocalModelProbe_WritesTargetOnly(t *testing.T) {
+	srv := newDiscriminatingProbeServer(t, aggregatorV1Listing(t))
+	allEntries := []string{"opencode/deepseek-v4.1-flash-free", "other/model-a", "other/model-b"}
+
+	for _, tc := range []struct {
+		target            string
+		wantWindow        int
+		wantOutput        int
+		wantAuthoritative bool
+	}{
+		{target: "opencode/deepseek-v4.1-flash-free", wantWindow: 200000, wantOutput: 32000, wantAuthoritative: true},
+		{target: "other/model-a", wantWindow: 128000, wantOutput: 8192},
+		{target: "other/model-b", wantWindow: 4096, wantOutput: 1024},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			cfg := localProbeCfg(t, srv.URL, tc.target)
+			registry := llm.NewModelRegistry(nil)
+			b := newLocalProbeBuilder(t)
+
+			probe := b.buildLocalModelProbe(cfg, registry, nil)
+			probe(tc.target)
+
+			// The target itself is written.
+			meta, ok := registry.ResolveLocal(tc.target)
+			if !ok {
+				t.Fatalf("target %q not written to the registry", tc.target)
+			}
+			if meta.ContextWindow != tc.wantWindow {
+				t.Errorf("window = %d, want %d", meta.ContextWindow, tc.wantWindow)
+			}
+			if meta.OutputLimit != tc.wantOutput {
+				t.Errorf("output limit = %d, want %d (declared wins; heuristic window/4 when undeclared)", meta.OutputLimit, tc.wantOutput)
+			}
+			if meta.GuessedCapabilities != !tc.wantAuthoritative {
+				t.Errorf("guessed capabilities = %v, want %v (sparse declaration inherits as guessed, full declaration is authoritative)", meta.GuessedCapabilities, !tc.wantAuthoritative)
+			}
+			if tc.wantAuthoritative && (meta.Capabilities == nil || !meta.Capabilities.ToolCall || !meta.Capabilities.Reasoning ||
+				!meta.Capabilities.Temperature || !meta.Capabilities.Attachment) {
+				t.Errorf("full entry capabilities = %+v, want authoritative all-true set", meta.Capabilities)
+			}
+
+			// No other listing entry leaks into the registry.
+			for _, other := range allEntries {
+				if other == tc.target {
+					continue
+				}
+				if _, ok := registry.ResolveLocal(other); ok {
+					t.Errorf("non-target model %q written to the registry; the probe must write only %q", other, tc.target)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildLocalModelProbe_NoOverwriteOfOtherModels pins the write scope
+// against the overwrite hazard: a runtime record an earlier probe wrote for
+// model "a" must survive a later probe of model "b". SetRuntimeMetadata
+// replaces wholesale, so a probe writing its whole listing would trade "a"'s
+// observed runtime window for whatever the current listing carries — the
+// target-only write scope makes that structurally impossible.
+func TestBuildLocalModelProbe_NoOverwriteOfOtherModels(t *testing.T) {
+	lmBody, err := json.Marshal(struct {
+		Data []lmStudioModel `json:"data"`
+	}{
+		Data: []lmStudioModel{{ID: "a", MaxContextLength: 262144, LoadedContextLength: 16384}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	oaiBody, err := json.Marshal(struct {
+		Data []openAIModelEntry `json:"data"`
+	}{
+		Data: []openAIModelEntry{
+			{ID: "a", MaxContextLen: 262144}, // capacity — must lose to native 16384
+			{ID: "b", MaxModelLen: 99999},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v0/models" {
+			_, _ = w.Write(lmBody)
+			return
+		}
+		_, _ = w.Write(oaiBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := localProbeCfg(t, srv.URL, "b")
+	registry := llm.NewModelRegistry(nil)
+	// Simulate the earlier probe of "a": the runtime tier holds its observed
+	// window (16384) and heuristic output (16384/4).
+	registry.SetRuntimeMetadata("a", llm.ModelMetadata{ContextWindow: 16384, OutputLimit: 4096})
+	b := newLocalProbeBuilder(t)
+
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
+	// Target "b" is absent from the native listing → the fallback leg runs —
+	// and still must not touch "a".
+	probe("b")
+
+	native, _ := registry.ResolveLocal("a")
+	if native.ContextWindow != 16384 || native.OutputLimit != 4096 {
+		t.Errorf(`earlier probe's runtime record for "a" clobbered by the probe of "b": got %d/%d, want 16384/4096`,
+			native.ContextWindow, native.OutputLimit)
+	}
+	fallback, _ := registry.ResolveLocal("b")
+	if fallback.ContextWindow != 99999 {
+		t.Errorf("fallback-discovered target: got %d, want 99999", fallback.ContextWindow)
+	}
+}
+
+// TestBuildLocalModelProbe_OnWindowScopedToActiveModel verifies that the
+// display-refresh callback fires for the probe's target model only — the one
+// model whose record the probe writes.
+func TestBuildLocalModelProbe_OnWindowScopedToActiveModel(t *testing.T) {
+	srv := newDiscriminatingProbeServer(t, aggregatorV1Listing(t))
+
+	cfg := localProbeCfg(t, srv.URL, "other/model-a")
+	registry := llm.NewModelRegistry(nil)
+	b := newLocalProbeBuilder(t)
+
+	var calls []string
+	probe := b.buildLocalModelProbe(cfg, registry, func(model string, _ int) {
+		calls = append(calls, model)
+	})
+	probe("other/model-a")
+
+	if len(calls) != 1 || calls[0] != "other/model-a" {
+		t.Errorf("onWindow calls = %v, want exactly one for other/model-a", calls)
+	}
+}
+
+// TestBuildLocalModelProbe_ProbeFailureWarnsOnce verifies the error surface:
+// both legs failing logs the probe failure exactly once and writes nothing.
+func TestBuildLocalModelProbe_ProbeFailureWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := localProbeCfg(t, srv.URL, "m")
+	b := &OrchestratorBuilder{
+		logger:  logger,
+		goAsync: func(fn func()) { fn() },
+	}
+	registry := llm.NewModelRegistry(nil)
+
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
+	probe("m")
+
+	if n := strings.Count(buf.String(), "lazy model probe failed"); n != 1 {
+		t.Errorf("probe failure logged %d times, want exactly once", n)
+	}
+	if _, ok := registry.ResolveLocal("m"); ok {
+		t.Error("nothing must be written to the registry when every leg fails")
 	}
 }

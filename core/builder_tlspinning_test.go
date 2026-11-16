@@ -209,13 +209,13 @@ func TestFetchProviderModels_PinnedListingSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pinned listing must succeed: %v", err)
 	}
-	want := []string{"llama-3.1-8b", "qwen3"} // listOpenAIModels sorts
-	if len(names) != len(want) {
-		t.Fatalf("names = %v, want %v", names, want)
+	want := []string{"llama-3.1-8b", "qwen3"} // fetchProviderModels sorts
+	if len(names.Models) != len(want) {
+		t.Fatalf("names = %v, want %v", names.Models, want)
 	}
 	for i := range want {
-		if names[i] != want[i] {
-			t.Errorf("names = %v, want %v", names, want)
+		if names.Models[i] != want[i] {
+			t.Errorf("names = %v, want %v", names.Models, want)
 			break
 		}
 	}
@@ -291,7 +291,7 @@ func TestFetchProviderModels_ProxyWinsOverPin(t *testing.T) {
 			if rec.calls.Load() == before {
 				t.Fatal("the proxy client was not used — the pin must not replace it")
 			}
-			if len(names) == 0 {
+			if len(names.Models) == 0 {
 				t.Error("expected a non-empty model list from the proxy transport")
 			}
 		})
@@ -313,8 +313,8 @@ func TestFetchProviderModels_BypassedHostPinnedDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bypassed pinned listing must succeed: %v", err)
 	}
-	if len(names) != 1 || names[0] != "qwen3" {
-		t.Errorf("names = %v, want [qwen3]", names)
+	if len(names.Models) != 1 || names.Models[0] != "qwen3" {
+		t.Errorf("names = %v, want [qwen3]", names.Models)
 	}
 }
 
@@ -340,8 +340,8 @@ func TestFetchProviderModels_ChatGPTHonorsProxy(t *testing.T) {
 	if rec.calls.Load() == 0 {
 		t.Error("the chatgpt listing bypassed the proxy client")
 	}
-	if len(names) != 1 || names[0] != "gpt-4o" {
-		t.Errorf("names = %v, want [gpt-4o]", names)
+	if len(names.Models) != 1 || names.Models[0] != "gpt-4o" {
+		t.Errorf("names = %v, want [gpt-4o]", names.Models)
 	}
 }
 
