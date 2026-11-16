@@ -78,3 +78,7 @@ A failure qualifies only when the terminal cause is a classified `*llm.Error` (s
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) — `task_failed_resumable` (`auto_retry_at` payload) and the UI countdown contract.
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — `UpdateLLMConfig` / `ProviderConfigRequest` pointer-sentinel fields, `GetConfig` per-provider response fields.
 - [ADR-054](054-per-provider-tls-pinning.md) — the compatible-provider-only knob pattern (pin, sentinel, same UI gate).
+
+## Historical Note
+
+2026-11-15: the retryable-class set and its provider coverage named above have been extended by [ADR-128](128-auto-resend-network-errors.md): connection-level network errors (`StatusCode` 0 with the sp4rk `dns`/`connect`/`reset`/`timeout` classification, still excluding `tls`/`eof`/`other`) now also surface a deadline, for ALL providers including the fixed ones, under a new global `llm.network_auto_retry_seconds` interval (default 90, `0` = off) separate from the per-provider `auto_retry_seconds`; ADR-071 budget-deaths are excluded. The ownership split, live-only deadline and `0 = off, no bool` pattern above stand unchanged.

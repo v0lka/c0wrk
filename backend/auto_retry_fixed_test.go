@@ -50,7 +50,7 @@ func TestFixedAutoRetryConfigLifecycle(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if got := buildAutoRetryIntervals(loaded)[provider]; got != tc.want {
+					if got := buildAutoRetrySnapshot(loaded).providerIntervals[provider]; got != tc.want {
 						t.Errorf("Load(%s) interval = %d, want %d", provider, got, tc.want)
 					}
 				})
@@ -67,7 +67,7 @@ func TestFixedAutoRetryConfigLifecycle(t *testing.T) {
 				if app.autoRetryIntervals.Load() != snapshot {
 					t.Error("rejected update replaced snapshot")
 				}
-				if got := buildAutoRetryIntervals(f.config)[provider]; got != 0 {
+				if got := buildAutoRetrySnapshot(f.config).providerIntervals[provider]; got != 0 {
 					t.Errorf("rejected update interval = %d, want 0", got)
 				}
 				after, err := os.ReadFile(path)
@@ -90,14 +90,14 @@ func TestFixedAutoRetryConfigLifecycle(t *testing.T) {
 			if got := app.autoRetryIntervalSnapshot()[provider]; got != 0 {
 				t.Errorf("rollback snapshot[%s] = %d, want 0", provider, got)
 			}
-			if got := buildAutoRetryIntervals(f.config)[provider]; got != 0 {
+			if got := buildAutoRetrySnapshot(f.config).providerIntervals[provider]; got != 0 {
 				t.Errorf("rollback config[%s] = %d, want 0", provider, got)
 			}
 		})
 	}
 }
 
-func TestBuildAutoRetryIntervalsLegacyKimi(t *testing.T) {
+func TestBuildAutoRetrySnapshotLegacyKimi(t *testing.T) {
 	for _, transport := range []string{"openai", "anthropic"} {
 		t.Run(transport, func(t *testing.T) {
 			cfg := &config.Config{}
@@ -109,16 +109,16 @@ func TestBuildAutoRetryIntervalsLegacyKimi(t *testing.T) {
 			} else {
 				cfg.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{"kimi": {AutoRetrySeconds: 30}}
 			}
-			got := buildAutoRetryIntervals(cfg)
+			got := buildAutoRetrySnapshot(cfg).providerIntervals
 			for provider, want := range map[string]int{"anthropic": 5, "chatgpt": 10, "kimi": 30, "unknown": 0} {
 				if got[provider] != want {
-					t.Errorf("buildAutoRetryIntervals(%s)[%s] = %d, want %d", transport, provider, got[provider], want)
+					t.Errorf("buildAutoRetrySnapshot(%s).providerIntervals[%s] = %d, want %d", transport, provider, got[provider], want)
 				}
 			}
 		})
 	}
-	if got := buildAutoRetryIntervals(nil)["unknown"]; got != 0 {
-		t.Errorf("buildAutoRetryIntervals(nil)[unknown] = %d, want 0", got)
+	if got := buildAutoRetrySnapshot(nil).providerIntervals["unknown"]; got != 0 {
+		t.Errorf("buildAutoRetrySnapshot(nil).providerIntervals[unknown] = %d, want 0", got)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestFixedAutoRetryInvalidHiddenKimi(t *testing.T) {
 	if got := loaded.LLM.Kimi.AutoRetrySeconds; got != 300 {
 		t.Errorf("loaded hidden fixed kimi interval = %d, want 300", got)
 	}
-	if got := buildAutoRetryIntervals(loaded)["kimi"]; got != 30 {
+	if got := buildAutoRetrySnapshot(loaded).providerIntervals["kimi"]; got != 30 {
 		t.Errorf("loaded snapshot[kimi] = %d, want 30 (compatible precedence)", got)
 	}
 }

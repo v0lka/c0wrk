@@ -55,8 +55,11 @@ func TestFixedAutoRetrySeconds(t *testing.T) {
 				if seconds == 0 {
 					wantKeys = 0
 				}
-				if got := strings.Count(string(raw), "auto_retry_seconds:"); got != wantKeys {
-					t.Errorf("Save(%s, %d) interval keys = %d, want %d", provider, seconds, got, wantKeys)
+				// The count anchors on a leading space so the section-level
+				// llm.network_auto_retry_seconds key (materialized by
+				// ApplyDefaults, ADR-128) cannot ride the substring.
+				if got := strings.Count(string(raw), " auto_retry_seconds:"); got != wantKeys {
+					t.Errorf("Save(%s, %d) interval keys = %d, want %d\n%s", provider, seconds, got, wantKeys, raw)
 				}
 				loaded, err := Load(path)
 				if err != nil {

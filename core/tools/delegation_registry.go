@@ -70,7 +70,16 @@ type DelegationRegistry struct {
 	// never removed, so it stays in sync with the keys.
 	order       []string
 	cancelFuncs map[string]context.CancelFunc
-	depth       int
+	// doneChans signals an async delegation's goroutine SETTLEMENT (distinct
+	// from the status flip): Start stores a channel when it stores a cancel
+	// func, and every Complete/CompletePaused exit closes it exactly once —
+	// including the terminal-state precedence early-returns, so a waiter
+	// observes the settling goroutine's exit whatever it writes. Removed once
+	// closed. The auto-retry abandonment seam waits on it so an abandoned
+	// generation's ledger settle lands before a fresh leg registers
+	// (delegation.md).
+	doneChans map[string]chan struct{}
+	depth     int
 	// parentID stamps child registries' specs with the delegating step ID so
 	// resume orders children before parents; empty on the root.
 	parentID string
@@ -84,6 +93,7 @@ func NewDelegationRegistry() *DelegationRegistry {
 	return &DelegationRegistry{
 		delegations: make(map[string]*Delegation),
 		cancelFuncs: make(map[string]context.CancelFunc),
+		doneChans:   make(map[string]chan struct{}),
 		depth:       0,
 	}
 }
@@ -94,6 +104,7 @@ func NewDelegationRegistryWithDepth(depth int) *DelegationRegistry {
 	return &DelegationRegistry{
 		delegations: make(map[string]*Delegation),
 		cancelFuncs: make(map[string]context.CancelFunc),
+		doneChans:   make(map[string]chan struct{}),
 		depth:       depth,
 	}
 }
@@ -177,6 +188,9 @@ func (r *DelegationRegistry) Start(id string, cancel context.CancelFunc) {
 	d.StartedAt = time.Now()
 	if cancel != nil {
 		r.cancelFuncs[id] = cancel
+		// An async delegation has a settling goroutine — give waiters the
+		// settlement signal (blocking delegations settle inline, no signal).
+		r.doneChans[id] = make(chan struct{})
 	}
 }
 
@@ -189,6 +203,7 @@ func (r *DelegationRegistry) Complete(id, output string, execErr error, steps []
 	if !ok {
 		return
 	}
+	r.closeDoneLocked(id)
 	// Cancelled/Paused are intentional terminal states for this run and take
 	// precedence over a racing completion.
 	if d.Status == DelegationStatusCancelled || d.Status == DelegationStatusPaused {
@@ -215,6 +230,7 @@ func (r *DelegationRegistry) CompletePaused(id, output string, steps []agent.Ste
 	if !ok {
 		return
 	}
+	r.closeDoneLocked(id)
 	if d.Status == DelegationStatusCancelled {
 		return
 	}
@@ -223,6 +239,33 @@ func (r *DelegationRegistry) CompletePaused(id, output string, steps []agent.Ste
 	d.CompletedAt = time.Now()
 	d.Status = DelegationStatusPaused
 	delete(r.cancelFuncs, id)
+}
+
+// Done returns the settlement-signal channel of a started delegation, or nil
+// when it has none (never started async, or already settled and reaped). The
+// channel closes exactly once when the settling goroutine records the
+// outcome through Complete/CompletePaused — Cancel deliberately does NOT
+// close it: the wait is for the goroutine's exit (and the durable settle it
+// performs), not for the status flip.
+func (r *DelegationRegistry) Done(id string) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch, ok := r.doneChans[id]
+	if !ok {
+		return nil
+	}
+	return ch
+}
+
+// closeDoneLocked closes and reaps the entry's settlement channel under the
+// held lock. Every Complete/CompletePaused exit calls it — including the
+// terminal-state precedence early-returns — so a waiter observes the
+// settling goroutine's exit whatever the write ended up recording.
+func (r *DelegationRegistry) closeDoneLocked(id string) {
+	if ch, ok := r.doneChans[id]; ok {
+		close(ch)
+		delete(r.doneChans, id)
+	}
 }
 
 // Cancel cancels a pending or running delegation via its stored CancelFunc

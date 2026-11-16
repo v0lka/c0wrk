@@ -21,6 +21,22 @@ llm:
   # the intended provider unambiguously.
   default_model: "anthropic/claude-sonnet-4-20250514"
 
+  # Automatic resend on connection-level failures (ADR-128): when a task dies
+  # of a network-class provider error — DNS failure, refused/unreachable
+  # endpoint, reset connection, stalled/timed-out connection (no HTTP response
+  # at all) — the session waits this many seconds, then re-sends the task
+  # automatically instead of asking how to proceed. One GLOBAL knob covering
+  # EVERY provider, the fixed ones (anthropic/chatgpt/kimi/embedded)
+  # included. Longer than, and separate from, the per-provider
+  # auto_retry_seconds knob below (rate-limit class): refused sockets heal on
+  # minutes-scale with no server-signposted window. 0 = off (never
+  # auto-resend on network errors); omitted = this default of 90. Same
+  # inclusive upper bound of 3600 as auto_retry_seconds. Not a router-level
+  # retry knob: the timer lives in the c0wrk session layer. Budget deaths
+  # (the adaptive request budget's own expiry, ADR-071) never trigger this —
+  # their cure is the budget escalation, not a task restart.
+  network_auto_retry_seconds: 90
+
   anthropic:
     # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
     # 0 / omitted = off; engine in-flight retry remains separate (ADR-127).

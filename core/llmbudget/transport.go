@@ -160,7 +160,7 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			tr.escalate(key, budget)
 			// Chains context.DeadlineExceeded (%w), so sp4rk's classifyNetError
 			// still retries under a fresh budget (ADR-071 D9).
-			return nil, fmt.Errorf("adaptive request budget exhausted: %s armed for %q (own budget expiry, not a provider abort; the next budget escalates): %w", budget, key, err)
+			return nil, fmt.Errorf("adaptive request budget exhausted: %s armed for %q (%s): %w", budget, key, ownBudgetExpiryMarker, err)
 		}
 		return nil, err
 	}
@@ -282,6 +282,25 @@ func (b *budgetBody) finish(err error) {
 // exceeded deadline must chain AND the caller's context must still be alive.
 func isOwnExpiry(parent context.Context, err error) bool {
 	return err != nil && errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil
+}
+
+// ownBudgetExpiryMarker is the stable signature of this transport's
+// own-budget-expiry wrapper (kept in lockstep with the format string above —
+// the wrapper's message is the seam, so the two must not drift).
+const ownBudgetExpiryMarker = "own budget expiry, not a provider abort; the next budget escalates"
+
+// IsOwnBudgetExpiry reports whether the error chain carries this transport's
+// own-budget-expiry wrapper: the adaptive request budget's OWN deadline
+// expiry (ADR-071 D9), not a provider abort. Transient-provider
+// classification seams must exclude this signature explicitly (ADR-128 — a
+// budget death escalates in-flight instead of qualifying as a provider-side
+// timeout), because the chained context.DeadlineExceeded would otherwise
+// satisfy any naive timeout predicate.
+func IsOwnBudgetExpiry(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), ownBudgetExpiryMarker)
 }
 
 // escalate latches the ×2 escalation for the key and logs it.

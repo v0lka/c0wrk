@@ -641,6 +641,10 @@ User clicks "Resume" (after task_failed_resumable)
       ├─ Restore Blackboard from SQLite (RestoreBlackboard: facts + step results)
       ├─ Load persisted trajectory via LoadTrajectory(taskID) → resumeSteps
       ├─ Load persisted goal state via LoadGoalState(taskID) → goalState (nil for non-goal tasks)
+      ├─ Plain-task resumes only (goalState nil after terminal-goal
+      │   normalization): append the work-state summary as its own nudge-only
+      │   step to resumeSteps (see "Work-state summary" below); a NON-terminal
+      │   goal keeps resumeSteps verbatim
       ├─ Resolve routing decision (OPTIONAL — may be nil; defaults to "general")
       ├─ Emit task_resumed (resolves the resumable banner; sets UI active)
       └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps,
@@ -681,6 +685,51 @@ pause (`agent.ErrPaused`) is a clean checkpoint: the task persists as paused
 The holder's sync guard is **length-monotonic**: any sync shorter than what is already held is ignored. Subagent executors get their own holders (`subagentCtx` detaches the parent's — see [delegation.md](orchestration/delegation.md#subagent-context-narrowing)), so under normal wiring only the parent conductor syncs here; the guard is defense in depth against a mis-wired foreign executor (a resumed seed narrower than the held trajectory) erasing the task checkpoint — guarding empty syncs alone would not suffice, since a first non-empty single-step foreign sync would still shrink it.
 
 The per-Sync defensive copy is a shallow copy, safe for the async writer because the executor appends steps but never mutates an already-published step in place (the sp4rk executor's trajectory lock); the shared slice/byte backing arrays are never written after publication. If that executor invariant ever changes, the snapshot must deep-copy the backing arrays.
+
+#### Work-state summary
+
+Both plain-task resume entry points (`ResumeTask`, and the message-driven
+`tryContinueInterruptedTask`) inject a **work-state summary** into
+`resumeSteps` as its own nudge-only step (`agent.Step{UserNudge}`, rendered as
+a `{role:user}` message) so a restarted turn does not re-pay discovery. Built
+by `buildWorkStateSummary` (`backend/session/work_state_summary.go`) BEFORE
+`orchestrator.Resume`; the injected step seeds into the resumed run's first
+prompt like the rest of the trajectory.
+
+- **Sources — persisted state only.** The summary is a digest of the restored
+  checkpoint: the last assistant message (final trajectory `Thought`, with the
+  finish tool's `answer` as fallback), header lines of the last
+  `workStateToolResultCount` (5) tool results (`name(compacted input) →
+  first line of observation`, `[error]` marker on failed calls), the checklist
+  state recovered from the last SUCCESSFUL `update_checklist` call's
+  `todo_list` args (observation fallback), and the restored plan's progress
+  (`N/M steps reached; remaining: …` via the blackboard step results). No
+  fresh discovery I/O ever feeds the summary.
+- **Untrusted spotlighting.** Every observation-derived fragment (the tool
+  results' quoted first lines and the checklist observation fallback) is
+  UNTRUSTED content — a re-echo of the previous run's tool output, which
+  reached the model inside a fence originally. Each fragment is wrapped in
+  `<untrusted-content source="work-state-digest">` (sp4rk
+  `security.WrapUntrustedContent`: tag-escape sanitize + fence) inside the
+  trusted framing lines, and the byte clamp is fence-aware — a cut never
+  leaves a fence unclosed, so the spotlighting survives truncation. The
+  assistant-message, checklist-args, tool-input and plan digests are the
+  model's own persisted text and stay unwrapped.
+- **Bounds.** Every section is independently truncated and the assembled text
+  is hard-clamped at `workStateSummaryMaxBytes` (2048) with a truncation
+  marker. An empty trajectory or one with nothing digestible produces NO step.
+- **Position.** Always before the user's directive: on the continue path the
+  summary step precedes the appended `UserNudge` message step; on the Resume
+  path the user's nudge rides the conductor task message inside
+  `orchestrator.Resume`, so the summary precedes it there too.
+- **Goal-mode carve-out.** A NON-terminal goal's checkpoint is seeded into the
+  goal loop verbatim — no summary step (the goal loop re-enters
+  `resumeGoalLoop`, whose first resumed turn relies on the raw trajectory).
+  A TERMINAL goal falls through to the plain path and gets the summary. The
+  E2S loop does not consume `resumeSteps`, so an injected step is inert there.
+- The re-route arming guards (`len(resumeSteps) == 0`) observe the
+  PRE-injection length: the summary only ever appends to a non-empty
+  trajectory, so a never-routed task still re-classifies on resume.
 
 #### Task-scoped MCP authorization
 
@@ -863,9 +912,12 @@ User sends a NON-GOAL message to session with unfinished task
           ├─ Restore Blackboard (facts + step results)
           ├─ ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
           ├─ for each staged attachment: bb.AddAttachment (persists to store)
-          ├─ Load trajectory → append agent.Step{UserNudge: message}
+          ├─ Load trajectory (its pre-injection length arms the re-route check)
           ├─ Resolve routing decision (OPTIONAL) + persisted goal state
           │   (best-effort: a load failure warns and continues as a plain task)
+          ├─ Plain-task resumes (non-terminal goal excluded): append the
+          │   work-state summary step, then append agent.Step{UserNudge: message}
+          │   (the summary precedes the nudge — see "Work-state summary")
           ├─ Resolve the resumable banner (so it does not linger)
           └─ orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps,
               goalState, nudge="")

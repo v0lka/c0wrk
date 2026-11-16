@@ -110,6 +110,16 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
+	// Network-class auto-resend interval (ADR-128): an absent key
+	// materializes the default 90 — omission ≠ off (unlike the per-provider
+	// auto_retry_seconds knob, where omitted = disabled). An explicit 0 stays
+	// the kill-switch: *int keeps "never wrote this" distinct from "wrote 0",
+	// the same contract as the other *int knobs (Timeouts.GlobTimeout et al).
+	if cfg.LLM.NetworkAutoRetrySeconds == nil {
+		seconds := defaultNetworkAutoRetrySeconds
+		cfg.LLM.NetworkAutoRetrySeconds = &seconds
+	}
+
 	// ChatGPT auth mode defaults to the static API key; consumers also read
 	// empty as "api_key" — this just makes the persisted value explicit.
 	if cfg.LLM.ChatGPT.Auth.Mode == "" {
