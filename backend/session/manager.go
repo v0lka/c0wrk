@@ -210,9 +210,12 @@ type Manager struct {
 	converterMu      sync.Mutex            // guards lazy converter initialization
 	modelProfiles    ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
 
-	// ignoreCache caches one ignore.Resolver per symlink-resolved root so the
-	// directory tree is walked once per root, not per SendMessage.
-	ignoreCache sync.Map // string (resolved root) → *ignore.Resolver
+	// ignoreCache caches one ignore resolver build per symlink-resolved root
+	// (in-flight and finished entries alike), so the directory tree is walked
+	// once per root and shared by every consumer — the agent path
+	// (injectIgnoreChecker) and the file tree's ListDirectory
+	// (IgnoreResolverFor). Entry protocol at ignoreResolverEntry.
+	ignoreCache sync.Map // string (resolved root) → *ignoreResolverEntry
 
 	// ignoreResolverBuild defaults to ignore.NewResolverContext; overridable in
 	// tests. Callers must go through startIgnoreBuild.

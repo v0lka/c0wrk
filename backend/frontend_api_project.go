@@ -758,6 +758,9 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 	}
 	f.watcher = watcher
 	f.watchResearchTreesLocked(watcher, watchRoot, checkoutResearchRoot)
+	// After the watcher is live: later edits are caught by it, earlier ones
+	// by the rebuild this eviction forces.
+	f.invalidateIgnoreResolversOverlapping(watchRoot)
 	return nil
 }
 
@@ -883,6 +886,8 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		return fmt.Errorf("failed to start workspace file watcher: %w", err)
 	}
 	f.watcher = watcher
+	// Evicts the enclosing No Project root's resolver too (it contains root).
+	f.invalidateIgnoreResolversOverlapping(root)
 	return nil
 }
 
