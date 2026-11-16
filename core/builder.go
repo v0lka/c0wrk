@@ -2029,10 +2029,12 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			// model would silently drift the session's token budgets.
 			//
 			// OutputLimit mirrors the tier-5 fallback (32768), clamped to
-			// window/4, only when the source declared none — a declared limit
-			// wins as-is; the aggregator detector clamps it to the window at
-			// the source, so listing data cannot drive EffectiveMax negative
-			// and disable compaction.
+			// window/4, only when the source declared none — a declared
+			// limit strictly below the window wins as-is; the aggregator
+			// detector normalizes a contradictory (output >= context) or
+			// non-positive output to undeclared at the source, so listing
+			// data cannot drive EffectiveMax zero-or-negative and disable
+			// compaction.
 			// TokenizerType/Family stay empty: a synthetic value would shadow
 			// what the lower tiers carry.
 			target, ok := metadata[strings.ToLower(model)]

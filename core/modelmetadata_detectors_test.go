@@ -212,23 +212,24 @@ func TestDetectAggregatorMetadata_TemperatureOmissionInherits(t *testing.T) {
 	}
 }
 
-func TestDetectAggregatorMetadata_OutputClampedToWindow(t *testing.T) {
-	// A declared output above the window drives EffectiveMax negative and
-	// silently disables compaction, so contradictory listing data is clamped
-	// to the window at the source. An output at or below the window is a
-	// genuine declaration and passes through unchanged; a non-positive output
-	// is undeclared and normalizes to 0 — the wire contract is flatly
+func TestDetectAggregatorMetadata_ContradictoryOutputIgnored(t *testing.T) {
+	// A declared output at or above the window drives EffectiveMax to zero
+	// or negative and silently disables compaction, so contradictory listing
+	// data (output >= context) is treated as undeclared and normalizes to 0
+	// at the source — the same "contradictory data is ignored" stance as the
+	// non-positive case. An output strictly below the window is a genuine
+	// declaration and passes through unchanged — the wire contract is flatly
 	// "0 == undeclared", so no consumer ever re-guards a negative (the write
 	// loop's heuristic applies when 0).
 	for _, tc := range []struct {
 		entry string
 		want  int
 	}{
-		{`{"id":"m","limit":{"context":8192,"output":32768}}`, 8192}, // contradictory → clamped
-		{`{"id":"m","limit":{"context":8192,"output":8192}}`, 8192},  // equal → unchanged
-		{`{"id":"m","limit":{"context":8192,"output":4096}}`, 4096},  // below → unchanged
-		{`{"id":"m","limit":{"context":8192}}`, 0},                   // absent → undeclared
-		{`{"id":"m","limit":{"context":8192,"output":-5}}`, 0},       // negative → undeclared
+		{`{"id":"m","limit":{"context":8192,"output":32768}}`, 0},   // contradictory → undeclared
+		{`{"id":"m","limit":{"context":8192,"output":8192}}`, 0},    // equal → contradictory → undeclared
+		{`{"id":"m","limit":{"context":8192,"output":4096}}`, 4096}, // below → unchanged
+		{`{"id":"m","limit":{"context":8192}}`, 0},                  // absent → undeclared
+		{`{"id":"m","limit":{"context":8192,"output":-5}}`, 0},      // negative → undeclared
 	} {
 		meta, ok := mustDetect(t, tc.entry)
 		if !ok {

@@ -104,15 +104,21 @@ func detectAggregatorMetadata(entry []byte) (llm.ModelMetadata, bool) {
 	if err := json.Unmarshal(entry, &e); err != nil || e.Limit == nil || e.Limit.Context <= 0 {
 		return llm.ModelMetadata{}, false
 	}
-	// A declared output above the window drives EffectiveMax negative and
-	// silently disables compaction, so contradictory listing data
-	// (output > context) is clamped to the window at the source; a
-	// non-positive output is undeclared — normalized to 0 here so the
-	// wire contract is flatly "0 == undeclared" and no consumer ever has
-	// to re-guard a negative (the write loop's heuristic applies when 0).
+	// A declared output at or above the window drives EffectiveMax
+	// (ContextWindow − OutputLimit − safety margin − tool overhead) to zero
+	// or negative and silently disables compaction, so contradictory
+	// listing data (output >= context) is treated as undeclared — the same
+	// "contradictory data is ignored" stance as the non-positive case; both
+	// normalize to 0 here so the wire contract is flatly "0 == undeclared"
+	// and no consumer ever has to re-guard a negative (the write loop's
+	// heuristic applies when 0).
+	output := max(e.Limit.Output, 0)
+	if output >= e.Limit.Context {
+		output = 0
+	}
 	meta := llm.ModelMetadata{
 		ContextWindow: e.Limit.Context,
-		OutputLimit:   max(min(e.Limit.Output, e.Limit.Context), 0),
+		OutputLimit:   output,
 	}
 	if e.Capabilities != nil && e.Capabilities.Tools != nil && e.Capabilities.Reasoning != nil &&
 		e.Modalities != nil {
