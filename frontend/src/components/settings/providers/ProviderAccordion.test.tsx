@@ -24,6 +24,30 @@ vi.mock('../useModelFetch', () => ({
   useModelFetch: () => fetchResult,
 }))
 
+// The Configure dialog fetches the effective config over the real API when
+// opened; mock that boundary (keeping the rest of the module intact) so the
+// prefill wiring test stays deterministic.
+vi.mock('@/api/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/config')>()),
+  getModelConfig: vi.fn(async () => ({
+    model: 'deepseek-v4',
+    context_window: 32768,
+    output_limit: 8192,
+    tokenizer_type: 'approximate',
+    family: 'default',
+    protocol: 'chat_completions',
+    capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
+    default_context_window: 32768,
+    default_output_limit: 8192,
+    default_tokenizer_type: 'approximate',
+    default_family: 'default',
+    default_protocol: 'chat_completions',
+    default_capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
+    has_override: false,
+  })),
+  setModelConfig: vi.fn(async () => {}),
+}))
+
 import { ProviderAccordion } from './ProviderAccordion'
 
 let container: HTMLDivElement
@@ -197,5 +221,41 @@ describe('ProviderAccordion endpoint-metadata badges', () => {
         s.getAttribute('title')?.startsWith('Context window:'),
       ),
     ).toBeUndefined()
+  })
+})
+
+describe('ProviderAccordion configure-dialog metadata prefill', () => {
+  /** Open the Configure dialog for the listed model and return its two
+   *  number inputs (context window, output limit). */
+  async function openConfigureAndReadInputs(): Promise<HTMLInputElement[]> {
+    renderAccordion()
+    const configureBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-label') === 'Configure deepseek-v4',
+    )
+    if (!configureBtn) throw new Error('Configure button not found')
+    await act(async () => { configureBtn.click() })
+    // The dialog loads its config + prefills asynchronously.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    return Array.from(document.body.querySelectorAll('input[type="number"]'))
+  }
+
+  it('shows the fetched listing values in the dialog fields', async () => {
+    fetchResult.modelsMetadata = {
+      'deepseek-v4': {
+        context_window: 512000,
+        output_limit: 32000,
+        capabilities: { attachment: true, reasoning: true, temperature: true, tool_call: true },
+      },
+    }
+    const inputs = await openConfigureAndReadInputs()
+    expect(inputs[0]?.value).toBe('512000')
+    expect(inputs[1]?.value).toBe('32000')
+  })
+
+  it('falls back to the factory defaults when the fetch declared no metadata', async () => {
+    fetchResult.modelsMetadata = undefined
+    const inputs = await openConfigureAndReadInputs()
+    expect(inputs[0]?.value).toBe('32768')
+    expect(inputs[1]?.value).toBe('8192')
   })
 })

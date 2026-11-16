@@ -9,8 +9,8 @@ interface UseModelFetchResult {
     /** Detector-chain metadata for the fetched listing, keyed by the exact
      *  model name (specs/domains/llm-providers.md, "Detector chain").
      *  Undefined until a fetch succeeds / when the endpoint exposed nothing
-     *  parseable. Feeds the accordion badges only — the Configure dialog
-     *  stays the explicit-override editor and never reads it. */
+     *  parseable. Feeds the accordion badges and the Configure dialog's
+     *  prefill of override-free fields — an explicit override still wins. */
     modelsMetadata: Record<string, ModelMetadataInfo> | undefined
     modelsLoading: boolean
     modelsError: string | null

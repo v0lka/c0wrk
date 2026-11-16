@@ -21,6 +21,7 @@ vi.mock('@/api/config', () => ({
 }))
 
 import { ModelConfigDialog } from './ModelConfigDialog'
+import type { ModelMetadataInfo } from '@/types/models'
 
 let container: HTMLDivElement
 let root: Root
@@ -94,13 +95,14 @@ const cannedResponse = {
   has_override: true,
 }
 
-function renderDialog(model: string, open: boolean, onSaved?: () => void) {
+function renderDialog(model: string, open: boolean, onSaved?: () => void, listingMetadata?: ModelMetadataInfo) {
   act(() => {
     root.render(
       <ModelConfigDialog
         model={model}
         open={open}
         onOpenChange={() => {}}
+        listingMetadata={listingMetadata}
         onSaved={onSaved}
       />,
     )
@@ -279,5 +281,72 @@ describe('ModelConfigDialog', () => {
 
     const title = document.body.querySelector('[data-slot="dialog-title"]')
     expect(title?.textContent).toContain('gpt-4o')
+  })
+})
+
+describe('ModelConfigDialog listing-metadata prefill', () => {
+  // A model the built-in catalog doesn't know: effective values equal the
+  // factory defaults, no override anywhere.
+  const noOverrideResponse = {
+    model: 'custom-model',
+    context_window: 32768,
+    output_limit: 8192,
+    tokenizer_type: 'approximate',
+    family: 'default',
+    protocol: 'chat_completions',
+    capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
+    default_context_window: 32768,
+    default_output_limit: 8192,
+    default_tokenizer_type: 'approximate',
+    default_family: 'default',
+    default_protocol: 'chat_completions',
+    default_capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
+    has_override: false,
+  }
+
+  const listingMeta: ModelMetadataInfo = {
+    context_window: 512000,
+    output_limit: 32000,
+    capabilities: { attachment: true, reasoning: true, temperature: true, tool_call: true },
+  }
+
+  it('prefills override-free fields from the parsed listing metadata', async () => {
+    spies.getModelConfig.mockResolvedValue(noOverrideResponse)
+    renderDialog('custom-model', true, undefined, listingMeta)
+
+    await act(async () => { await flush() })
+
+    const inputs = numberInputs()
+    expect(inputs[0]?.value).toBe('512000')
+    expect(inputs[1]?.value).toBe('32000')
+    // Capabilities come from the listing's full declaration.
+    const checks = checkboxes()
+    expect(checks[0]?.checked).toBe(true) // attachment
+    expect(checks[1]?.checked).toBe(true) // reasoning
+  })
+
+  it('an explicit override wins over the listing metadata, per field', async () => {
+    // cannedResponse overrides the context window (200000 vs default 128000)
+    // but not the output limit (16384 == default) — only the context field
+    // keeps the override; the output field takes the listing value.
+    spies.getModelConfig.mockResolvedValue(cannedResponse)
+    renderDialog('gpt-4o', true, undefined, listingMeta)
+
+    await act(async () => { await flush() })
+
+    const inputs = numberInputs()
+    expect(inputs[0]?.value).toBe('200000')
+    expect(inputs[1]?.value).toBe('32000')
+  })
+
+  it('listing metadata without declared values leaves the defaults', async () => {
+    spies.getModelConfig.mockResolvedValue(noOverrideResponse)
+    renderDialog('custom-model', true, undefined, { context_window: 0, output_limit: 0 })
+
+    await act(async () => { await flush() })
+
+    const inputs = numberInputs()
+    expect(inputs[0]?.value).toBe('32768')
+    expect(inputs[1]?.value).toBe('8192')
   })
 })

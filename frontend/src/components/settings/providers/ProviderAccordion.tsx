@@ -359,6 +359,7 @@ export function ProviderAccordion({
       <ModelConfigDialog
         model={configModel ?? ''}
         open={configModel !== null}
+        listingMetadata={configModel ? modelsMetadata?.[configModel] : undefined}
         onOpenChange={(o) => { if (!o) setConfigModel(null) }}
         onSaved={invalidateConfigCache}
       />

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { getModelConfig, setModelConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
-import type { ModelCapabilities } from '@/types/models'
+import type { ModelCapabilities, ModelMetadataInfo } from '@/types/models'
 import {
   Dialog,
   DialogContent,
@@ -19,6 +19,10 @@ interface ModelConfigDialogProps {
   model: string
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Parsed listing metadata for this model (ListProviderModels detector
+   *  chain), when the provider accordion has fetched it. Prefills fields
+   *  that carry no explicit override — an existing override still wins. */
+  listingMetadata?: ModelMetadataInfo
   /** Optional callback after a successful save. */
   onSaved?: () => void
 }
@@ -65,12 +69,14 @@ const CAPABILITY_FIELDS: Array<{ key: keyof ModelCapabilities; label: string; hi
  * Per-model Configure dialog. Lets the user override a model's context window,
  * output limit, tokenizer type, family, protocol, and capabilities. Inputs are
  * pre-filled with the currently-effective value (override value when set,
- * otherwise the built-in default) and the built-in factory default is shown as a
- * hint. On save, only values that differ from the built-in default are persisted
- * to config.yaml (the backend handles the field-level omission); values equal to
- * the default clear the override.
+ * otherwise the built-in default), then fields with no explicit override take
+ * the parsed listing metadata (listingMetadata) where it declared a value, so
+ * a fetched model shows what its endpoint actually serves. The built-in
+ * factory default is shown as a hint. On save, only values that differ from
+ * the built-in default are persisted to config.yaml (the backend handles the
+ * field-level omission); values equal to the default clear the override.
  */
-export function ModelConfigDialog({ model, open, onOpenChange, onSaved }: ModelConfigDialogProps) {
+export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, onSaved }: ModelConfigDialogProps) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -128,13 +134,28 @@ export function ModelConfigDialog({ model, open, onOpenChange, onSaved }: ModelC
         protocol: cfg.default_protocol,
         capabilities: cfg.default_capabilities,
       })
+      // Parsed listing metadata (Fetch Models) fills fields the built-in
+      // catalog doesn't know. Only where no explicit override exists —
+      // an effective value equal to the factory default is exactly that,
+      // since getModelConfig applies an override whenever one is set.
+      if (listingMetadata) {
+        if (cfg.context_window === cfg.default_context_window && listingMetadata.context_window > 0) {
+          setContextWindow(listingMetadata.context_window)
+        }
+        if (cfg.output_limit === cfg.default_output_limit && listingMetadata.output_limit > 0) {
+          setOutputLimit(listingMetadata.output_limit)
+        }
+        if (listingMetadata.capabilities && capsEqual(cfg.capabilities, cfg.default_capabilities)) {
+          setCapabilities(listingMetadata.capabilities)
+        }
+      }
     } catch (err) {
       logger.error('Failed to load model config:', err)
       setError('Failed to load model configuration.')
     } finally {
       setLoading(false)
     }
-  }, [model])
+  }, [model, listingMetadata])
 
   useEffect(() => {
     if (open) load()
@@ -263,6 +284,14 @@ export function ModelConfigDialog({ model, open, onOpenChange, onSaved }: ModelC
 // ---------------------------------------------------------------------------
 // Field components
 // ---------------------------------------------------------------------------
+
+/** Shallow equality over the four capability flags. */
+function capsEqual(a: ModelCapabilities, b: ModelCapabilities): boolean {
+  return a.attachment === b.attachment &&
+    a.reasoning === b.reasoning &&
+    a.temperature === b.temperature &&
+    a.tool_call === b.tool_call
+}
 
 interface NumberFieldProps {
   label: string

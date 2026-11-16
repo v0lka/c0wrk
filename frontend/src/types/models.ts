@@ -900,8 +900,9 @@ export interface ListProviderModelsRequest {
  *  (specs/domains/llm-providers.md, "Detector chain"): what the endpoint
  *  declared about the model, parsed by the same chain the lazy session probe
  *  uses. Zero/absent fields mean "not declared by the listing" — the UI falls
- *  back to catalog/factory defaults. Display data only (accordion badges),
- *  never persisted and never fed into the Configure dialog's fields. */
+ *  back to catalog/factory defaults. Display data: accordion badges and the
+ *  Configure dialog's prefill of override-free fields; a value reaches
+ *  config.yaml only through an explicit Save in the dialog. */
 export interface ModelMetadataInfo {
   context_window: number
   output_limit: number
