@@ -2,171 +2,173 @@
 
 ## Purpose
 
-The specification subsystem gives every workspace a spec-lifecycle capability and a human surface for it: the vendored `spec-*` skillset (six Agent Skills adapted from the external vibespec skillset and then evolved independently) plus the `specs` Subagent Profile, both seeded globally at startup like the RESEARCH packs; and the Specs browser — a single sidebar panel (header with the integrity badge and aggregate counts, the quick-actions row, a nested section tree whose DECISIONS leaves carry git-derived dates, and the findings cascade — each card carrying a per-finding fix badge and a hover-revealed copy of its finding line, the header badge doubling as the aggregate fix-findings dispatch) whose every mutating gesture dispatches a `spec-*` skill into the chat. See [ADR-105](../decisions/105-vendor-spec-skillset.md), [ADR-106](../decisions/106-specs-sidebar-panel.md), [ADR-108](../decisions/108-specs-panel-usability-redesign.md), [ADR-109](../decisions/109-specs-panel-simplification.md), and [ADR-116](../decisions/116-specs-root-follows-active-session.md) (the session-following specs root).
+The Specs subsystem answers one question per workspace: WHICH spec-driven-development framework is installed here, and what does its tree look like? It recognises frameworks from the agent skills their own `init` installs, renders the active one through its declarative DSL ([sdd-dsl.md](sdd-dsl.md)) and shows the result in the single Specs sidebar panel — a header with the integrity badge and framework-neutral counts, a framework selector when several frameworks are recognised, the quick-actions row, the declared view sections and the findings list — where every mutating gesture previews its framework-declared prompt verbatim in the panel's dispatch dialog and, on confirm, dispatches a DECLARED skill into the chat — and nothing is ever written by c0wrk. c0wrk ships no skillset of its own: a workspace's SDD skills are ordinary agent-skill data ([ADR-126](../decisions/126-sdd-framework-dsl.md)).
 
 ## Key Files
 
-- `core/specs/skillpack.go` - embedded six-skill `spec-*` pack (`core/specs/skills/`) and its versioned global seeding (`SeedSkills`; a thin consumer of the shared core below)
-- `core/specs/unseed.go` - the delete half of the pack lifecycle behind the `specs.enabled` surface gate: `UnseedSkills`/`UnseedAgents` remove only byte-identical (or pack-marked truncated) copies, fail-soft per entry (a failure is recorded and joined into the error, never aborting the rest of the pack)
-- `core/specs/skills/` - the vendored skill sources: six `spec-*/SKILL.md` bodies (`spec-init`, `spec-explore`, `spec-create`, `spec-update`, `spec-check`, `spec-consult`; tool-agnostic; `spec-init` carries `assets/meta-template.md` + `assets/adr-template.md`, `spec-explore` carries its `references/` bodies)
-- `core/specs/agentpack.go` - embedded `specs` Subagent Profile (`core/specs/agents/specs/AGENT.md`) and its seeding (`SeedAgents`)
-- `core/specs/LICENSE.md` - the upstream MIT attribution (vibespec); the origin record of the vendored tree
-- `core/specs/model.go` - pure domain types of the parsed specs/ tree (`SpecsRoot`, `SpecFile`, `SpecsIndex`, `IndexTask`, `ADRMeta`, `Finding`); no I/O
-- `core/specs/parse.go` - the tolerant read-only parser (`ParseSpecsRoot`) and the tier-1 integrity findings
-- `internal/specslint/adr_numbering_test.go` - the guard over THIS repository's own `specs/decisions/` tree (`TestADRNumberingContract`): it fails the default Go suite on a file that is neither `NNN-slug.md` nor `_template.md`, on a malformed ADR file name, on a missing `_template.md`, on a first line that is not an `# ADR-NNN:` heading, on an H1 number disagreeing with the file name's, and on two files claiming one NNN
-- `core/seedpack` - the shared crash-safe seeding core (content-hash classification, staged write + atomic rename, `.seed-version` marker handling, leftovers sweep) behind the seeding invariants below; `core/research`, `core/papers`, and `core/specs` are thin consumers (ADR-105 decision 5)
-- `backend/frontend_api_research.go` - `seedGlobalPacks`: the single per-launch global pack reconcile that seeds the specs packs alongside research/papers while the `specs.enabled` surface gate is on and unseeds them while it is off, before the skill/agent watchers start
-- `backend/frontend_api_packgates.go` - the `SetSpecsEnabled` surface-gate RPC (persist + seed/unseed in one beat; [ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md))
-- `backend/frontend_api_specs.go` - `GetSpecsStatus` RPC and the `SpecsStatusDTO`/`SpecsCountsDTO`/`ADRMetaDTO` wire shapes (each `adrs` element carries the optional git-derived `date`); `specsRootWithBoundary` — the session-following root resolver ([ADR-116](../decisions/116-specs-root-follows-active-session.md))
-- `backend/frontend_api_specs_adrdates.go` - the fail-soft git-derived ADR-date enrichment (`specsADRDates`/`parseADRDatesLog`/`enrichSpecsADRDates`; one bounded `git log --diff-filter=A` per call)
-- `backend/config/paths.go` - `ProjectSpecsPath` (`<workspace>/specs`) — the one path constructor for the specs root
-- `frontend/src/api/specs.ts` - the RPC wrapper: boundary validation + normalization of the status payload
-- `frontend/src/stores/specsStore.ts` - the browser's store: the status/fetch state and the persisted per-project tree expansion
-- `frontend/src/components/specs/` - the sidebar panel (`SpecsPanel.tsx` orchestrator + in-panel `workspace:tree_changed` subscription; `SpecsHeader.tsx` with the integrity badge that doubles as the fix-findings dispatch; `SpecsSectionTree.tsx` nested tree with the DECISIONS date column; `SpecsFindings.tsx`; `SpecsEmptyState.tsx`; `SpecsQuickActions.tsx`), plus `specsActions.ts` (the auditable dispatch constants, `buildFixFindingsAction` included), `specsPaths.ts` (pure path/tree/date/label helpers), `useSpecsDispatch.ts` (the single `sendMessage` path)
-- `frontend/src/components/layout/WorkspacePanel.tsx` - the host tab strip; the `specs` tab (after `research`) renders `SpecsPanel`
-- `frontend/src/stores/uiStore.ts` - `WorkspaceTab` gains `'specs'`, registered in `WORKSPACE_TAB_VALUES` (per-project tab memory)
+- `core/sdd/framework.go` - the framework document model and its strict parser (`sdd-framework/v1`)
+- `core/sdd/dsl.go` - the operator layer over the built-ins: `Load` (global `~/.c0wrk/specs.yaml` then checkout `<workspace>/.c0wrk/specs.yaml`), `ParseDefinitions` (fail-soft per document) and `Merge` (by ID, whole-document, `priority` then `id` order)
+- `core/sdd/builtin.go` + `core/sdd/frameworks/{sdd,openspec,spec-kit}.yaml` - the embedded catalog; `sdd` describes c0wrk's own tree, its eight checks and its `spec-*` lifecycle actions (including `fix-findings`)
+- `core/sdd/detect.go` - the pure detector: recognised frameworks (skill evidence only), the default selection order, the `spec-`/`vibespec-` alias matching, the three skill tiers
+- `core/sdd/parse.go`, `core/sdd/model.go` - `ParseTree` (the one filesystem entry point, containment-checked and read-only) and the parsed model (`Tree`, `Document`, `Node`, `View`, `Finding`, `Counts`); the model itself does no I/O and carries no environment metadata
+- `core/specs/model.go`, `core/specs/parse.go` - the RETIRED hand-written `specs/` reader, kept only as the parity oracle `core/sdd/tree_test.go` compares the DSL parse against; no production package imports it
+- `backend/frontend_api_sdd.go` - the whole RPC surface: `SpecsStatusDTO` and its element DTOs, `GetSpecsStatus`, `SetActiveSDD`, the detection-evidence collection (installed skills with tiers, present markers, present roots), the model→DTO mapping and the action availability evaluation
+- `backend/frontend_api_specs.go` - the two roots of the subsystem: `sddWorkspace` (the tree — the active session's workspace, else the checkout) and `sddCheckout` (the operator DSL file — always the checkout), plus `sddRootPath`
+- `backend/frontend_api_specs_adrdates.go` - the fail-soft git-derived add date for decision documents (`specsADRDates`, `enrichSpecsDocumentDates`; ONE bounded `git log --diff-filter=A` per call under `gitCmdTimeout`, Debug-only failures)
+- `backend/frontend_api_specs_adrdates_test.go`, `backend/frontend_api_sdd_test.go`, `backend/frontend_api_specs_session_root_test.go` - the date-enrichment, DTO/detection and session-root contracts
+- `backend/frontend_api_packgates.go` - `SetSpecsEnabled`: the pure visibility gate (persist + `config:updated`, no pack side-effect); `SetResearchEnabled` in the same file keeps the research pack lifecycle
+- `backend/config/sdd_store.go` - `SDDPath` / `ProjectSDDPath` (+ `ProjectMetaDirName`), read-only derivations that never materialize a file
+- `backend/project/persistence.go` - `project_ui_state.active_sdd` (the per-project selection) with `SaveActiveSDD` / `LoadActiveSDD`
+- `frontend/src/api/specs.ts` - the RPC wrappers (`getSpecsStatus`, `setActiveSDD`) with fail-closed outer validation, per-entry fail-soft normalization and non-nil collections
+- `frontend/src/stores/specsStore.ts` - the parse: fetch state under a monotonic LWW ticket, stamped with the (project, session) pair, plus the ONLY persisted slice (`treeExpandedNodes`, zustand key `c0wrk-specs-view`)
+- `frontend/src/stores/sddStore.ts` - the framework projection the tab strip and the selector read: detected frameworks, the rendered vs confirmed selection, `selectorNeeded`, `present`, `warnings`, and the tri-state `known`; fed by `specsStore` (one direction, no second fetch)
+- `frontend/src/components/specs/` - the panel: `SpecsPanel.tsx` (section orchestration + the `workspace:tree_changed` subscription), `SpecsHeader.tsx` (integrity badge, counts, selector), `SpecsFrameworkSelector.tsx`, `SpecsQuickActions.tsx`, `SpecsSectionTree.tsx`, `SpecsFindings.tsx`, `SpecsEmptyState.tsx`, plus `specsActions.ts` (declared-action → dispatch helpers, `{path}`/`{name}` substitution, `findingLine`), `specsPaths.ts` (workspace-path joining, change relevance, dates, labels) and `useSpecsDispatch.ts` (the single `sendMessage` path)
+- `frontend/src/components/layout/WorkspacePanel.tsx` - the tab strip: `specsVisible = specsEnabled && (known ? present : true)`, one detection probe per project switch, and the remembered-tab fallback
+- `frontend/src/types/models.ts` - the `SpecsStatus` / `SDDFramework` / `SDDRoot` / `SDDDocument` / `SDDNode` / `SDDView` / `SDDFinding` / `SDDAction` / `SDDCounts` wire types
 
 ## Core Types
 
+The DSL's own types (`Framework`, `Definition`, `Detection`, `Tree`) live in [sdd-dsl.md](sdd-dsl.md). The wire shape is:
+
 ```go
-type FindingKind string // PATH_MISSING | CROSS_REF_BROKEN | DUPLICATE_ADR_NUMBER | INDEX_STALE | ROOT_FILE_MISSING | ADR_NAME_MALFORMED | ADR_NUMBER_MISMATCH | SUPERSEDED_TARGET_MISSING | SUPERSEDED_CYCLE
-
-type SpecFile struct {
-    Path      string   // specs-root-relative, forward slashes; "INDEX.md", "domains/research.md"
-    Section   string   // architecture | domains | contracts | decisions; "" for INDEX.md and META.md
-    Title     string   // first ATX heading outside code blocks, verbatim
-    KeyFiles  []string // backticked entries of "## Key Files", verbatim
-    CrossRefs []string // relative markdown link targets (file path, optional #anchor, or pure #anchor)
-}
-
-type IndexTask struct {          // one task-navigation row: the first section whose heading carries "task" ("Navigation by Task", "Task -> Specs", "Task -> Spec")
-    Task  string
-    Specs []string               // the row's relative link targets, anchors included
-}
-
-type ADRMeta struct {            // one decisions/NNN-slug.md record
-    Number, Slug, File           // from the file name (the template's authority)
-    Title, Status, SupersededBy  // from the body; Status classifies the status line's first word
-}
-
-type Finding struct{ Kind FindingKind; File, Detail string }
-
-type SpecsRoot struct {
-    Path     string        // exactly as passed to ParseSpecsRoot
-    Present  bool          // root existed and was a directory; a missing or non-directory root is the neutral state, never an error
-    Files    []SpecFile    // sorted by path; "_"-prefixed files (templates) excluded
-    Index    *SpecsIndex   // parsed INDEX.md; nil only when missing/unreadable
-    ADRs     []ADRMeta     // sorted by number
-    Findings []Finding     // tier-1 integrity findings, sorted by kind, file, detail
+type SpecsStatusDTO struct {
+    Present        bool               // gate && len(detected) > 0 — the VISIBILITY answer
+    TreePresent    bool               // the active framework's roots exist in the parsed workspace
+    Root           string             // absolute path of the first PRESENT declared root (else the first declared one)
+    Workspace      string             // absolute workspace the tree was parsed in
+    Detected       []SDDFrameworkDTO  // every recognised framework, detection default order
+    ActiveID       string             // "" when none is active
+    Active         *SDDFrameworkDTO   // the matching element of Detected
+    SelectorNeeded bool               // >1 detected and no persisted choice
+    Roots          []SDDRootDTO       // declared roots of the active framework + presence
+    Documents      []SDDDocumentDTO   // concept instances that are files
+    Nodes          []SDDNodeDTO       // the flat forest the tree views index into
+    Views          []SDDViewDTO       // declared view sections, in order
+    Findings       []SDDFindingDTO    // declared-check failures
+    Actions        []SDDActionDTO     // declared gestures + the `available` / `skill_available` facts
+    Counts         SDDCountsDTO       // documents, findings, per-concept, per-finding-kind
+    Warnings       []string           // operator DSL faults, parse warnings — never errors
 }
 ```
 
-The wire shape wraps each parsed ADR in `ADRMetaDTO` (`backend/frontend_api_specs.go`) — the `ADRMeta` above embedded verbatim plus an optional `date` (ISO `YYYY-MM-DD`, the file's git add date; `omitempty` when unknown) that the backend derives after the pure parse (ADR-108 decision 3); `core/specs` itself stays date-free. The frontend turns that `date` map into the DECISIONS tree's date column (`adrDatesByFile`, ADR-109).
+`SDDFrameworkDTO` carries the definition's identity (id, label, description, docs URL), its `origin` (`builtin` | `global` | `project`), the strongest matched `scope` (`project` | `global` | `user`), the two tree signals (`root_present`, `marker_present`) and the matched `skills`. `SDDDocumentDTO` carries the concept, section, `number`/`slug`, the extracted metadata the concept declared (title, headings, key files, cross-refs, frontmatter, status/superseded_by, purpose, requirements, scenarios, deltas, principles, user stories, task items, index tasks, `missing` companions) and the optional git-derived `date`. `SDDNodeDTO` is `{id, kind, path, label, concept, name, parent, children, missing}`; `SDDFindingDTO` is `{kind, file, detail, message, severity}`; `SDDActionDTO` is `{kind, label, skill, prompt, concept, requires, available}`.
 
 ## Flow
 
 ```
-App startup
-  -> seedGlobalPacks seeds every c0wrk-owned pack into ~/.c0wrk/.agents:
-     the six spec-* skills into .agents/skills/spec-*, the specs profile
-     into .agents/agents/specs/ (content-hash classified, staged +
-     atomically swapped, non-destructive) — BEFORE the skill/agent
-     watchers; the skill/agent caches are invalidated afterwards
+Workspace with an installed SDD framework
+  -> the framework's own `init` installed its skills somewhere in the
+     discovery tiers: <workspace>/.agents/skills, a framework-declared
+     project directory (.claude/skills), ~/.c0wrk/.agents/skills, ~/.agents/skills
+
+Workspace tab strip (before any panel mounts)
+  -> specsVisible = specs.enabled ∧ (sddStore.known ? sddStore.present : true)
+     — one probe per project switch, through the SAME GetSpecsStatus the
+     panel uses (skipped when this project already has a parse)
 
 Specs tab mounted (a real project)
-  -> SpecsPanel fetches GetSpecsStatus(projectId) — one light read-only
-     parse of the active session's <workspace>/specs (a session worktree
-     when one resolves, the project checkout as fallback — ADR-116); a
-     session switch refetches
-  -> specsStore applies the payload under its fetch ticket
-     (last-write-wins by initiation order)
+  -> SpecsPanel fetches GetSpecsStatus(projectId):
+       sdd.Load(global, project)
+                    -> embedded sdd/openspec/spec-kit documents merged with
+                       ~/.c0wrk/specs.yaml and <checkout>/.c0wrk/specs.yaml
+       detect       -> installed skills (tiers) + present markers/roots
+       selection    -> project_ui_state.active_sdd, else detection default
+       parse        -> sdd.ParseTree(active session's workspace, active framework)
+       enrich       -> git add dates for decision documents (fail-soft)
+  -> specsStore applies the payload under its fetch ticket (LWW by
+     initiation order, stamped by (project, session)); sddStore.applyStatus
+     projects the framework context for the tab strip and the selector
 
 specs/ file changes (agent-written or human)
   -> workspace watcher emits workspace:tree_changed
-  -> the panel's own subscription filters it to specs/ paths and refetches
-     (fail-open when the payload carries no paths) — no dedicated event
+  -> the panel's own subscription filters it to the active root and refetches
+     (fail-open when the payload names no paths) — no dedicated event
 
 Human gestures
-  -> Open spec / Key File / finding file link -> fileViewerStore.openFile
-     (the existing viewer)
-  -> Header's findings badge ("N findings") -> ONE spec-update task whose
-     prompt enumerates the current parse's findings verbatim
-     (buildFixFindingsAction; Shift = new session); the "Integrity OK"
-     chip is inert
-  -> A finding card's fix badge -> ONE spec-update task scoped to that
-     single finding (buildFixFindingAction — the aggregate's repair
-     instructions shared verbatim, the finding quoted through
-     findingLine; Shift = new session)
-  -> A finding card's hover-revealed copy button -> the finding's
-     findingLine on the clipboard via clipboardSetText — byte-identical
-     to the bullet both fix prompts list (opacity-only reveal, the
-     MessageFooter pattern — no layout shift)
-  -> Header's refresh button (specs-refresh) -> the same GetSpecsStatus
-     refetch as the mount/tree_changed paths — the store's LWW fetch
-     ticket serializes overlapping flights and a same-project refetch
-     keeps the previous status rendered; no new RPC, no event
-  -> Init / Check / Consult / Explore -> sendMessage with the spec-* skill
-     in the activeSkills slot and the constant prompt from
-     specsActions.ts (Shift = new session)
+  -> Framework selector (only when >1 recognised) -> sddStore.beginSwitch
+     renders the choice at once; setActiveSDD persists it, then fetchStatus
+     re-parses; a failed switch reverts to the confirmed selection and
+     surfaces the panel's own error banner
+  -> Open a document -> fileViewerStore.openFile with
+     joinWorkspacePath(status.workspace, node.path). (`key_files` is CHECK
+     DATA — the `required_files {from: key_files}` input — not navigation:
+     the panel renders no key-file links; a viewer-side markdown preview
+     resolves such links when the document itself is open.)
+  -> Quick actions -> one declared panel-level action's skill + prompt via
+     sendMessage's activeSkills slot (Shift = new session)
+  -> A node action -> the action declared for that node's concept, with
+     {path}/{name} substituted
+  -> The findings badge -> ONE dispatch of the framework's declared
+     `fix-findings` action; each finding card's fix badge -> the same action
+     scoped to that single finding; a framework declaring no such action
+     keeps both badges INERT (never a button)
+  -> All three mutating gestures park in ONE preview gate first
+     (`SpecsPanel`'s dispatch dialog): the DECLARED prompt is shown verbatim
+     — it is repository-authored content, not UI copy — and only the
+     dialog's confirm sends it through `useSpecsDispatch`; cancel, Esc or
+     the overlay drops it and nothing reaches the chat
+  -> The findings copy button (the shared CopyIconButton -> useCopyFlash ->
+     clipboardSetText path) -> the card's findingLine verbatim, the exact
+     bullet the single-finding fix prompt carries
+  -> The empty state's CTA -> the framework's declared bootstrap action with
+     no unmet requirement; no such action means no CTA
+  -> Header refresh (specs-refresh) -> the same refetch as mount/tree_changed
+     (no new RPC, no event)
 ```
 
 ## Invariants
 
-- The vendored pack contains exactly six skills — `spec-init`, `spec-explore`, `spec-create`, `spec-update`, `spec-check`, `spec-consult` — and one Subagent Profile (`specs`); every `SKILL.md` frontmatter `name:` matches its directory name.
-- The vendored tree is adapted once to c0wrk's layout and then evolved independently of upstream: there is no sync obligation, and the upstream MIT attribution stays in `core/specs/LICENSE.md`.
-- Skill bodies stay tool-agnostic (no c0wrk tool names), so they remain portable; the profile's directive lives in `core/specs/agents/specs/AGENT.md`.
-- `spec-init` emits the c0wrk tree shape (META.md / INDEX.md / architecture / domains / contracts / decisions + `_template.md`); `specs/WORKFLOW.md` is deliberately absent — `AGENTS.md` owns the "how to use the spec system" pointer role, and the vendored `assets/` carry only `meta-template.md` and `adr-template.md`.
-- The `specs` profile is least-privilege by group tokens (`tools: local-read, local-write` — spec work reads and writes Markdown and executes nothing), and its `skills:` list (`spec-consult, spec-create, spec-update, spec-check`) resolves fail-closed against the skill catalog at launch.
-- Seeding runs once per launch from `seedGlobalPacks` BEFORE the skill and agent directory watchers are created, is per-pack fail-soft (a failure is logged and never fatal to startup), and is idempotent — a repeat run re-seeds nothing (all destinations classify as `Current`). Each surface reconciles with its sidebar surface gate ([ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md)): the specs packs seed only while `specs.enabled` is on, and a disabled surface's packs are UNSEEDED at the toggle and again at every launch — an idempotent reconcile that converges any drift a failed toggle-time removal or an interrupted run left behind, so a launch never resurrects them.
-- Seeding classifies each destination by CONTENT HASH against the embedded pack (never mtime/size, never the marker alone): equal content is `Current` (a missing/stale `.seed-version` marker is re-stamped); a pack-marked truncated subset is repaired; a pack-marked diverging directory is a local edit — preserved and reported `Modified`; a marker-less diverging directory is user-owned and preserved byte-identically; a marker from an older pack version is overwritten in full.
-- Seeding writes are crash-safe: each entry is staged in a hidden sibling temp directory and swapped in with a single rename; staging/backup leftovers from a hard kill are swept on the next run. The specs pack versions (`specs.CurrentSeedVersion`, `specs.AgentSeedVersion`) bump independently of the research/papers packs.
-- The `specs.enabled` surface gate (pointer bool, default on) hides the Specs sidebar tab and drives the pack lifecycle in the same beat: `SetSpecsEnabled` persists first (a failed write rolls the in-memory value back), then seeds (enable) or unseeds (disable) the spec skill/agent packs under `configMu` → `researchSeedMu` — serialized against the launch seed, which re-reads the gate mirror the apply writes under the seed lock, so neither path can act on a stale gate. Unseeding is the non-destructive mirror of the seeding classification: only byte-identical copies (any marker state) and pack-marked truncated subsets are removed; user-owned and locally modified copies are preserved byte-identically, the modified ones named in a visible warning, and per-entry failures are fail-soft (never aborting the rest of the pack). The workspace tab strip follows the gate live, and a remembered specs tab falls back to the layout's primary tab — the indexing gate's contract.
-- Skill/agent discovery precedence is project-local `<workspace>/.agents/{skills,agents}` → c0wrk global `~/.c0wrk/.agents/{skills,agents}` → user `~/.agents/{skills,agents}`: the seeded spec pack outranks a stale same-named user copy, and `ListSkills`/`ListAgents` expose it with no catalog change.
-- The specs root is `<workspace>/specs` (`config.ProjectSpecsPath`) of the workspace the ACTIVE SESSION resolves to — a session worktree when one resolves, the project checkout as fallback ([ADR-116](../decisions/116-specs-root-follows-active-session.md); ADR-099's protocol) — and is read-only for the application: the panel and the parser never create, write, or delete anything under it — every mutation is dispatched to a `spec-*` skill.
-- The parser is tolerant: a MISSING or non-directory `specs/` root parses to the neutral `Present=false` state; an existing EMPTY or PARTIAL tree parses `Present=true` with whatever content is readable — never an error in either case; files whose base name starts with `_` (templates) are excluded from the model; the parser keys off the documented `specs/` layout, not c0wrk-specific paths (any workspace with a `specs/` directory renders the panel).
-- `GetSpecsStatus` requires a real project: the No-Project pseudo-project returns the neutral `present=false` DTO (the defensive contract — the workspace tab strip, and with it the panel, is not rendered in CHAT mode at all), and every other error path is a transport-level Go error. A workspace-less project and a session worktree without `specs/` resolve the same neutral state (the Init empty state renders, not an error — [ADR-116](../decisions/116-specs-root-follows-active-session.md)).
-- Every DTO collection and the counts histogram are non-nil on the wire (empty `[]`/`{}`, never `null`); the frontend boundary re-validates the outer shape, drops malformed entries per-entry, and recomputes the counts from the normalized collections so the badges always agree with the rendered lists.
-- Tier-1 integrity findings are computed by the parser on every call (`PATH_MISSING` — a Key Files path that does not exist; `CROSS_REF_BROKEN` — a relative link or anchor that does not resolve; `DUPLICATE_ADR_NUMBER` — two `decisions/NNN-*.md` sharing NNN; `INDEX_STALE` — a section file INDEX.md never names; the baseline is the whole-document mention scan — every `.md`-shaped relative token anywhere in INDEX.md (markdown link targets, inline-code entries, fenced directory-tree and dependency-diagram tokens, prose mentions), filed as exact specs-root-relative paths plus bare file names matched against any same-named section file (a tree spells its leaves without their parent directories), with URLs, parent-escaping/absolute paths, globs, markup debris and non-`.md` shapes excluded — deliberately dialect-tolerant: any task-table heading carrying "task" (`Navigation by Task`, `Task -> Specs`, `Task -> Spec`), any listing shape naming the file somewhere (link list, ASCII tree, backticked list, diagram brackets) counts as listed; `ROOT_FILE_MISSING` — INDEX.md or META.md absent from a tree holding at least one parsed file, a fully empty tree staying clean; `ADR_NAME_MALFORMED` — a decisions/ file whose base name is not `NNN-slug.md`; `ADR_NUMBER_MISMATCH` — a `# ADR-NNN:` heading number differing from the file name's, compared numerically; `SUPERSEDED_TARGET_MISSING` — a superseded ADR whose successor NNN no decisions/ file carries; `SUPERSEDED_CYCLE` — a supersession chain looping back to its own records, reported once on the lowest-path member) and are never persisted — the parse is cheap and always fresh. The last five checks are powered by the parser's ADR status classification (the `## Status` line's first word reduces to `accepted`/`superseded`; a superseded line's first successor reference — bracketed `[084]`/`[ADR-055]` or plain `ADR-055` — yields `superseded_by`, numeric comparison throughout) ([ADR-109](../decisions/109-specs-panel-simplification.md)).
-- Tier-2 semantic drift (type/behavior/config mismatch, violated invariants — `spec-check`'s vocabulary) stays conversational: the panel surfaces it only through the "Check drift" quick action, which dispatches `spec-check` into the chat; no machine-readable check artifact exists in v1.
-- This repository's own `specs/decisions/` tree carries a hard version of three tier-1 checks: `internal/specslint`'s `TestADRNumberingContract` runs in the default Go suite and fails on a file that is neither `NNN-slug.md` nor `_template.md`, on a missing `_template.md`, on a first line that is not an `# ADR-NNN:` heading, on an H1 number disagreeing with the file name's, and on one NNN claimed by two files (the `ADR_NAME_MALFORMED`/`ADR_NUMBER_MISMATCH`/`DUPLICATE_ADR_NUMBER` findings, enforced on c0wrk itself).
-- The panel refreshes on mount (tab activation), on an active-session switch (both fetch effects re-key — the mount/project-switch effect refires and the `workspace:tree_changed` subscription resubscribes — [ADR-116](../decisions/116-specs-root-follows-active-session.md)), on `workspace:tree_changed` events scoped to `specs/` paths, and on the header's manual refresh button (`specs-refresh`, inert while a fetch is in flight, rendered in both header branches) — all through the same `specsStore` fetch funnel: a repeated `GetSpecsStatus` whose LWW fetch ticket serializes overlapping flights and whose same-project same-session refetch keeps the previous status rendered (no flicker); there is no dedicated `specs:*` event pair (research needed one only for its status/graph split) and no refresh-specific RPC; the subscription lives inside `SpecsPanel` (the single consumer of `specsStore`), and the filter is fail-open when the event payload carries no paths.
-- Reads open through the existing file viewer (`fileViewerStore.openFile` + `setCollapsed(false)`); spec-relative links resolve lexically (`specsPaths.joinSpecPath` handles `./`, `#anchor`, and `../` escapes to absolute viewer paths).
-- The sidebar panel is the only Specs browser surface ([ADR-109](../decisions/109-specs-panel-simplification.md)): the header carries the integrity badge and the aggregate counts in both the `present` and `!present` branches, and the body carries the quick-actions row, the nested section tree, and the findings cascade.
-- ADR dates are derived from git history in the backend after the pure parse (one `git log --diff-filter=A -- specs/decisions` call, bounded by `gitCmdTimeout`, skipped when there are no ADRs) and are never written into the spec files; the derivation reads the workspace the root was derived from — the parsed tree's own HEAD, so a session worktree's dates come from the worktree, never the checkout ([ADR-116](../decisions/116-specs-root-follows-active-session.md)) — and is fail-soft: a non-git workspace, a missing git binary, an unborn HEAD, or any git error leaves every date absent while the RPC still succeeds (Debug-only logging). The sidebar tree renders each DECISIONS leaf's date in a fixed-width right-aligned column, and an undated record renders no column at all ([ADR-109](../decisions/109-specs-panel-simplification.md)).
-- The header's findings badge is the aggregate fix gesture and every finding card carries the per-finding one ([ADR-109](../decisions/109-specs-panel-simplification.md)): any nonzero finding count renders the header badge a button that dispatches exactly one `spec-update` task whose prompt enumerates the current parse's findings verbatim (kind, file, detail), built at click time from the store so the dispatched task sees exactly what the panel renders, and each finding card's fix badge dispatches exactly one `spec-update` task scoped to that single finding — the same dispatch path, the same current-project guard, and the aggregate's repair instructions shared verbatim; all three surfaces (the two prompts and the card's copy button) render their finding text through the single `specsActions.findingLine` (`- [kind] file: detail`), so they cannot drift apart; zero findings renders the inert "Integrity OK" chip.
-- The findings cascade's copy gesture writes the card's `findingLine` verbatim through the chat's native clipboard contract — `clipboardSetText` (the Wails runtime binding), never `navigator.clipboard` (unreliable inside the webview) — so the clipboard byte-matches the dispatched fix prompt's bullet; the button rides the card's hover `group` (and keyboard focus) as an opacity-only reveal that always occupies its layout slot, so revealing it shifts nothing.
-- The sidebar tree starts fully collapsed; its per-project expansion state (`treeExpandedNodes`, keyed projectId → node id) is the only persisted `specsStore` slice (zustand `persist` key `c0wrk-specs-view`), so expansion survives tab switches and app restarts while each project keeps its own set.
-- Every mutating quick action dispatches exactly one `spec-*` skill through `sendMessage`'s `activeSkills` slot with a constant prompt from `specsActions.ts` (`Init` — the empty state's CTA shares the `INITIALIZE_ACTION` constant verbatim — is always enabled; `Check`/`Consult`/`Explore` require a present tree; the narrow strip renders the short labels, with each constant's `fullLabel` spelling the gesture out in the tooltip, [ADR-109](../decisions/109-specs-panel-simplification.md)); a failed dispatch surfaces on `specsStore`'s error line (the panel keeps the previous status rendered), and Shift dispatches into a new session.
-- `specsStore` fetches are last-write-wins by initiation order (a monotonic ticket discards superseded responses) and are stamped with the (project, session) pair read at fetch start — a fetch for a new session of the same project clears the previous status exactly like a project switch does ([ADR-116](../decisions/116-specs-root-follows-active-session.md)); a failed fetch keeps the previous status and records the error.
+- The Specs surface is framework-aware and ships no workflow of its own: what it shows is decided by the recognised frameworks and their documents, and c0wrk neither embeds nor installs SDD skills — a workspace's SDD skills are ordinary agent-skill data that detection recognises wherever they are installed ([ADR-126](../decisions/126-sdd-framework-dsl.md)).
+- Visibility is `specs.enabled ∧ at least one framework detected`. Detection is decided by installed-skill evidence alone; markers and roots only order the default selection and feed the empty state. Zero recognised frameworks means the Specs tab does not exist.
+- `present` is the VISIBILITY answer, not the tree state: a recognised framework whose declared roots are absent reports `tree_present=false` (the empty state, with the bootstrap action) while `present` stays `true`.
+- `tree_present` is a FILESYSTEM predicate (a declared root exists), so a root directory that exists before its first document reports `tree_present=true` with zero documents: the panel then renders the SAME empty-state surface as the absent case, with the empty-tree reason naming the root and the bootstrap CTA, instead of a header claiming a result over an empty body — and the integrity badge says the tree had nothing to check rather than "Integrity OK".
+- Detection is refreshed from the permanently mounted workspace panel for BOTH projections on `workspace:tree_changed`/`skills:changed` (one debounced `fetchStatus` funnel): the negative one because the Specs tab does not exist to own the refetch, the positive one because the panel's own subscription only lives while the Specs tab is mounted — a removed root or skill must retire the tab, not leave a dead one.
+- The active framework is the per-project persisted selection (`project_ui_state.active_sdd`) when it is still detected, else detection's default. `SetActiveSDD` refuses a framework that is not detected for that project, refuses the No Project pseudo-project, clears the selection on an empty id, and never affects another project; the selection survives an app restart.
+- `selector_needed` is raised exactly when more than one framework is recognised and the persisted selection names none of them; the selector renders the chosen framework immediately and the previous parse stays on screen until the re-parse lands.
+- The tree follows the ACTIVE SESSION: `<workspace-of-the-active-session>` when one resolves, the project checkout as fallback ([ADR-116](../decisions/116-specs-root-follows-active-session.md), ADR-099's protocol). The root itself is the active framework's first declared root, not a fixed path.
+- The checkout-local operator DSL file is read from the project CHECKOUT, never from the session workspace: it is repository data travelling with the clone, not agent output (`sddCheckout` vs `sddWorkspace`).
+- The skill-discovery catalog merges the SAME checkout-local operator DSL detection reads: the session factory threads the project checkout through the builder (`OrchestratorFactory` → `Build` → the `SetSDDCatalog` seam), so the catalog provider is keyed on the project CHECKOUT — repository data — and never on a managed worktree's session tree (an empty checkout value falls back to the session workspace, the CHAT/No Project shape that has no checkout-local DSL). This closes ADR-126's former Known residual: the worktree window where a detected framework's declared custom skill directories did not reach session discovery while its actions stayed visible but inert.
+- The subsystem is strictly read-only: neither the parser nor the panel creates, modifies or deletes anything under a root. Every mutation is dispatched to a skill the active framework declares, and a framework declaring no action renders no gesture.
+- Every DTO collection and every counts map is non-nil on the wire (empty `[]`/`{}`, never `null`); `SpecsStatus` normalizes `[]`, `null` and missing alike, drops malformed entries per-entry and recomputes the counts from the normalized collections, so badges always agree with the rendered lists.
+- Findings exist only because a DECLARED check failed; the set, the keys, the messages and the severities belong to the active framework's document. A finding's `kind` and `severity` travel as open strings — an unknown kind keeps its own humanized label (rendered from the declared `message` when the document carries one) and no finding is dropped for a value the frontend does not recognise.
+- A mutating gesture is a declared action with a `skill`; the panel never invents one, never writes the tree, and an action whose `requires` are unmet renders inert with a reason instead of disappearing (an unknown requirement token fails closed to unavailable).
+- Every gesture that dispatches goes through two gates: the panel's dispatch dialog first (the DECLARED prompt verbatim, sent on confirm — a repo-authored prompt never enters the chat unseen), then the single send path (`useSpecsDispatch` → `sendMessage` with the skill in the `activeSkills` slot); a dispatch failure lands on the panel's own error banner, not a global toast, and Shift dispatches into a new session.
+- The tab strip's answer precedes the panel: `sddStore` holds the framework projection fed by the panel's parse (no second fetch, no second parse), and before a project's first answer the tab stays visible — unknown is not absent. A remembered Specs tab falls back to the layout's primary tab when the gate is off or nothing is detected (the indexing and research gates' contract).
+- `specsStore` fetches are last-write-wins by initiation order and stamped with the (project, session) pair read at fetch start; a failed fetch keeps the previous status and records the error; a same-(project, session) refetch keeps the previous status rendered (no flicker).
+- The panel refreshes on mount (tab activation), on an active-session switch, on `workspace:tree_changed` scoped to the active root, and on the header's manual refresh — all through the same fetch funnel; there is no `specs:*` event and no refresh-specific RPC.
+- Decision documents' `date` is derived from git history in the backend AFTER the pure parse (one bounded `git log --diff-filter=A` call, skipped when no document's declared concept classifies it as a decision (concept kind `decision`)), in the workspace the tree was parsed in; it is never written into the documents, and a non-git workspace, a missing git binary, an unborn HEAD or any git error leaves dates absent while the RPC still succeeds (Debug-only logging).
+- `GetSpecsStatus` requires a real project: the No Project pseudo-project returns the neutral `present=false` DTO (the defensive contract — the tab strip and the panel are not rendered in CHAT mode), and only a transport-level problem (unknown project, uninitialized subsystem) is a Go error. An unparseable workspace degrades to detected-but-empty with a warning.
+- The project-scoped DSL file is untrusted-adjacent input: strict validation, workspace-contained reads, no execution — a declared action's prompt only reaches the model after the user has seen it verbatim in the panel's dispatch dialog and confirmed the send, and the dispatched task still runs through the ordinary policy/judge/confirmation pipeline ([sdd-dsl.md](sdd-dsl.md) § Security Model).
+- `specs.enabled` is a PURE visibility gate: `SetSpecsEnabled` persists (a failed write rolls the in-memory value back; a same-value request is a no-op), announces `config:updated`, and touches nothing on disk. Recognition, the DSL files, the roots and the read RPCs are unaffected by the toggle.
+- This repository's own `specs/decisions/` tree carries a hard version of three of its own declared checks: `internal/specslint`'s `TestADRNumberingContract` runs in the default Go suite and fails on a file that is neither `NNN-slug.md` nor `_template.md`, on a missing `_template.md`, on a first line that is not an `# ADR-NNN:` heading, on an H1 number disagreeing with the file name's, and on one NNN claimed by two files.
 
 ## Configuration
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| Specs root | `<workspace>/specs` | Session-following root (`config.ProjectSpecsPath`): the active session's workspace when one resolves, the project checkout as fallback ([ADR-116](../decisions/116-specs-root-follows-active-session.md)); read-only, never persisted, no override |
-| Surface gate | `specs.enabled: true` | The Settings → General master toggle ([ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md)): off hides the Specs sidebar tab and unseeds the spec skill/agent packs; off also unseeds them at the launch seed (idempotent reconcile) |
-| Global seed dir | `~/.c0wrk/.agents/` (`config.SkillsDir`/`config.AgentsDir` on the agent dir) | Destination of the startup `seedGlobalPacks` run; outranks `~/.agents` in discovery |
-| Skill-pack seed version | `2` (`specs.CurrentSeedVersion`) | Stamped into each seeded skill's `.seed-version`; bump to refresh pack-marked copies |
-| Agent-pack seed version | `2` (`specs.AgentSeedVersion`) | The `specs` profile's independent version |
+| Surface gate | `specs.enabled: true` | Settings → General toggle ([ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md), specs half amended by [ADR-126](../decisions/126-sdd-framework-dsl.md)): off hides the Specs tab and the panel; no pack side-effect |
+| Global definitions file | `~/.c0wrk/specs.yaml` (`config.SDDPath`) | Optional operator DSL stream, merged after the built-ins, never created |
+| Project definitions file | `<checkout>/.c0wrk/specs.yaml` (`config.ProjectSDDPath`) | Optional operator DSL stream travelling with the repository, merged last, never created |
+| Active framework | detection default | Per-project `project_ui_state.active_sdd`; `SetActiveSDD` writes it, an empty value restores the default |
+| Document size cap | 8 MiB | One oversized document is skipped with a warning |
 
-The specs root, parser, and RPCs are always on: there is no experimental gate and no per-project toggle (the panel's availability follows the workspace having a `specs/` tree; the seed follows the RESEARCH always-on precedent, [ADR-056](../decisions/056-research-always-on-global-seeding.md)). The single operator switch is the sidebar surface gate `specs.enabled` ([ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md), default on), which hides the Specs sidebar tab and unseeds the globally-seeded spec packs — the root, the parser, and `GetSpecsStatus` stay untouched.
+There is no per-project toggle and no experimental gate: the surface is available wherever a framework is recognised and the gate is on. The framework definitions themselves are the configuration surface ([sdd-dsl.md](sdd-dsl.md) § Configuration).
 
 ## Extension Points
 
-- Update the vendored skills by changing `core/specs/skills/` (and `core/specs/agents/specs/AGENT.md`) and incrementing `CurrentSeedVersion`/`AgentSeedVersion` when existing pack-marked copies must refresh; evaluate upstream vibespec changes by hand — never pull them.
-- Add a tier-1 finding kind in `core/specs` (a new `FindingKind` + its check in `parse.go`), then mirror it in `frontend/src/types/models.ts` (`SpecFindingKind`) and `specsPaths.findingKindLabel` (an unknown kind passes through the boundary with a generic label, so the frontend degrades instead of dropping).
-- Extend the parsed model (a new `SpecFile`/`ADRMeta` field) by extending the pure parser, the DTO, the frontend boundary validation, and the panel together — the DTO contract is additive-only for the same hand-written-guard reasons as the other boundaries ([../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) § Specs). A view-only enrichment the parse model must not carry (e.g. the git-derived ADR `date`, ADR-108 decision 3) lives in the backend DTO layer alone, keeping `core/specs` pure.
-- Add a quick action in `specsActions.ts` (one constant: short `label` + optional `fullLabel` + the `spec-*` skill + the prompt); the dispatch path (`useSpecsDispatch`) and the row render it without further wiring.
-- Change the panel's refresh model only with matching updates to this document and the desktop-frontend contract; a dedicated `specs:*` event requires superseding [ADR-106](../decisions/106-specs-sidebar-panel.md) decision 3.
+- **Support another SDD framework** by adding a `sdd-framework/v1` document to `~/.c0wrk/specs.yaml` or `<checkout>/.c0wrk/specs.yaml` (or embedding it in `core/sdd/frameworks/`) — no Go and no frontend change ([sdd-dsl.md](sdd-dsl.md) § Extension Points).
+- **Change what a gesture does** by editing the declaring action's `skill`/`prompt` in the framework document; the panel renders whatever is declared and has no gesture vocabulary of its own.
+- **Add a view** by declaring a `views.sections` entry; the panel renders `tree` sections as nested trees and `findings`/`checks` sections as the findings list, in declaration order.
+- **Add a check** as a new DSL kind (a reviewed code change in `core/sdd`), then reference it from the framework documents.
+- **Add a framework-neutral field to the status** by extending the DTO, `applySDDTree` and the frontend boundary guard together — additive only, so an older payload still validates.
 
 ## Related Specs
 
-- [ADR-105](../decisions/105-vendor-spec-skillset.md) - the vendoring, the c0wrk adaptation, the independent-evolution policy, and the `core/seedpack` consolidation.
-- [ADR-106](../decisions/106-specs-sidebar-panel.md) - the panel's six design decisions (placement, data source, refresh, interaction split, two-tier drift, scope boundary).
-- [ADR-108](../decisions/108-specs-panel-usability-redesign.md) - the usability redesign: the fail-soft git-derived ADR dates, the sidebar recomposition (nested tree + findings) and the persisted per-project tree expansion (the overview page and the Open-overview opener it also introduced are superseded by [ADR-109](../decisions/109-specs-panel-simplification.md)).
-- [ADR-109](../decisions/109-specs-panel-simplification.md) - the simplification: the overview page removed (the sidebar panel is the Specs browser again), the findings badge as the one-click `spec-update` fix dispatch, short quick-action labels with full-name tooltips, the DECISIONS date column, and the tier-1 net widened to nine checks.
-- [ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md) - the `specs.enabled` surface gate: hides the sidebar tab and unseeds/reseeds the spec packs (the delete half of the pack lifecycle; amends ADR-105's always-seeded invariant).
-- [ADR-116](../decisions/116-specs-root-follows-active-session.md) - the specs root follows the active session: the session-worktree root resolution with the checkout fallback, the shared parse/date boundary, and the frontend (project, session) pair contract — amends ADR-106's root clause by reference.
-- [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - the `GetSpecsStatus` RPC surface and wire shapes (§ Specs).
-- [research.md](research.md) - the global pack-seeding precedent this pack inherits (ADR-056) and the closest panel precedent.
-- [frontend/stores.md](frontend/stores.md) - `specsStore` and the `WorkspaceTab` extension in `uiStore`.
+- [sdd-dsl.md](sdd-dsl.md) - the declarative framework description this subsystem renders: format, primitives, merge rules, security.
+- [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - `GetSpecsStatus` / `SetActiveSDD` and the `SpecsStatusDTO` wire shape.
+- [../decisions/126-sdd-framework-dsl.md](../decisions/126-sdd-framework-dsl.md) - the decision that replaced the fixed layout and the shipped skillset with detection + DSL.
+- [../decisions/106-specs-sidebar-panel.md](../decisions/106-specs-sidebar-panel.md), [../decisions/108-specs-panel-usability-redesign.md](../decisions/108-specs-panel-usability-redesign.md), [../decisions/109-specs-panel-simplification.md](../decisions/109-specs-panel-simplification.md) - the panel's shape: one read RPC, the sidebar-only surface, the findings gesture.
+- [../decisions/116-specs-root-follows-active-session.md](../decisions/116-specs-root-follows-active-session.md) - the session-following root protocol this subsystem reuses.
+- [../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md) - the sidebar gate contract (research half authoritative; specs half amended).
+- [research.md](research.md) - the sibling always-on research surface, for the contrast in how the two sidebar gates behave.
+- [../architecture/security-model.md](../architecture/security-model.md) - the policy pipeline a dispatched action's task runs under.

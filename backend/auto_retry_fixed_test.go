@@ -140,7 +140,7 @@ func TestFixedAutoRetryInvalidHiddenKimi(t *testing.T) {
 	}
 
 	// Accept path: a valid hidden fixed interval is stored and persists even
-	// though the compatible entry keeps snapshot precedence (ADR-126).
+	// though the compatible entry keeps snapshot precedence (ADR-127).
 	if err := f.UpdateLLMConfig(fixedRetryRequest("kimi", intPtr(300))); err != nil {
 		t.Fatalf("UpdateLLMConfig(hidden kimi, 300): %v", err)
 	}

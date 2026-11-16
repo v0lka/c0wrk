@@ -76,12 +76,15 @@ type Config struct {
 	Runtime           RuntimeConfig           `yaml:"runtime"`
 	Notifications     NotificationsConfig     `yaml:"notifications"`
 
-	// Research and Specs gate the sidebar's Research and Specs surfaces
-	// together with their globally-seeded skill/agent packs: a disabled
-	// surface hides its sidebar button and unseeds the pack copies; enabling
-	// it reseeds them. Pointer-bools: unset = enabled — the packs seed
-	// exactly as they did before the gates existed. See the sidebar-packs
-	// ADR and specs/domains/{research,specs}.md.
+	// Research gates the sidebar's Research surface together with its
+	// globally-seeded skill/agent pack: a disabled gate hides the sidebar
+	// button and unseeds the pack copies; enabling it reseeds them.
+	// Specs (ADR-126) is a VISIBILITY GATE ONLY: c0wrk ships no spec
+	// skillset, seeds nothing for it, and flipping the gate never touches
+	// the disk — it shows or hides the surface whose content is whatever
+	// specification framework the workspace itself has installed.
+	// Pointer-bools: unset = enabled. See the sidebar-packs ADR,
+	// ADR-126 and specs/domains/{research,specs}.md.
 	Research SidebarPackConfig `yaml:"research"`
 	Specs    SidebarPackConfig `yaml:"specs"`
 
@@ -535,7 +538,7 @@ type AnthropicConfig struct {
 	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
 	// disabled); not mapped into ToBuilderConfig — the backend only
 	// classifies the failure and stamps the advisory deadline, the UI owns
-	// the countdown. See ADR-126.
+	// the countdown. See ADR-127.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 }
 
@@ -554,7 +557,7 @@ type OpenAICompatibleConfig struct {
 	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
 	// disabled); not mapped into ToBuilderConfig — the backend only
 	// classifies the failure and stamps the advisory deadline, the UI owns
-	// the countdown. See ADR-126.
+	// the countdown. See ADR-127.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 	// TimeoutClass is the adaptive request budget's class override
 	// (ADR-071 D3): "local" or "remote"; empty = infer (loopback base_url is
@@ -621,7 +624,7 @@ type AnthropicCompatibleConfig struct {
 	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
 	// disabled); not mapped into ToBuilderConfig — the backend only
 	// classifies the failure and stamps the advisory deadline, the UI owns
-	// the countdown. See ADR-126.
+	// the countdown. See ADR-127.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 	// TimeoutClass is the adaptive request budget's class override
 	// (ADR-071 D3): "local" or "remote"; empty = infer (loopback base_url is
@@ -657,7 +660,7 @@ type ChatGPTConfig struct {
 	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
 	// disabled); not mapped into ToBuilderConfig — the backend only
 	// classifies the failure and stamps the advisory deadline, the UI owns
-	// the countdown. See ADR-126.
+	// the countdown. See ADR-127.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 }
 
@@ -688,7 +691,7 @@ type KimiConfig struct {
 	// AutoRetrySeconds is the session-layer resend interval (seconds; 0 =
 	// disabled); not mapped into ToBuilderConfig — the backend only
 	// classifies the failure and stamps the advisory deadline, the UI owns
-	// the countdown. See ADR-126.
+	// the countdown. See ADR-127.
 	AutoRetrySeconds   int `yaml:"auto_retry_seconds,omitempty"`
 	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
@@ -2200,14 +2203,16 @@ func (c PromptSuggestionsConfig) SuggestionsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
-// SidebarPackConfig gates one sidebar feature surface (Research or Specs)
-// together with its globally-seeded skill/agent pack: a disabled surface
-// hides its sidebar button and unseeds its pack copies; enabling it reseeds
-// them (seedGlobalPacks). See the sidebar-packs ADR and
-// specs/domains/{research,specs}.md.
+// SidebarPackConfig gates one sidebar feature surface. For Research the gate
+// also owns the surface's globally-seeded skill/agent pack: a disabled gate
+// hides the sidebar button and unseeds the pack copies; enabling it reseeds
+// them (seedGlobalPacks). For Specs the gate is visibility-only (ADR-126 —
+// no shipped skillset, no seed, no unseed). See the sidebar-packs ADR,
+// ADR-126 and specs/domains/{research,specs}.md.
 type SidebarPackConfig struct {
 	// Enabled is the surface's master gate; nil defaults to true — explicit
-	// false is the only way the pack goes unseeded.
+	// false is the only way the Research pack goes unseeded (Specs never
+	// seeds anything).
 	Enabled *bool `yaml:"enabled"`
 }
 

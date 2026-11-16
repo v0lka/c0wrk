@@ -1,0 +1,240 @@
+# OpenSpec — delta-driven SDD. openspec/specs is the source of truth; a change
+# is a self-contained folder of artifacts whose delta specs merge into the
+# source of truth when the change is archived.
+# Grounded in the upstream docs (concepts, getting-started, setup).
+schema: sdd-framework/v1
+id: openspec
+label: OpenSpec
+description: >-
+  Delta-driven spec-driven development. openspec/specs describes current
+  behavior per capability; openspec/changes holds one folder per proposed
+  modification with a proposal, delta specs, a design and a task list, and
+  archiving merges the deltas into the capability specs.
+docs_url: https://github.com/Fission-AI/OpenSpec
+priority: 20
+
+detect:
+  markers:
+    - openspec/config.yaml
+    - openspec/specs
+    - openspec/changes
+  skills:
+    dirs:
+      - .agents/skills
+      - .claude/skills
+    all_of:
+      - openspec-propose
+    any_of:
+      - openspec-apply-change
+      - openspec-sync-specs
+      - openspec-archive-change
+
+roots:
+  - id: openspec
+    path: openspec
+    label: OpenSpec tree
+    required: true
+
+concepts:
+  - kind: config
+    label: Project configuration
+    match:
+      root: openspec
+      glob: config.yaml
+
+  - kind: project
+    label: Legacy project context
+    match:
+      root: openspec
+      glob: project.md
+    extract: [title, headings, cross_refs]
+    required: [title]
+
+  - kind: schema
+    label: Workflow schema
+    match:
+      root: openspec
+      glob: schemas/*/schema.yaml
+
+  - kind: capability
+    label: Capability
+    match:
+      root: openspec
+      glob: specs/*
+      dir: true
+
+  - kind: spec
+    label: Capability spec
+    match:
+      root: openspec
+      glob: specs/*/spec.md
+    extract: [title, purpose, requirements, scenarios, cross_refs, headings]
+    required: [title, purpose, requirements]
+
+  - kind: change
+    label: Change
+    match:
+      root: openspec
+      glob: changes/*
+      dir: true
+    files: [proposal.md]
+
+  - kind: proposal
+    label: Proposal
+    match:
+      root: openspec
+      glob: changes/*/proposal.md
+    extract: [title, headings, cross_refs]
+    required: [title]
+
+  - kind: design
+    label: Design
+    match:
+      root: openspec
+      glob: changes/*/design.md
+    extract: [title, headings, cross_refs]
+    required: [title]
+
+  - kind: tasks
+    label: Tasks
+    match:
+      root: openspec
+      glob: changes/*/tasks.md
+    extract: [title, task_items, headings]
+    required: [title, tasks]
+
+  - kind: delta
+    label: Delta spec
+    match:
+      root: openspec
+      glob: changes/*/specs/*/spec.md
+    extract: [title, deltas, requirements, scenarios, cross_refs]
+    required: [title]
+
+  - kind: archive
+    label: Archive
+    match:
+      root: openspec
+      glob: changes/archive
+      dir: true
+
+  - kind: archived-change
+    label: Archived change
+    match:
+      root: openspec
+      glob: changes/archive/*
+      dir: true
+
+  # Archived changes keep their artifacts on disk; without file concepts the
+  # folders showed up empty and the artifacts dropped out of every check.
+  - kind: archived-proposal
+    label: Archived proposal
+    match:
+      root: openspec
+      glob: "changes/archive/*/proposal.md"
+    extract: [title, headings, cross_refs]
+
+  - kind: archived-design
+    label: Archived design
+    match:
+      root: openspec
+      glob: "changes/archive/*/design.md"
+    extract: [title, headings, cross_refs]
+
+  - kind: archived-tasks
+    label: Archived tasks
+    match:
+      root: openspec
+      glob: "changes/archive/*/tasks.md"
+    extract: [title, task_items, headings]
+
+  - kind: archived-delta
+    label: Archived delta spec
+    match:
+      root: openspec
+      glob: "changes/archive/*/specs/*/spec.md"
+    extract: [title, deltas, headings]
+
+checks:
+  - kind: required_files
+    finding: CHANGE_PROPOSAL_MISSING
+    message: every active change must carry proposal.md
+    concept: change
+    from: files
+
+  - kind: crossrefs
+    finding: CROSS_REF_BROKEN
+    message: a relative spec link or anchor must resolve
+
+  # The structural checks read PROSE (the markdown body with fenced examples
+  # removed): a "### Requirement: Example" inside a fenced format sample is a
+  # documented example, not a declared requirement.
+  - kind: content_regex
+    finding: REQUIREMENT_MISSING
+    message: a capability spec must declare at least one "### Requirement:" heading
+    concept: spec
+    in: prose
+    regex: '^### Requirement: \S'
+
+  - kind: content_regex
+    finding: DELTA_SECTION_MISSING
+    message: a delta spec must declare at least one ADDED, MODIFIED, REMOVED or RENAMED requirements section
+    concept: delta
+    in: prose
+    regex: '^## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements$'
+
+actions:
+  - kind: explore
+    label: Explore
+    skill: openspec-explore
+    prompt: Think the idea through against the current capability specs before proposing a change.
+    requires: [root]
+  - kind: propose
+    label: Propose
+    skill: openspec-propose
+    prompt: Propose a change and draft its artifacts (proposal, delta specs, design, tasks).
+    requires: [root]
+  - kind: apply
+    label: Apply
+    skill: openspec-apply-change
+    prompt: 'Implement the tasks of the change at {path} in openspec/changes, updating its artifacts as the work teaches you more.'
+    concept: change
+    requires: [root, concept:change]
+  - kind: update
+    label: Revise
+    skill: openspec-update-change
+    prompt: 'Revise the plan and artifacts of the change at {path} in openspec/changes.'
+    concept: change
+    requires: [root, concept:change]
+  - kind: sync
+    label: Sync specs
+    skill: openspec-sync-specs
+    prompt: 'Sync the spec updates of the change at {path} in openspec/changes into openspec/specs.'
+    concept: change
+    requires: [root, concept:change]
+  - kind: verify
+    label: Verify
+    skill: openspec-verify-change
+    prompt: 'Check that the implementation matches the plan of the change at {path} in openspec/changes.'
+    concept: change
+    requires: [root, concept:change]
+  - kind: archive
+    label: Archive
+    skill: openspec-archive-change
+    prompt: 'Archive the completed change at {path} in openspec/changes, merging its deltas into the capability specs.'
+    concept: change
+    requires: [root, concept:change]
+
+views:
+  sections:
+    - id: specs
+      label: Specifications
+      kind: tree
+      concepts: [config, project, schema, capability, spec]
+    - id: changes
+      label: Changes
+      kind: tree
+      concepts: [change, proposal, design, tasks, delta, archive, archived-change, archived-proposal, archived-design, archived-tasks, archived-delta]
+    - id: findings
+      label: Findings
+      kind: findings

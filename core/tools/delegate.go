@@ -589,7 +589,7 @@ func AgentResolverFrom(ctx context.Context) AgentResolver {
 	return nil
 }
 
-// --- Profile model override validation plumbing ---
+// --- Task and profile model override validation plumbing ---
 
 // ModelOverrideValidator checks a delegation's model override — a Subagent
 // Profile's `model:` pin or an explicit task-level `model` (ADR-123) —

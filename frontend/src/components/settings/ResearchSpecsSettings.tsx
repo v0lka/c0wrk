@@ -10,10 +10,11 @@ import { Toggle } from './ModelProfilesControls'
  * General-tab control for the sidebar surface gates (config
  * `research.enabled` / `specs.enabled`), mirroring PromptSuggestionsSettings
  * above it. Each gate decides whether its sidebar tab (Research / Specs in
- * the workspace panel) renders at all AND whether the surface's
- * globally-seeded skill/agent pack stays on disk: disabling hides the tab
- * and unseeds the pack copies; enabling reseeds them. Both effects run in
- * the backend toggle RPC — no restart.
+ * the workspace panel) renders at all. The Research gate ALSO owns its
+ * globally-seeded skill/agent pack: disabling hides the tab and unseeds the
+ * pack copies, enabling reseeds them. The Specs gate is pure VISIBILITY —
+ * c0wrk ships no spec pack (ADR-126), so it never touches disk. Both RPCs
+ * apply in the same call — no restart.
  *
  * The values live in backend config (nil default = on), so the section reads
  * the effective gates through GetConfig on mount and writes through
@@ -98,7 +99,7 @@ export function ResearchSpecsSettings() {
         onChange={(next) => void handleChange('specs', next)}
         disabled={gates.specs === null || saving !== null}
         label="Specs"
-        description="Show the Specs sidebar tab and keep its seeded skills and agent on disk (the spec-* skills, the specs agent). Disabling hides the tab and removes the seeded copies; locally edited copies are kept. The change applies immediately."
+        description="Show the Specs sidebar tab. c0wrk ships no Specs skill pack, so this toggle only shows or hides the tab — nothing is written to or removed from disk. Copies a previous version seeded (the spec-* skills, the specs agent) stay where they are and can be deleted by hand. The change applies immediately."
       />
     </div>
   )

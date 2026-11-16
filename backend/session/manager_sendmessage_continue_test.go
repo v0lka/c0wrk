@@ -88,8 +88,8 @@ func finishResponse(answer string) *llm.ChatResponse {
 // ConversationHistory) after execution.
 func capturingFunctionalFactory(caller agent.LLMCaller, out **core.Orchestrator) OrchestratorFactory {
 	inner := functionalOrchestratorFactory(caller)
-	return func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, tracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		orch, err := inner(emitter, logger, workspacePath, bbFactory, dumpWriter, tracker)
+	return func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, tracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		orch, err := inner(emitter, logger, workspacePath, "", bbFactory, dumpWriter, tracker)
 		if err == nil && out != nil {
 			*out = orch
 		}
@@ -102,7 +102,7 @@ func capturingFunctionalFactory(caller agent.LLMCaller, out **core.Orchestrator)
 // execute path can run end-to-end in tests. The same caller backs the router
 // and the executor.
 func routingFunctionalFactory(caller agent.LLMCaller) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
 			cw := memory.NewContextWindow(memory.ContextWindowConfig{
@@ -515,7 +515,7 @@ func (a *attachmentsTrackingResumeStore) SaveAttachments(_ context.Context, _ st
 // not needed (and a nil Router is safe because routeOrContinue/routeAndActivate
 // Skills are never reached on this path).
 func overrideFunctionalFactory(caller agent.LLMCaller, switcher *llm.Router) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
 			cw := memory.NewContextWindow(memory.ContextWindowConfig{
@@ -1115,7 +1115,7 @@ func TestSendMessage_GoalIntoPausedSession_AbandonsAndRunsFreshGoal(t *testing.T
 // turn declare_goal_status) — the empty default registry fails those calls
 // and the loop exits before activation, emitting no goal_status at all.
 func goalBudgetTestFactory(caller agent.LLMCaller) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		registry.Register(coretools.NewProposeGoalTool())
 		registry.Register(coretools.NewDeclareGoalStatusTool())

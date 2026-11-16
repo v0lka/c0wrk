@@ -194,7 +194,7 @@ type ProviderConfigRequest struct {
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
 	// AutoRetrySeconds: nil = keep the persisted interval; non-nil applies
 	// verbatim, so an explicit 0 DISABLES auto-resend. Config round-trip
-	// only (no backend timer; the UI owns the countdown). See ADR-126.
+	// only (no backend timer; the UI owns the countdown). See ADR-127.
 	AutoRetrySeconds *int `json:"auto_retry_seconds,omitempty"`
 	// TimeoutClass (ADR-071 D3): nil = keep; non-nil applies verbatim after
 	// enum validation, so an explicit "" CLEARS the override.

@@ -415,6 +415,8 @@ export function SendSystemNotification(arg1:string,arg2:string,arg3:Record<strin
 
 export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
 
+export function SetActiveSDD(arg1:string,arg2:string):Promise<void>;
+
 export function SetEmbeddedLLMAutoUnload(arg1:boolean,arg2:number):Promise<void>;
 
 export function SetEmbeddedLLMTuning(arg1:backend.EmbeddedLLMTuningRequest):Promise<void>;

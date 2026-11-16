@@ -24,6 +24,7 @@ import (
 	"github.com/v0lka/c0wrk/core/llmtls"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/c0wrk/core/sdd"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
@@ -94,6 +95,13 @@ type OrchestratorBuilder struct {
 	baseSkillDirs            []string     // resolved skill dirs shared across sessions (highest priority first)
 	baseAgentDirs            []string     // resolved Subagent Profile dirs shared across sessions (highest priority first)
 	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
+	// sddCatalog returns the framework catalog — built-ins MERGED with the
+	// operator's global + checkout-local DSL definitions — whose
+	// detect.skills.dirs join the session's skill discovery set. Nil (never
+	// wired) falls back to the built-in catalog alone: the detection the
+	// Specs panel runs and the discovery the sessions run must not diverge
+	// because one reads the operator DSL and the other does not.
+	sddCatalog func(workspacePath string) []sdd.Framework
 
 	// embeddedLLM is the builder-level embedded-model seam: the default applied to every
 	// router built without a per-build Loader — the per-session factory has no path to the
@@ -441,12 +449,18 @@ func (b *OrchestratorBuilder) ModelRegistry() *llm.ModelRegistry {
 // Build creates a per-session Orchestrator: a fresh LLM router, core agents and
 // context factory per session, while the tool registry and MCP gateway are shared.
 // A non-empty workspacePath prepends `<workspacePath>/.agents/skills` (highest
-// priority) to this session's skill discovery dirs.
+// priority) to this session's skill discovery dirs. sddCheckoutPath is the
+// project's repository checkout — the root whose checkout-local SDD operator
+// DSL (specs.yaml) the framework-catalog provider reads for this session's
+// skill discovery; it is repository data and deliberately does not follow the
+// session's execution workspace (a managed worktree). An empty value falls
+// back to workspacePath.
 func (b *OrchestratorBuilder) Build(
 	cfg *BuilderConfig,
 	emitter Emitter,
 	logger *slog.Logger,
 	workspacePath string,
+	sddCheckoutPath string,
 	bbFactory BlackboardFactory,
 	hitlHandler agent.HITLHandler,
 	dumpWriter io.Writer,
@@ -648,8 +662,9 @@ func (b *OrchestratorBuilder) Build(
 	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter, logger)
 
 	// Per-session SkillManager: project-local .agents/skills is always prepended (highest
-	// priority) — built per-session since workspaces differ.
-	sessionSkillMgr := b.buildSessionSkillManager(workspacePath, logger)
+	// priority) — built per-session since workspaces differ. The SDD framework
+	// catalog is keyed on the project checkout, not this execution workspace.
+	sessionSkillMgr := b.buildSessionSkillManager(workspacePath, sddCheckoutPath, logger)
 
 	// Per-session AgentManager: mirrors the skill manager for Subagent Profiles
 	// (project-local .agents/agents prepended; nil-safe when no agent dirs are configured).
@@ -1477,8 +1492,9 @@ func (b *OrchestratorBuilder) SetVectorSearchEnabled(enabled bool) {
 }
 
 // SetSkillDirs sets the base (shared) skill discovery directories; paths must already
-// be absolute and expanded. The project-local directory is prepended automatically in
-// Build — do NOT include it.
+// be absolute and expanded. The project-local directories — <ws>/.agents/skills and the
+// SDD framework's declared skill dirs (e.g. <ws>/.claude/skills) — are derived per
+// session by SkillDirsForWorkspace; do NOT include them.
 func (b *OrchestratorBuilder) SetSkillDirs(dirs []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1492,28 +1508,28 @@ func (b *OrchestratorBuilder) GetBaseSkillDirs() []string {
 	return append([]string(nil), b.baseSkillDirs...)
 }
 
-// GetSkillDescriptors returns lightweight skill descriptors from the shared base dirs
-// plus an optional project-local skill directory — the frontend ListSkills API's path,
-// avoiding a full SkillManager per call.
-func (b *OrchestratorBuilder) GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor {
-	b.mu.RLock()
-	baseDirs := append([]string(nil), b.baseSkillDirs...)
-	b.mu.RUnlock()
-
-	dirs := make([]string, 0, len(baseDirs)+1)
-	if projectSkillDir != "" {
-		dirs = append(dirs, projectSkillDir)
+// GetSkillDescriptors returns lightweight skill descriptors for an explicit
+// discovery SET — the frontend ListSkills API's path, avoiding a full
+// SkillManager per call. dirs is the complete ordered set (see
+// SkillDirsForWorkspace): project-local .agents/skills, the detected SDD
+// framework's skill directories, then the shared base dirs. An empty set falls
+// back to the shared base dirs, so a caller with no workspace still sees them.
+func (b *OrchestratorBuilder) GetSkillDescriptors(dirs []string) []skills.SkillDescriptor {
+	scanDirs := dedupeSkillDirs(dirs)
+	if len(scanDirs) == 0 {
+		b.mu.RLock()
+		scanDirs = append([]string(nil), b.baseSkillDirs...)
+		b.mu.RUnlock()
 	}
-	dirs = append(dirs, baseDirs...)
 
-	if len(dirs) == 0 {
+	if len(scanDirs) == 0 {
 		return nil
 	}
 
 	// Rebuilt on demand; the FrontendAPI layer caches between calls.
-	sm := skills.NewSkillManager(dirs, b.log())
+	sm := skills.NewSkillManager(scanDirs, b.log())
 	if err := sm.Scan(); err != nil {
-		b.log().Warn("GetSkillDescriptors scan failed", "error", err, "dirs", dirs)
+		b.log().Warn("GetSkillDescriptors scan failed", "error", err, "dirs", scanDirs)
 	}
 	return sm.List()
 }
@@ -1562,10 +1578,12 @@ func (b *OrchestratorBuilder) GetAgentDescriptors(projectAgentDir string) []agen
 
 // ResolveSkillResourcePath resolves a read_skill_resource (skill, path) call to the
 // absolute file path the tool actually read — same discovery order as a session's
-// SkillManager (project-local first, first occurrence wins), same skills.SafeResolvePath
-// traversal guard. Used by the frontend RPC so a tool-call card can open the resource in
-// the viewer; errors fall back to rendering the path as plain text.
-func (b *OrchestratorBuilder) ResolveSkillResourcePath(projectSkillDir, skillName, relPath string) (string, error) {
+// SkillManager (SkillDirsForWorkspace: project-local first, first occurrence
+// wins), same skills.SafeResolvePath traversal guard. Used by the frontend RPC
+// so a tool-call card can open the resource in the viewer; errors fall back to
+// rendering the path as plain text. workspacePath is the active project's
+// workspace ("" in CHAT mode: the shared base dirs alone).
+func (b *OrchestratorBuilder) ResolveSkillResourcePath(workspacePath, skillName, relPath string) (string, error) {
 	if skillName == "" {
 		return "", errors.New("skill name is required")
 	}
@@ -1573,15 +1591,9 @@ func (b *OrchestratorBuilder) ResolveSkillResourcePath(projectSkillDir, skillNam
 		return "", errors.New("resource path is required")
 	}
 
-	b.mu.RLock()
-	baseDirs := append([]string(nil), b.baseSkillDirs...)
-	b.mu.RUnlock()
-
-	dirs := make([]string, 0, len(baseDirs)+1)
-	if projectSkillDir != "" {
-		dirs = append(dirs, projectSkillDir)
-	}
-	dirs = append(dirs, baseDirs...)
+	// The caller resolves workspacePath to the project checkout
+	// (activeProjectPath), so it serves as the operator-DSL root too.
+	dirs := b.skillDirsForWorkspace(workspacePath, workspacePath, b.log())
 	if len(dirs) == 0 {
 		return "", errors.New("no skill directories configured")
 	}
@@ -1602,20 +1614,13 @@ func (b *OrchestratorBuilder) ResolveSkillResourcePath(projectSkillDir, skillNam
 	return skills.SafeResolvePath(context.TODO(), skillDir, relPath)
 }
 
-// buildSessionSkillManager constructs a per-session SkillManager that always scans the
-// project's .agents/skills (when workspacePath is set); scan errors log and never abort
-// startup.
-func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath string, logger *slog.Logger) *skills.SkillManager {
-	b.mu.RLock()
-	baseDirs := append([]string(nil), b.baseSkillDirs...)
-	b.mu.RUnlock()
-
-	dirs := make([]string, 0, len(baseDirs)+1)
-	if workspacePath != "" {
-		dirs = append(dirs, filepath.Join(workspacePath, SkillsRelativePath))
-	}
-	dirs = append(dirs, baseDirs...)
-
+// buildSessionSkillManager constructs a per-session SkillManager over the
+// session's full discovery set — the project's .agents/skills, the detected SDD
+// framework's skill directories (e.g. .claude/skills) and the shared base dirs
+// (SkillDirsForWorkspace), so a skill installed outside .agents/skills is
+// activatable by name. Scan errors log and never abort startup.
+func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath, sddCheckoutPath string, logger *slog.Logger) *skills.SkillManager {
+	dirs := b.skillDirsForWorkspace(workspacePath, sddCheckoutPath, logger)
 	if len(dirs) == 0 {
 		return nil
 	}

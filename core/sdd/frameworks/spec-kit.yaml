@@ -1,0 +1,243 @@
+# GitHub Spec Kit — constitution-constrained SDD. One project constitution in
+# .specify/memory, one directory per feature under specs/, and per-feature
+# artifacts that feed each other: spec -> plan -> tasks, with research, data
+# model, contracts and quickstart generated during planning.
+# Grounded in the upstream README, quickstart and the published artifact tree.
+schema: sdd-framework/v1
+id: spec-kit
+label: GitHub Spec Kit
+description: >-
+  Constitution-constrained spec-driven development. .specify/memory holds the
+  project constitution every later step is judged against, .specify keeps the
+  templates and the active-feature pointer, and specs/<feature> carries the
+  specification, plan, research, data model, contracts, quickstart and tasks
+  artifacts for one feature.
+docs_url: https://github.com/github/spec-kit
+priority: 30
+
+detect:
+  markers:
+    - .specify/memory/constitution.md
+    - .specify/feature.json
+    - .specify/templates
+  skills:
+    dirs:
+      - .agents/skills
+      - .claude/skills
+    any_of:
+      - speckit-constitution
+      - speckit-specify
+      - speckit-plan
+      - speckit-tasks
+
+roots:
+  - id: specs
+    path: specs
+    label: Feature specifications
+    required: true
+  - id: specify
+    path: .specify
+    label: Spec Kit project state
+    required: true
+
+concepts:
+  - kind: constitution
+    label: Constitution
+    match:
+      root: specify
+      glob: memory/constitution.md
+    extract: [title, principles, headings, cross_refs]
+    required: [title, principles]
+
+  - kind: template
+    label: Template
+    match:
+      root: specify
+      glob: templates/*.md
+    extract: [title, headings]
+    required: [title]
+
+  - kind: feature-state
+    label: Active feature
+    match:
+      root: specify
+      glob: feature.json
+
+  - kind: feature
+    label: Feature
+    match:
+      root: specs
+      glob: '*'
+      dir: true
+    files: [spec.md]
+
+  - kind: spec
+    label: Feature specification
+    match:
+      root: specs
+      glob: '*/spec.md'
+    extract: [title, user_stories, requirements, scenarios, cross_refs, headings]
+    required: [title, user_stories]
+
+  - kind: plan
+    label: Implementation plan
+    match:
+      root: specs
+      glob: '*/plan.md'
+    extract: [title, key_files, cross_refs, headings]
+    required: [title]
+
+  - kind: research
+    label: Research
+    match:
+      root: specs
+      glob: '*/research.md'
+    extract: [title, cross_refs, headings]
+    required: [title]
+
+  - kind: data-model
+    label: Data model
+    match:
+      root: specs
+      glob: '*/data-model.md'
+    extract: [title, cross_refs, headings]
+    required: [title]
+
+  - kind: quickstart
+    label: Quickstart
+    match:
+      root: specs
+      glob: '*/quickstart.md'
+    extract: [title, cross_refs, headings]
+    required: [title]
+
+  - kind: tasks
+    label: Tasks
+    match:
+      root: specs
+      glob: '*/tasks.md'
+    extract: [title, task_items, headings]
+    required: [title, tasks]
+
+  - kind: contract
+    label: Contracts
+    match:
+      root: specs
+      glob: '*/contracts'
+      dir: true
+
+  - kind: checklist
+    label: Checklists
+    match:
+      root: specs
+      glob: '*/checklists'
+      dir: true
+
+  # Contract and checklist artifacts come in arbitrary formats (a protobuf, a
+  # yaml matrix, a plain checklist); without file concepts the directories
+  # rendered empty and the artifacts stayed outside every document check.
+  - kind: contract-file
+    label: Contract artifact
+    match:
+      root: specs
+      glob: '*/contracts/**/*'
+
+  - kind: checklist-file
+    label: Checklist artifact
+    match:
+      root: specs
+      glob: '*/checklists/**/*'
+
+checks:
+  - kind: required_files
+    finding: FEATURE_SPEC_MISSING
+    message: every feature directory must carry spec.md
+    concept: feature
+    from: files
+
+  - kind: name_pattern
+    finding: FEATURE_NAME_MALFORMED
+    message: a feature directory must be named feature-slug or NNN-feature-slug
+    concept: feature
+    pattern: '^(?:[0-9]{3}-)?[a-z0-9]+(?:-[a-z0-9]+)*$'
+
+  - kind: crossrefs
+    finding: CROSS_REF_BROKEN
+    message: a relative spec link or anchor must resolve
+
+  # The structural checks read PROSE (the markdown body with fenced examples
+  # removed): a "### User Story 1" inside a fenced format sample is a
+  # documented example, not a declared story.
+  - kind: content_regex
+    finding: USER_STORY_MISSING
+    message: a feature specification must declare at least one "### User Story N" heading
+    concept: spec
+    in: prose
+    regex: '^### User Story [0-9]+'
+
+  - kind: content_regex
+    finding: TASK_ID_MISSING
+    message: a tasks artifact must use stable TNNN task ids
+    concept: tasks
+    in: prose
+    regex: '^- \[[ xX]\] T[0-9]{3}'
+
+actions:
+  - kind: constitution
+    label: Constitution
+    skill: speckit-constitution
+    prompt: 'Establish or amend the project constitution at {path} — the principles every later step is judged against.'
+    concept: constitution
+    requires: [root]
+  - kind: specify
+    label: Specify
+    skill: speckit-specify
+    prompt: Create the feature specification from the described intent — what and why, not the tech stack.
+    requires: [root]
+  - kind: clarify
+    label: Clarify
+    skill: speckit-clarify
+    prompt: 'Resolve the open questions in the feature specification at {path} before planning.'
+    concept: spec
+    requires: [root, concept:spec]
+  # Plan and Tasks are creation steps: they attach to the FEATURE directory
+  # (which exists from the specify step on) and disappear once their output
+  # artifact exists. Attaching them to plan.md/tasks.md made the buttons
+  # appear only after the artifact was created by other means.
+  - kind: plan
+    label: Plan
+    skill: speckit-plan
+    prompt: 'Produce the implementation plan for the feature at {path} in specs/, with its supporting artifacts (research, data model, contracts, quickstart), checked against the constitution.'
+    concept: feature
+    requires: [root, concept:feature, absent:plan]
+  - kind: tasks
+    label: Tasks
+    skill: speckit-tasks
+    prompt: 'Break the implementation plan of the feature at {path} in specs/ into a dependency-ordered task list with stable task ids.'
+    concept: feature
+    requires: [root, concept:feature, companion:plan, absent:tasks]
+  - kind: analyze
+    label: Analyze
+    skill: speckit-analyze
+    prompt: Check the artifacts for consistency with the specification and the constitution.
+    requires: [root]
+  - kind: implement
+    label: Implement
+    skill: speckit-implement
+    prompt: 'Implement the task list at {path} in specs/.'
+    concept: tasks
+    requires: [root, concept:tasks]
+
+views:
+  sections:
+    - id: project
+      label: Project state
+      kind: tree
+      concepts: [constitution, template, feature-state]
+    - id: features
+      label: Features
+      kind: tree
+      concepts: [feature, spec, plan, research, data-model, quickstart, contract, contract-file, checklist, checklist-file, tasks]
+    - id: findings
+      label: Findings
+      kind: findings

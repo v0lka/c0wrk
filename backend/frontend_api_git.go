@@ -404,7 +404,11 @@ func combinedGitOutput(stdout, stderr string) string {
 // specs/contracts/event-catalog.md) and is the single invalidation funnel
 // for the per-repo git caches — every mutating git RPC calls it on
 // success, so the cached snapshots drop here (specs/domains/workspace.md,
-// frontend_api_gitcache.go).
+// frontend_api_gitcache.go). The ignore-resolver cache is deliberately NOT
+// evicted here: it is rule-driven, not tree-driven, and a worktree-changing
+// operation (checkout/reset/merge/pull) reaches it through the watcher
+// batch's ignore-file eviction — hooking this funnel would force a full
+// resolver rebuild after every commit (which touches no workspace file).
 func (f *FrontendAPI) emitGitStatusChanged(repoPath string) {
 	f.seedAcquire()
 	f.invalidateGitCaches(repoPath)

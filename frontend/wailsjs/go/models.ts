@@ -1,29 +1,5 @@
 export namespace backend {
 	
-	export class ADRMetaDTO {
-	    number: string;
-	    slug: string;
-	    file: string;
-	    title?: string;
-	    status: string;
-	    superseded_by?: string;
-	    date?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ADRMetaDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.slug = source["slug"];
-	        this.file = source["file"];
-	        this.title = source["title"];
-	        this.status = source["status"];
-	        this.superseded_by = source["superseded_by"];
-	        this.date = source["date"];
-	    }
-	}
 	export class AgentDescriptorDTO {
 	    name: string;
 	    description: string;
@@ -2399,6 +2375,315 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class SDDActionDTO {
+	    kind: string;
+	    label: string;
+	    skill?: string;
+	    prompt?: string;
+	    concept?: string;
+	    requires: string[];
+	    available: boolean;
+	    skill_available: boolean;
+	    unavailable_at: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDActionDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.label = source["label"];
+	        this.skill = source["skill"];
+	        this.prompt = source["prompt"];
+	        this.concept = source["concept"];
+	        this.requires = source["requires"];
+	        this.available = source["available"];
+	        this.skill_available = source["skill_available"];
+	        this.unavailable_at = source["unavailable_at"];
+	    }
+	}
+	export class SDDCountsDTO {
+	    documents: number;
+	    findings: number;
+	    by_concept: Record<string, number>;
+	    findings_by_kind: Record<string, number>;
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDCountsDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.documents = source["documents"];
+	        this.findings = source["findings"];
+	        this.by_concept = source["by_concept"];
+	        this.findings_by_kind = source["findings_by_kind"];
+	    }
+	}
+	export class SDDIndexTaskDTO {
+	    task: string;
+	    specs: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDIndexTaskDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task = source["task"];
+	        this.specs = source["specs"];
+	    }
+	}
+	export class SDDTaskItemDTO {
+	    text: string;
+	    done: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDTaskItemDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.text = source["text"];
+	        this.done = source["done"];
+	    }
+	}
+	export class SDDDocumentDTO {
+	    path: string;
+	    root: string;
+	    concept: string;
+	    label?: string;
+	    section?: string;
+	    name: string;
+	    number?: string;
+	    slug: string;
+	    title?: string;
+	    display_title?: string;
+	    date?: string;
+	    headings: string[];
+	    key_files: string[];
+	    cross_refs: string[];
+	    frontmatter?: Record<string, string>;
+	    status?: string;
+	    superseded_by?: string;
+	    purpose?: string;
+	    requirements: string[];
+	    scenarios: string[];
+	    deltas: string[];
+	    principles: string[];
+	    user_stories: string[];
+	    task_items: SDDTaskItemDTO[];
+	    tasks: SDDIndexTaskDTO[];
+	    missing: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDDocumentDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.root = source["root"];
+	        this.concept = source["concept"];
+	        this.label = source["label"];
+	        this.section = source["section"];
+	        this.name = source["name"];
+	        this.number = source["number"];
+	        this.slug = source["slug"];
+	        this.title = source["title"];
+	        this.display_title = source["display_title"];
+	        this.date = source["date"];
+	        this.headings = source["headings"];
+	        this.key_files = source["key_files"];
+	        this.cross_refs = source["cross_refs"];
+	        this.frontmatter = source["frontmatter"];
+	        this.status = source["status"];
+	        this.superseded_by = source["superseded_by"];
+	        this.purpose = source["purpose"];
+	        this.requirements = source["requirements"];
+	        this.scenarios = source["scenarios"];
+	        this.deltas = source["deltas"];
+	        this.principles = source["principles"];
+	        this.user_stories = source["user_stories"];
+	        this.task_items = this.convertValues(source["task_items"], SDDTaskItemDTO);
+	        this.tasks = this.convertValues(source["tasks"], SDDIndexTaskDTO);
+	        this.missing = source["missing"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SDDFindingDTO {
+	    kind: string;
+	    file: string;
+	    detail: string;
+	    message?: string;
+	    severity: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDFindingDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.file = source["file"];
+	        this.detail = source["detail"];
+	        this.message = source["message"];
+	        this.severity = source["severity"];
+	    }
+	}
+	export class SDDMatchedSkillDTO {
+	    name: string;
+	    dir: string;
+	    scope: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDMatchedSkillDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.dir = source["dir"];
+	        this.scope = source["scope"];
+	    }
+	}
+	export class SDDFrameworkDTO {
+	    id: string;
+	    label: string;
+	    description?: string;
+	    docs_url?: string;
+	    origin: string;
+	    scope: string;
+	    tree_present: boolean;
+	    root_present: boolean;
+	    marker_present: boolean;
+	    skills: SDDMatchedSkillDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDFrameworkDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.description = source["description"];
+	        this.docs_url = source["docs_url"];
+	        this.origin = source["origin"];
+	        this.scope = source["scope"];
+	        this.tree_present = source["tree_present"];
+	        this.root_present = source["root_present"];
+	        this.marker_present = source["marker_present"];
+	        this.skills = this.convertValues(source["skills"], SDDMatchedSkillDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class SDDNodeDTO {
+	    id: string;
+	    kind: string;
+	    path: string;
+	    label: string;
+	    concept?: string;
+	    name: string;
+	    parent?: string;
+	    children: string[];
+	    missing?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDNodeDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.kind = source["kind"];
+	        this.path = source["path"];
+	        this.label = source["label"];
+	        this.concept = source["concept"];
+	        this.name = source["name"];
+	        this.parent = source["parent"];
+	        this.children = source["children"];
+	        this.missing = source["missing"];
+	    }
+	}
+	export class SDDRootDTO {
+	    id: string;
+	    path: string;
+	    label?: string;
+	    required: boolean;
+	    present: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDRootDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.path = source["path"];
+	        this.label = source["label"];
+	        this.required = source["required"];
+	        this.present = source["present"];
+	    }
+	}
+	
+	export class SDDViewDTO {
+	    id: string;
+	    label: string;
+	    kind: string;
+	    nodes: string[];
+	    paths?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SDDViewDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.kind = source["kind"];
+	        this.nodes = source["nodes"];
+	        this.paths = source["paths"];
+	    }
+	}
 	export class SearchRequest {
 	    query: string;
 	    top_k: number;
@@ -2639,32 +2924,23 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
-	export class SpecsCountsDTO {
-	    files: number;
-	    adrs: number;
-	    findings: number;
-	    findings_by_kind: Record<string, number>;
-	
-	    static createFrom(source: any = {}) {
-	        return new SpecsCountsDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.files = source["files"];
-	        this.adrs = source["adrs"];
-	        this.findings = source["findings"];
-	        this.findings_by_kind = source["findings_by_kind"];
-	    }
-	}
 	export class SpecsStatusDTO {
 	    present: boolean;
+	    tree_present: boolean;
 	    root: string;
-	    files: specs.SpecFile[];
-	    index_tasks: specs.IndexTask[];
-	    adrs: ADRMetaDTO[];
-	    findings: specs.Finding[];
-	    counts: SpecsCountsDTO;
+	    workspace: string;
+	    detected: SDDFrameworkDTO[];
+	    active_id?: string;
+	    active?: SDDFrameworkDTO;
+	    selector_needed: boolean;
+	    roots: SDDRootDTO[];
+	    documents: SDDDocumentDTO[];
+	    nodes: SDDNodeDTO[];
+	    views: SDDViewDTO[];
+	    findings: SDDFindingDTO[];
+	    actions: SDDActionDTO[];
+	    counts: SDDCountsDTO;
+	    warnings: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SpecsStatusDTO(source);
@@ -2673,12 +2949,21 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.present = source["present"];
+	        this.tree_present = source["tree_present"];
 	        this.root = source["root"];
-	        this.files = this.convertValues(source["files"], specs.SpecFile);
-	        this.index_tasks = this.convertValues(source["index_tasks"], specs.IndexTask);
-	        this.adrs = this.convertValues(source["adrs"], ADRMetaDTO);
-	        this.findings = this.convertValues(source["findings"], specs.Finding);
-	        this.counts = this.convertValues(source["counts"], SpecsCountsDTO);
+	        this.workspace = source["workspace"];
+	        this.detected = this.convertValues(source["detected"], SDDFrameworkDTO);
+	        this.active_id = source["active_id"];
+	        this.active = this.convertValues(source["active"], SDDFrameworkDTO);
+	        this.selector_needed = source["selector_needed"];
+	        this.roots = this.convertValues(source["roots"], SDDRootDTO);
+	        this.documents = this.convertValues(source["documents"], SDDDocumentDTO);
+	        this.nodes = this.convertValues(source["nodes"], SDDNodeDTO);
+	        this.views = this.convertValues(source["views"], SDDViewDTO);
+	        this.findings = this.convertValues(source["findings"], SDDFindingDTO);
+	        this.actions = this.convertValues(source["actions"], SDDActionDTO);
+	        this.counts = this.convertValues(source["counts"], SDDCountsDTO);
+	        this.warnings = source["warnings"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -4136,61 +4421,6 @@ export namespace session {
 	    }
 	}
 	
-
-}
-
-export namespace specs {
-	
-	export class Finding {
-	    kind: string;
-	    file: string;
-	    detail: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new Finding(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.kind = source["kind"];
-	        this.file = source["file"];
-	        this.detail = source["detail"];
-	    }
-	}
-	export class IndexTask {
-	    task: string;
-	    specs?: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new IndexTask(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.task = source["task"];
-	        this.specs = source["specs"];
-	    }
-	}
-	export class SpecFile {
-	    path: string;
-	    section?: string;
-	    title?: string;
-	    key_files?: string[];
-	    cross_refs?: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new SpecFile(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.path = source["path"];
-	        this.section = source["section"];
-	        this.title = source["title"];
-	        this.key_files = source["key_files"];
-	        this.cross_refs = source["cross_refs"];
-	    }
-	}
 
 }
 

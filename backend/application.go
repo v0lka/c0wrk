@@ -16,6 +16,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/sdd"
 	"github.com/v0lka/c0wrk/core/toolmanager"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
@@ -237,13 +238,41 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 3b. Skill discovery directories. The builder creates a per-session
-	// SkillManager on each Build() and always prepends the current project's
-	// `.agents/skills` directory (see core/builder.go); here only the shared
-	// base dirs from config are resolved and registered.
+	// SkillManager on each Build() over the session's discovery set
+	// (SkillDirsForWorkspace): the project's `.agents/skills`, the skill
+	// directories the project's detected SDD framework declares (e.g.
+	// `.claude/skills`), and these shared base dirs; here only the shared base
+	// dirs from config are resolved and registered.
 	if len(cfg.Config.Skills.Dirs) > 0 {
 		skillDirs := resolveCatalogDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars, cfg.Logger)
 		builder.SetSkillDirs(skillDirs)
+	} else {
+		// An explicitly empty skills.dirs stays empty (defaults.go keeps the
+		// operator's choice): the builder gets the empty set too, so skill
+		// discovery and skill activation read the same configuration — an
+		// empty shared set means no shared dirs on either side.
+		builder.SetSkillDirs(nil)
 	}
+
+	// 3b+. The SDD framework catalog sessions use for skill discovery: the
+	// same merged load the Specs panel's detection runs (built-ins + global +
+	// checkout-local operator DSL), so an operator framework's declared skill
+	// directories reach activation, listing and detection alike. Load
+	// warnings are logged here — the Specs panel surfaces them through its
+	// DTO, but skill discovery has no other channel, and a degraded operator
+	// file must not silently narrow the framework catalog.
+	agentDir := cfg.AgentDir
+	catalogLogger := cfg.Logger
+	builder.SetSDDCatalog(func(workspacePath string) []sdd.Framework {
+		load := sdd.Load(config.SDDPath(agentDir), config.ProjectSDDPath(workspacePath))
+		for _, warning := range load.Warnings {
+			if catalogLogger != nil {
+				catalogLogger.Warn("SDD framework catalog loaded with warnings; some operator frameworks may be missing from skill discovery",
+					"workspace", workspacePath, "warning", warning)
+			}
+		}
+		return frameworksOf(load.Frameworks)
+	})
 
 	// 3c. Subagent Profile discovery directories — mirrors the skill dirs
 	// wiring (the builder prepends the project's `.agents/agents` per Build();
@@ -311,7 +340,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	})
 
 	// 5. Orchestrator factory closure for the session manager.
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, sddCheckoutPath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		// Converted under FrontendAPI's configMu once NewFrontendAPI wires the
 		// provider (see sessionBuilderConfig): the factory runs on Wails call
 		// goroutines and must not range the live config's maps unlocked.
@@ -325,7 +354,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		// creation); propagate it so any future Build-side consumer sees the
 		// closure instead of a zero value.
 		orchCfg.MarkitdownPythonPath = markitdownPython
-		orch, err := builder.Build(orchCfg, emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
+		orch, err := builder.Build(orchCfg, emitter, logger, workspacePath, sddCheckoutPath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
 		if err != nil {
 			return nil, err
 		}

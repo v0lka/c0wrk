@@ -157,7 +157,7 @@ func restoreTestManagerWithTaskStore(t *testing.T, ts TaskStore) (*Manager, *moc
 	t.Helper()
 
 	agentDir := runtimeTempDir(t)
-	factory := func(_ core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(_ core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{}), nil
 	}
 

@@ -65,7 +65,7 @@ func (wtLLM) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, erro
 // wtFactory builds a real orchestrator wired with a mock LLM (mirrors
 // functionalOrchestratorFactory from the session package tests).
 func wtFactory() session.OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
 			cw := memory.NewContextWindow(memory.ContextWindowConfig{

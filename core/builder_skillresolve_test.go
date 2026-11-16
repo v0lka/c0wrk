@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/sdd"
 	"github.com/v0lka/sp4rk/skills"
 )
 
@@ -95,7 +96,9 @@ func execReadSkillResourceTool(t *testing.T, sm *skills.SkillManager, skillName,
 //  4. Traversal outside the skill directory is refused (SafeResolvePath),
 //     unknown skills are refused, and an empty discovery set is refused.
 func TestOrchestratorBuilder_ResolveSkillResourcePath(t *testing.T) {
-	projectSkills := canonicalTempRoot(t, t.TempDir())
+	workspace := canonicalTempRoot(t, t.TempDir())
+	projectSkills := filepath.Join(workspace, ".agents", "skills")
+	frameworkSkills := filepath.Join(workspace, ".claude", "skills")
 	globalSkills := canonicalTempRoot(t, t.TempDir())
 
 	const (
@@ -105,16 +108,37 @@ func TestOrchestratorBuilder_ResolveSkillResourcePath(t *testing.T) {
 	projectRes := writeSkillWithResource(t, projectSkills, "dup-skill", projectResource)
 	globalRes := writeSkillWithResource(t, globalSkills, "dup-skill", globalResource)
 	onlyGlobalRes := writeSkillWithResource(t, globalSkills, "base-only", "base-only reference")
+	// A skill installed ONLY in a framework-declared directory: activation
+	// and resource resolution must see it through the same discovery set.
+	onlyFrameworkRes := writeSkillWithResource(t, frameworkSkills, "fw-only", "framework api reference")
 
 	b := &OrchestratorBuilder{
 		logger:        quietLogger(),
 		baseSkillDirs: []string{globalSkills},
 	}
+	// A framework present in the workspace declares .claude/skills, so the
+	// discovery set joins it between the project-local and the base dirs.
+	b.SetSDDCatalog(func(string) []sdd.Framework {
+		return []sdd.Framework{{
+			ID:    "probe",
+			Label: "Probe",
+			Detect: sdd.Detect{
+				Markers: []string{".specify/marker"},
+				Skills:  sdd.Skills{Dirs: []string{".claude/skills"}, AnyOf: []string{"fw-only"}},
+			},
+		}}
+	})
+	if err := os.MkdirAll(filepath.Join(workspace, ".specify"), 0o755); err != nil {
+		t.Fatalf("MkdirAll marker dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".specify", "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
 
 	// 1+2. Precedence and tool equivalence for the skill present in both
 	// catalogs: the project-local copy must win, and the RPC path must be the
 	// file the tool actually read.
-	got, err := b.ResolveSkillResourcePath(projectSkills, "dup-skill", "references/api.md")
+	got, err := b.ResolveSkillResourcePath(workspace, "dup-skill", "references/api.md")
 	if err != nil {
 		t.Fatalf("ResolveSkillResourcePath: %v", err)
 	}
@@ -128,7 +152,7 @@ func TestOrchestratorBuilder_ResolveSkillResourcePath(t *testing.T) {
 	if string(gotBytes) != projectResource {
 		t.Errorf("resolved file content = %q, want %q", gotBytes, projectResource)
 	}
-	sm := skills.NewSkillManager([]string{projectSkills, globalSkills}, quietLogger())
+	sm := skills.NewSkillManager(b.SkillDirsForWorkspace(workspace, workspace), quietLogger())
 	if err := sm.Scan(); err != nil {
 		t.Fatalf("SkillManager.Scan: %v", err)
 	}
@@ -138,7 +162,7 @@ func TestOrchestratorBuilder_ResolveSkillResourcePath(t *testing.T) {
 
 	// 3. Base-only skill resolves through the shared dirs even with a
 	// project-local dir in front.
-	got, err = b.ResolveSkillResourcePath(projectSkills, "base-only", "references/api.md")
+	got, err = b.ResolveSkillResourcePath(workspace, "base-only", "references/api.md")
 	if err != nil {
 		t.Fatalf("ResolveSkillResourcePath base-only: %v", err)
 	}
@@ -146,21 +170,32 @@ func TestOrchestratorBuilder_ResolveSkillResourcePath(t *testing.T) {
 		t.Errorf("base-only resolved %q, want %q", got, onlyGlobalRes)
 	}
 
+	// 3b. A skill installed ONLY in a framework-declared directory resolves:
+	// the RPC shares the session discovery set (project-local, framework
+	// dirs, base dirs) rather than .agents/skills plus the base dirs alone.
+	got, err = b.ResolveSkillResourcePath(workspace, "fw-only", "references/api.md")
+	if err != nil {
+		t.Fatalf("ResolveSkillResourcePath fw-only: %v", err)
+	}
+	if got != onlyFrameworkRes {
+		t.Errorf("fw-only resolved %q, want %q", got, onlyFrameworkRes)
+	}
+
 	// 4a. Path traversal out of the skill directory is refused.
-	if _, err := b.ResolveSkillResourcePath(projectSkills, "dup-skill", "../../escape.md"); err == nil {
+	if _, err := b.ResolveSkillResourcePath(workspace, "dup-skill", "../../escape.md"); err == nil {
 		t.Error("expected traversal outside the skill directory to be refused")
 	}
 
 	// 4b. Unknown skill is refused.
-	if _, err := b.ResolveSkillResourcePath(projectSkills, "no-such-skill", "references/api.md"); err == nil {
+	if _, err := b.ResolveSkillResourcePath(workspace, "no-such-skill", "references/api.md"); err == nil {
 		t.Error("expected unknown skill to be refused")
 	}
 
 	// 4c. Empty arguments are refused.
-	if _, err := b.ResolveSkillResourcePath(projectSkills, "", "references/api.md"); err == nil {
+	if _, err := b.ResolveSkillResourcePath(workspace, "", "references/api.md"); err == nil {
 		t.Error("expected empty skill name to be refused")
 	}
-	if _, err := b.ResolveSkillResourcePath(projectSkills, "dup-skill", ""); err == nil {
+	if _, err := b.ResolveSkillResourcePath(workspace, "dup-skill", ""); err == nil {
 		t.Error("expected empty resource path to be refused")
 	}
 

@@ -1096,51 +1096,46 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 
 // seedGlobalPacks reconciles every c0wrk-owned pack in the GLOBAL agent
 // directories (~/.c0wrk/.agents/{skills,agents}) with its sidebar surface
-// gate once per launch — the seven research-* skills, the study-paper
-// skill, the six spec-* skills, and the research/specs Subagent Profiles —
-// from Init, BEFORE the skill/agent watchers start, so the reconciled
-// directories are watched on the same launch. An ENABLED surface
-// (research.enabled / specs.enabled, default on) seeds or repairs its
-// packs; a DISABLED surface UNSEEDS them, converging the disk to the
-// config even when the toggle-time removal failed (a transient FS error, a
+// gate once per launch — the seven research-* skills, the study-paper skill,
+// and the research Subagent Profile — from Init, BEFORE the skill/agent
+// watchers start, so the reconciled directories are watched on the same
+// launch. An ENABLED research surface (research.enabled, default on) seeds or
+// repairs its packs; a DISABLED surface UNSEEDS them, converging the disk to
+// the config even when the toggle-time removal failed (a transient FS error, a
 // squatted pack name) or an earlier run was interrupted — unseeding is
 // idempotent and non-destructive (user-owned and locally modified copies
-// preserved). Per-pack failures logged and never fatal; classification
-// contract in core/research/skillpack.go, core/papers/skillpack.go, and
-// core/specs/{skillpack,agentpack}.go. Serialized on researchSeedMu
-// against the toggle RPCs' applies; skill/agent caches invalidated by each
-// surface's pass.
-// See specs/domains/research.md and specs/decisions/105-vendor-spec-skillset.md.
+// preserved). The SPECS surface deliberately has no pack here: the spec-*
+// skillset is plain agent skill data, recognised by SDD detection wherever it
+// lives, so c0wrk neither seeds nor unseeds it. Per-pack failures logged and
+// never fatal; classification contract in core/research/skillpack.go and
+// core/papers/skillpack.go. Serialized on researchSeedMu against the toggle
+// RPCs' applies; skill/agent caches invalidated by the pass.
+// See specs/domains/research.md.
 func (f *FrontendAPI) seedGlobalPacks() {
 	f.seedAcquire()
 	if f.agentDir == "" {
 		return
 	}
 
-	// The sidebar surface gates (research.enabled / specs.enabled) decide
-	// whether each surface's packs seed or unseed. Read BEFORE the seed
-	// lock: configMu nests under nothing here, and the RPC apply path takes
-	// researchSeedMu while holding configMu, so the reverse order would risk
-	// a deadlock. A nil config fail-opens (unset gates mean on). Then re-read
-	// INSIDE the lock from the researchSeedMu-guarded gate mirror, written
-	// by the toggle RPCs' applies before their disk pass: a toggle that
-	// landed between the two reads is honored here, so the launch seed can
-	// never act on a stale gate and resurrect just-unseeded packs. A nil
-	// mirror (no toggle has run this session) leaves the config snapshot
-	// authoritative.
-	researchOn, specsOn := f.sidebarPackGates()
+	// The research surface gate (research.enabled) decides whether its packs
+	// seed or unseed. Read BEFORE the seed lock: configMu nests under nothing
+	// here, and the RPC apply path takes researchSeedMu while holding
+	// configMu, so the reverse order would risk a deadlock. A nil config
+	// fail-opens (unset gates mean on). Then re-read INSIDE the lock from the
+	// researchSeedMu-guarded gate mirror, written by the toggle RPC's apply
+	// before its disk pass: a toggle that landed between the two reads is
+	// honored here, so the launch seed can never act on a stale gate and
+	// resurrect just-unseeded packs. A nil mirror (no toggle has run this
+	// session) leaves the config snapshot authoritative.
+	researchOn := f.researchPackGate()
 
 	f.researchSeedMu.Lock()
 	defer f.researchSeedMu.Unlock()
 	if f.packGateResearch != nil {
 		researchOn = *f.packGateResearch
 	}
-	if f.packGateSpecs != nil {
-		specsOn = *f.packGateSpecs
-	}
 
 	f.runResearchPacks(researchOn)
-	f.runSpecsPacks(specsOn)
 }
 
 // applyResearchPins fills a ResearchStatusDTO's pin fields from the

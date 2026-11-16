@@ -146,8 +146,13 @@ type mockBuilder struct {
 	// RebuildRouter, in call order (guarded by m.mu).
 	rebuildRouterCfgs []string
 
-	getSkillDescriptorsCalls  int
-	getSkillDescriptorsRes    []skills.SkillDescriptor
+	getSkillDescriptorsCalls int
+	getSkillDescriptorsRes   []skills.SkillDescriptor
+	// skillDirsRes is what SkillDirsForWorkspace returns (the per-workspace
+	// discovery set the RPC layer forwards to GetSkillDescriptors), and
+	// getSkillDescriptorsDirs captures the set the last scan was handed.
+	skillDirsRes              []string
+	getSkillDescriptorsDirs   []string
 	resolveSkillResourceCalls int
 	// resolveSkillResourceArgs captures the last call's
 	// (projectSkillDir, skillName, relPath) for wiring assertions.
@@ -376,10 +381,16 @@ func (m *mockBuilder) GetBaseSkillDirs() []string {
 	m.mu.Unlock()
 	return nil
 }
-func (m *mockBuilder) GetSkillDescriptors(string) []skills.SkillDescriptor {
+func (m *mockBuilder) SkillDirsForWorkspace(string, string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.skillDirsRes
+}
+func (m *mockBuilder) GetSkillDescriptors(dirs []string) []skills.SkillDescriptor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.getSkillDescriptorsCalls++
+	m.getSkillDescriptorsDirs = append([]string(nil), dirs...)
 	return m.getSkillDescriptorsRes
 }
 func (m *mockBuilder) ResolveSkillResourcePath(projectSkillDir, skillName, relPath string) (string, error) {

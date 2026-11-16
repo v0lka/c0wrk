@@ -25,7 +25,7 @@ import (
 // pinned posture. A router is wired so the fresh-send path runs end-to-end;
 // the resume path never routes, so the same factory serves both tests.
 func posturePinningFactory(caller agent.LLMCaller, shared *coretools.ToolRegistry, out **coretools.ToolRegistry) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		coreReg := shared.Clone()
 		if out != nil {

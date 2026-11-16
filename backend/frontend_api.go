@@ -195,31 +195,30 @@ type FrontendAPI struct {
 	switchLockTimeoutOverride time.Duration
 
 	// researchSeedMu serializes every c0wrk-owned pack mutation — seeding
-	// AND unseeding: the launch seed (seedGlobalPacks) and the sidebar
-	// surface gate RPCs' applies (applyResearchPacksLocked /
-	// applySpecsPacksLocked in frontend_api_packgates.go) each run their
-	// whole pack pass under it, so a toggle's writes never interleave with
-	// the launch seed's (a concurrent writer would race the pack staging
-	// swap); pack passes are millisecond-scale local IO. Lock order:
-	// configMu → researchSeedMu — the applies run while their RPC holds
-	// configMu, and seedGlobalPacks reads the gates under configMu BEFORE
-	// taking researchSeedMu, so the nesting never inverts. See
-	// specs/decisions/056-research-always-on-global-seeding.md and
+	// AND unseeding: the launch seed (seedGlobalPacks) and the research
+	// surface gate RPC's apply (applyResearchPacksLocked in
+	// frontend_api_packgates.go) each run their whole pack pass under it, so
+	// a toggle's writes never interleave with the launch seed's (a
+	// concurrent writer would race the pack staging swap); pack passes are
+	// millisecond-scale local IO. Lock order: configMu → researchSeedMu —
+	// the apply runs while its RPC holds configMu, and seedGlobalPacks reads
+	// the gate under configMu BEFORE taking researchSeedMu, so the nesting
+	// never inverts. The SPECS surface holds no pack and takes no part.
+	// See specs/decisions/056-research-always-on-global-seeding.md and
 	// specs/decisions/115-sidebar-pack-gates-reconcile-and-serialization.md.
 	researchSeedMu sync.Mutex
 
-	// packGateResearch/packGateSpecs mirror the EFFECTIVE sidebar surface
-	// gates (research.enabled / specs.enabled) under researchSeedMu: written
-	// by the toggle RPCs' applies before their disk pass and re-read by
-	// seedGlobalPacks INSIDE its critical section — configMu cannot be taken
-	// there (the applies hold configMu while waiting for researchSeedMu), so
-	// the mirror is what lets the launch seed honor a toggle landing between
-	// its pre-lock gate read and the lock, instead of acting on a stale
-	// snapshot and resurrecting just-unseeded packs. nil (no toggle has run
-	// this session) leaves the config snapshot the launch seed reads under
-	// configMu authoritative; the gates themselves always live in f.config.
+	// packGateResearch mirrors the EFFECTIVE research surface gate
+	// (research.enabled) under researchSeedMu: written by the toggle RPC's
+	// apply before its disk pass and re-read by seedGlobalPacks INSIDE its
+	// critical section — configMu cannot be taken there (the apply holds
+	// configMu while waiting for researchSeedMu), so the mirror is what lets
+	// the launch seed honor a toggle landing between its pre-lock gate read
+	// and the lock, instead of acting on a stale snapshot and resurrecting
+	// just-unseeded packs. nil (no toggle has run this session) leaves the
+	// config snapshot the launch seed reads under configMu authoritative; the
+	// gate itself always lives in f.config.
 	packGateResearch *bool
-	packGateSpecs    *bool
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
 	// while switchMu is held (i.e. mid-switch). Nil in production.
@@ -260,11 +259,13 @@ type FrontendAPI struct {
 	researchRootsMu sync.Mutex
 	researchRootMus map[string]*sync.Mutex
 
-	// Skill cache (invalidated on project switch)
+	// Skill cache (invalidated on project switch). The key is the whole
+	// discovery SET (SkillDirsForWorkspace), not one directory: a project whose
+	// detected SDD framework contributes different directories must re-scan.
 	skillCache            []SkillDescriptorDTO
 	skillCacheGen         uint64 // atomic — bumped to invalidate
 	skillCacheGenSnapshot uint64
-	skillCacheProjectDir  string
+	skillCacheDirsKey     string
 	skillCacheMu          sync.Mutex
 
 	// Skill directory watchers monitor global skill dirs (outside any

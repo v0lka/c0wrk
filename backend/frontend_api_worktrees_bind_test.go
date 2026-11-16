@@ -651,11 +651,11 @@ func TestSendMessage_BindRefusalTouchesNoState(t *testing.T) {
 func TestSendMessage_BindOkDispatchFailedKeepsBinding(t *testing.T) {
 	base := wtFactory()
 	var breakRestore atomic.Bool
-	factory := session.OrchestratorFactory(func(emitter core.Emitter, log *slog.Logger, ws string, bb core.BlackboardFactory, dump io.Writer, tracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := session.OrchestratorFactory(func(emitter core.Emitter, log *slog.Logger, ws string, _ string, bb core.BlackboardFactory, dump io.Writer, tracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		if breakRestore.Load() {
 			return nil, errors.New("orchestrator restore broken for the test")
 		}
-		return base(emitter, log, ws, bb, dump, tracker)
+		return base(emitter, log, ws, "", bb, dump, tracker)
 	})
 	h := newWTHarness(t, factory)
 	fresh := newFreshLocalSession(t, h)

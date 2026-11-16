@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +14,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/research"
-	"github.com/v0lka/c0wrk/core/specs"
 )
 
 // assertPackDirAbsent/-present are the pack-entry assertions shared by the
@@ -33,8 +33,8 @@ func assertPackDirPresent(t *testing.T, baseDir, name string) {
 	}
 }
 
-// assertResearchSeeded / assertSpecsSeeded assert the full per-surface pack
-// sets (skills + agent profiles) in their respective global directories.
+// assertResearchSeeded asserts the research surface's full pack set (skills +
+// agent profiles) in the global directories.
 func assertResearchSeeded(t *testing.T, f *FrontendAPI, want bool) {
 	t.Helper()
 	skillsDir := config.SkillsDir(f.agentDir)
@@ -62,30 +62,9 @@ func assertResearchSeeded(t *testing.T, f *FrontendAPI, want bool) {
 	}
 }
 
-func assertSpecsSeeded(t *testing.T, f *FrontendAPI, want bool) {
-	t.Helper()
-	skillsDir := config.SkillsDir(f.agentDir)
-	agentsDir := config.AgentsDir(f.agentDir)
-	for _, name := range specs.SpecSkillNames() {
-		if want {
-			assertPackDirPresent(t, skillsDir, name)
-		} else {
-			assertPackDirAbsent(t, skillsDir, name)
-		}
-	}
-	for _, name := range specs.SpecAgentNames() {
-		if want {
-			assertPackDirPresent(t, agentsDir, name)
-		} else {
-			assertPackDirAbsent(t, agentsDir, name)
-		}
-	}
-}
-
 // TestSeedGlobalPacks_ResearchGateOff pins the launch-side gate: with config
-// research.enabled off, the research/paper packs are NOT seeded while the
-// specs packs still are — a disabled surface's packs must not resurrect on
-// restart.
+// research.enabled off, the research/paper packs are NOT seeded — a disabled
+// surface's packs must not resurrect on restart.
 func TestSeedGlobalPacks_ResearchGateOff(t *testing.T) {
 	f, _, _, _ := seedGlobalPacksTestFrontend(t)
 	off := false
@@ -94,27 +73,12 @@ func TestSeedGlobalPacks_ResearchGateOff(t *testing.T) {
 	f.seedGlobalPacks()
 
 	assertResearchSeeded(t, f, false)
-	assertSpecsSeeded(t, f, true)
-}
-
-// TestSeedGlobalPacks_SpecsGateOff pins the launch-side gate for the specs
-// surface: specs.enabled off leaves the spec packs unseeded while the
-// research/paper packs seed normally.
-func TestSeedGlobalPacks_SpecsGateOff(t *testing.T) {
-	f, _, _, _ := seedGlobalPacksTestFrontend(t)
-	off := false
-	f.config = &config.Config{Specs: config.SidebarPackConfig{Enabled: &off}}
-
-	f.seedGlobalPacks()
-
-	assertSpecsSeeded(t, f, false)
-	assertResearchSeeded(t, f, true)
 }
 
 // TestSetResearchEnabled_DisableUnseedsAndPersists pins the disable half of
 // the RPC contract: the flip reaches config.yaml as an explicit value and
 // GetConfig in the same call, the research/paper packs disappear from the
-// global dirs while the specs packs stay, and config:updated is announced.
+// global dirs, and config:updated is announced.
 func TestSetResearchEnabled_DisableUnseedsAndPersists(t *testing.T) {
 	f, _, cfgPath := newTestAPI(t)
 	updated := make(chan string, 4)
@@ -122,14 +86,12 @@ func TestSetResearchEnabled_DisableUnseedsAndPersists(t *testing.T) {
 
 	f.seedGlobalPacks()
 	assertResearchSeeded(t, f, true)
-	assertSpecsSeeded(t, f, true)
 
 	if err := f.SetResearchEnabled(false); err != nil {
 		t.Fatalf("SetResearchEnabled(false): %v", err)
 	}
 
 	assertResearchSeeded(t, f, false)
-	assertSpecsSeeded(t, f, true)
 
 	if f.config.Research.PackEnabled() {
 		t.Errorf("in-memory config still reports research enabled after disabling")
@@ -146,9 +108,6 @@ func TestSetResearchEnabled_DisableUnseedsAndPersists(t *testing.T) {
 	}
 	if got := f.GetConfig(); !got.Loaded || got.Research.Enabled {
 		t.Errorf("GetConfig().research.enabled = %v (loaded=%v), want false", got.Research.Enabled, got.Loaded)
-	}
-	if got := f.GetConfig(); !got.Specs.Enabled {
-		t.Errorf("GetConfig().specs.enabled = false, want true (untouched surface)")
 	}
 	select {
 	case name := <-updated:
@@ -177,7 +136,6 @@ func TestSetResearchEnabled_EnableReseedsPacks(t *testing.T) {
 	}
 
 	assertResearchSeeded(t, f, true)
-	assertSpecsSeeded(t, f, true)
 	loaded, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("reload persisted config: %v", err)
@@ -219,21 +177,25 @@ func TestSetResearchEnabled_RollbackOnFailedSave(t *testing.T) {
 	assertResearchSeeded(t, f, true)
 }
 
-// TestSetSpecsEnabled_DisableUnseedsAndPersists pins the specs RPC's
-// disable half: the spec skill/agent packs disappear while the research/
-// paper packs stay, and the explicit off value persists.
-func TestSetSpecsEnabled_DisableUnseedsAndPersists(t *testing.T) {
+// TestSetSpecsEnabled_PersistsAndTouchesNoDisk pins the specs gate's contract:
+// the flip persists as an explicit value and is announced, while NOTHING on
+// disk is touched — the spec-* skillset is ordinary agent skill data now, so
+// the toggle neither seeds nor unseeds it (the deleted pack lifecycle).
+func TestSetSpecsEnabled_PersistsAndTouchesNoDisk(t *testing.T) {
 	f, _, cfgPath := newTestAPI(t)
+	updated := make(chan string, 4)
+	f.emitEvent = func(name string, _ ...any) { updated <- name }
 
-	f.seedGlobalPacks()
-	assertSpecsSeeded(t, f, true)
+	before := snapshotTree(t, f.agentDir, "config.yaml")
 
 	if err := f.SetSpecsEnabled(false); err != nil {
 		t.Fatalf("SetSpecsEnabled(false): %v", err)
 	}
 
-	assertSpecsSeeded(t, f, false)
-	assertResearchSeeded(t, f, true)
+	after := snapshotTree(t, f.agentDir, "config.yaml")
+	if !equalStringSlices(before, after) {
+		t.Errorf("SetSpecsEnabled changed the agent dir tree:\nbefore=%v\nafter=%v", before, after)
+	}
 
 	loaded, err := config.Load(cfgPath)
 	if err != nil {
@@ -242,6 +204,69 @@ func TestSetSpecsEnabled_DisableUnseedsAndPersists(t *testing.T) {
 	if loaded.Specs.Enabled == nil || loaded.Specs.PackEnabled() {
 		t.Errorf("persisted specs.enabled = %+v, want explicit off", loaded.Specs.Enabled)
 	}
+	if f.GetConfig().Specs.Enabled {
+		t.Error("GetConfig().specs.enabled = true after disabling")
+	}
+	select {
+	case name := <-updated:
+		if name != EventConfigUpdated {
+			t.Errorf("announced event = %q, want %q", name, EventConfigUpdated)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("no config:updated announced after the toggle")
+	}
+
+	// Re-enabling restores the effective on value and still writes no packs.
+	if err := f.SetSpecsEnabled(true); err != nil {
+		t.Fatalf("SetSpecsEnabled(true): %v", err)
+	}
+	if got := snapshotTree(t, f.agentDir, "config.yaml"); !equalStringSlices(before, got) {
+		t.Errorf("SetSpecsEnabled(true) changed the agent dir tree: before=%v after=%v", before, got)
+	}
+}
+
+// snapshotTree lists every path under root (files and directories, relative,
+// slash separated, sorted), skipping the named top-level entry — the config
+// file the toggle is SUPPOSED to write.
+func snapshotTree(t *testing.T, root, skip string) []string {
+	t.Helper()
+	paths := make([]string, 0)
+	if _, err := os.Stat(root); err != nil {
+		return paths
+	}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil //nolint:nilerr // a transient stat failure just omits the entry
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return nil //nolint:nilerr // a transient stat failure just omits the entry
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." || rel == skip {
+			return nil
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// equalStringSlices reports element-wise equality of two sorted slices.
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestSetResearchEnabled_PreservesModifiedCopyWithWarning pins the
@@ -312,38 +337,29 @@ func TestSeedGlobalPacks_DisabledSurfaceUnseedsAtLaunch(t *testing.T) {
 	f, _, _, _ := seedGlobalPacksTestFrontend(t)
 	f.seedGlobalPacks()
 	assertResearchSeeded(t, f, true)
-	assertSpecsSeeded(t, f, true)
 
 	off := false
 	f.config = &config.Config{
 		Research: config.SidebarPackConfig{Enabled: &off},
-		Specs:    config.SidebarPackConfig{Enabled: &off},
 	}
 
 	f.seedGlobalPacks()
 
 	assertResearchSeeded(t, f, false)
-	assertSpecsSeeded(t, f, false)
 }
 
 // TestSeedGlobalPacks_LaunchUnseedsPreservesUserCopies pins that the launch
 // reconcile is as non-destructive as the toggle-time unseed: a locally
 // edited, pack-marked copy survives a launch with its surface disabled
 // (content and marker intact) while the byte-identical copies disappear.
-// The kept copy is named in a visible warning on the instance logger
-// (intercepted and asserted at the source — the warning is behavior under
-// test, mirroring TestSetResearchEnabled_PreservesModifiedCopyWithWarning).
 func TestSeedGlobalPacks_LaunchUnseedsPreservesUserCopies(t *testing.T) {
 	f, _, _, _ := seedGlobalPacksTestFrontend(t)
-	// Capture the instance logger for the WHOLE test (seed + reconcile) so
-	// nothing leaks to slog.Default() and the preservation warning is
-	// assertable at its source.
 	var logBuf bytes.Buffer
 	f.logger = slog.New(slog.NewTextHandler(&logBuf, nil))
 	f.seedGlobalPacks()
 
 	skillsDir := config.SkillsDir(f.agentDir)
-	editedName := specs.SpecSkillNames()[0]
+	editedName := research.ResearchSkillNames()[0]
 	editedPath := filepath.Join(skillsDir, editedName, "SKILL.md")
 	orig, err := os.ReadFile(editedPath)
 	if err != nil {
@@ -358,7 +374,7 @@ func TestSeedGlobalPacks_LaunchUnseedsPreservesUserCopies(t *testing.T) {
 	}
 
 	off := false
-	f.config = &config.Config{Specs: config.SidebarPackConfig{Enabled: &off}}
+	f.config = &config.Config{Research: config.SidebarPackConfig{Enabled: &off}}
 	f.seedGlobalPacks()
 
 	got, err := os.ReadFile(editedPath)
@@ -371,51 +387,44 @@ func TestSeedGlobalPacks_LaunchUnseedsPreservesUserCopies(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(skillsDir, editedName, seedVersionMarker)); err != nil {
 		t.Errorf("modified copy lost its pack marker: %v", err)
 	}
-	for _, name := range specs.SpecSkillNames() {
+	for _, name := range research.ResearchSkillNames() {
 		if name == editedName {
 			continue
 		}
 		assertPackDirAbsent(t, skillsDir, name)
 	}
-	// The untouched research surface is unaffected by the specs reconcile.
-	assertResearchSeeded(t, f, true)
 
 	warn := logBuf.String()
 	if !strings.Contains(warn, "kept on disk") || !strings.Contains(warn, editedName) {
 		t.Errorf("launch reconcile must warn naming the preserved modified copy, got:\n%s", warn)
 	}
-	if !strings.Contains(warn, "spec skill-pack unseeded") {
+	if !strings.Contains(warn, "research skill-pack unseeded") {
 		t.Errorf("launch reconcile must record the unseed run, got:\n%s", warn)
 	}
 }
 
 // TestSeedGlobalPacks_GateMirrorOverridesStaleSnapshot pins the stale-gate
 // half of the serialization contract: the launch seed re-reads the
-// researchSeedMu-guarded gate mirror INSIDE its critical section, so a
-// toggle that has applied (mirror written before its disk pass) always wins
-// over the pre-lock config snapshot — the exact sequencing that would
-// otherwise let a launch seed resurrect just-unseeded packs.
+// researchSeedMu-guarded gate mirror INSIDE its critical section, so a toggle
+// that has applied (mirror written before its disk pass) always wins over the
+// pre-lock config snapshot — the exact sequencing that would otherwise let a
+// launch seed resurrect just-unseeded packs.
 func TestSeedGlobalPacks_GateMirrorOverridesStaleSnapshot(t *testing.T) {
 	f, _, _, _ := seedGlobalPacksTestFrontend(t)
 
-	// Freeze a stale pre-lock snapshot: the config still says research=on
-	// (a disable toggle has applied since) and specs=off (an enable toggle
-	// has applied since); the mirror carries both toggles' values.
-	off, on := false, true
-	f.config = &config.Config{Specs: config.SidebarPackConfig{Enabled: &off}}
+	// Freeze a stale pre-lock snapshot: the config still says research=on (a
+	// disable toggle has applied since); the mirror carries the toggle's value.
+	off := false
 	f.packGateResearch = &off
-	f.packGateSpecs = &on
 
 	f.seedGlobalPacks()
 
 	assertResearchSeeded(t, f, false)
-	assertSpecsSeeded(t, f, true)
 }
 
-// TestSetResearchEnabled_WritesGateMirror pins that each toggle apply
-// writes its researchSeedMu-guarded gate mirror (the value the launch
-// seed's in-lock re-read honors) and leaves the untouched surface's mirror
-// nil.
+// TestSetResearchEnabled_WritesGateMirror pins that the toggle apply writes
+// its researchSeedMu-guarded gate mirror (the value the launch seed's in-lock
+// re-read honors).
 func TestSetResearchEnabled_WritesGateMirror(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 
@@ -425,53 +434,35 @@ func TestSetResearchEnabled_WritesGateMirror(t *testing.T) {
 	if f.packGateResearch == nil || *f.packGateResearch {
 		t.Fatalf("packGateResearch = %v, want a mirrored false", f.packGateResearch)
 	}
-	if f.packGateSpecs != nil {
-		t.Errorf("the untouched specs surface's mirror must stay nil, got %v", *f.packGateSpecs)
-	}
-
-	if err := f.SetSpecsEnabled(false); err != nil {
-		t.Fatalf("SetSpecsEnabled(false): %v", err)
-	}
-	if f.packGateSpecs == nil || *f.packGateSpecs {
-		t.Fatalf("packGateSpecs = %v, want a mirrored false", f.packGateSpecs)
-	}
 }
 
 // TestSeedGlobalPacks_ConcurrentToggleConverges pins the serialization
-// contract under a real overlap: a launch seed racing both surface toggles
-// converges — once all three complete, the disk matches the persisted gates
-// exactly, whatever the interleaving (the applies serialize on
-// researchSeedMu and enforce the persisted value; the seed honors the gate
-// mirror the applies write under the same lock).
+// contract under a real overlap: a launch seed racing the research toggle
+// converges — once both complete, the disk matches the persisted gate exactly,
+// whatever the interleaving.
 func TestSeedGlobalPacks_ConcurrentToggleConverges(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 	f.seedGlobalPacks()
 	assertResearchSeeded(t, f, true)
-	assertSpecsSeeded(t, f, true)
 
 	var (
 		wg          sync.WaitGroup
 		researchErr error
-		specsErr    error
 	)
-	wg.Add(3)
+	wg.Add(2)
 	go func() { defer wg.Done(); f.seedGlobalPacks() }()
 	go func() { defer wg.Done(); researchErr = f.SetResearchEnabled(false) }()
-	go func() { defer wg.Done(); specsErr = f.SetSpecsEnabled(false) }()
 	wg.Wait()
 
-	if researchErr != nil || specsErr != nil {
-		t.Fatalf("toggle errors under the race: research=%v specs=%v", researchErr, specsErr)
+	if researchErr != nil {
+		t.Fatalf("toggle error under the race: %v", researchErr)
 	}
 	assertResearchSeeded(t, f, false)
-	assertSpecsSeeded(t, f, false)
 }
 
 // TestSeedGlobalPacks_ConcurrentEnableConverges pins the convergence
 // contract in the enable direction: a launch seed racing an enable of a
-// disabled surface ends with the packs seeded, never resurrected-away (the
-// enable's apply is serialized after whatever the seed did and enforces the
-// persisted on value).
+// disabled surface ends with the packs seeded, never resurrected-away.
 func TestSeedGlobalPacks_ConcurrentEnableConverges(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 	off := false
@@ -492,5 +483,4 @@ func TestSeedGlobalPacks_ConcurrentEnableConverges(t *testing.T) {
 		t.Fatalf("SetResearchEnabled(true) under the race: %v", toggle)
 	}
 	assertResearchSeeded(t, f, true)
-	assertSpecsSeeded(t, f, true)
 }

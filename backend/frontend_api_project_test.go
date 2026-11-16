@@ -75,7 +75,7 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 		t.Fatalf("failed to create test project: %v", err)
 	}
 
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 	manager := session.NewManager(factory, func(session.Event) {}, agentDir)
@@ -589,7 +589,7 @@ func TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak(t *testing.T) {
 		t.Fatalf("mkdir real workspace: %v", err)
 	}
 
-	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(core.Emitter, *slog.Logger, string, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 	manager := session.NewManager(factory, func(session.Event) {}, base)
@@ -866,7 +866,7 @@ func TestSwitchProject_PersistsLastActiveProjectIDAcrossReopen(t *testing.T) {
 		t.Fatalf("failed to ensure No Project: %v", err)
 	}
 
-	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(core.Emitter, *slog.Logger, string, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		// A bare orchestrator: the No Project restore path calls
 		// SetNoProjectMode on it, which is nil-safe for the zero value.
 		return &core.Orchestrator{}, nil
@@ -1265,7 +1265,7 @@ func TestProgressFraction(t *testing.T) {
 // CHAT session and THEN returned an error.
 func TestDeleteProject_NoProject_RejectedBeforeSessionTeardown(t *testing.T) {
 	base := t.TempDir()
-	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(core.Emitter, *slog.Logger, string, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		// Non-nil: CreateSession calls SetNoProjectMode on the orchestrator
 		// for CHAT sessions. The zero value is fine (nil registry is guarded).
 		return &core.Orchestrator{}, nil

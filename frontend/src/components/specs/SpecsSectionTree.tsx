@@ -1,124 +1,95 @@
-// The specs tree (ADR-106): a real nested tree over the parsed file list —
-// top-level section nodes (ROOT for the INDEX.md/META.md group, then the
-// section directories) with subdirectory nodes built from the path segments
-// and the files as leaves. Every file row opens in the file viewer through
-// the onOpen callback (specs-root-relative; the caller resolves it against
-// the absolute root).
+// One declared TREE section of the active framework: a real nested tree over
+// the payload's flat `nodes` forest. Every label, every nesting level and the
+// set of sections come from the framework's OWN definition — nothing here
+// knows a layout, a section name or a concept name.
 //
 // Expansion is caller-owned: `expandedNodes` maps node ids to their expanded
-// flag, an ABSENT key meaning `defaultExpanded` (false — the sidebar panel's
-// everything-collapsed default). Without onToggleNode every node renders as
-// a plain always-expanded label.
+// flag, an ABSENT key meaning the caller's `defaultExpanded` (false — the
+// sidebar panel's everything-collapsed default). Without `onToggleNode` every
+// node renders as a plain always-expanded label (the preview/test shape).
 
-import { ChevronDown, ChevronRight, FileText, FolderOpen } from 'lucide-react'
+import { useMemo, type ReactNode } from 'react'
+import { AlertTriangle, ChevronDown, ChevronRight, FileText, FolderOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { SpecFile } from '@/types/models'
-import { buildSpecsTree, type SpecsTreeNode } from './specsPaths'
+import type { SDDAction, SDDDocument, SDDNode, SDDView } from '@/types/models'
+import {
+  actionToDispatch,
+  nodeActionEnabled,
+  nodeActionReason,
+  nodeActionsFor,
+  type SpecsDispatch,
+} from './specsActions'
+import { documentDatesByPath } from './specsPaths'
 
-/** The decisions/ prefix of a DECISIONS-section leaf — the only leaves the
- *  date column renders on (ADR-109). */
-const DECISIONS_PREFIX = 'decisions/'
-
-/** Ordering mode for the top-level section groups: parse order (first
- *  appearance — the panel's default) or alphabetical by name (the root
- *  files group sorts first — it is the INDEX). */
-export type SpecsSectionSort = 'appearance' | 'alpha'
-
-/** Alphabetical top-level order: the root files group ('' id) first, then
- *  sections by name. Applied only when the caller asks for it. */
-function sortTopNodesAlpha(nodes: SpecsTreeNode[]): SpecsTreeNode[] {
-  return [...nodes].sort((a, b) => {
-    if (a.id === '') return -1
-    if (b.id === '') return 1
-    return a.label.localeCompare(b.label)
-  })
+/** Depth-first document count per node id — the header count chip of a folder
+ *  or directory node (a change folder reports how many documents it holds).
+ *
+ *  `memberPaths` is the SECTION's own membership: a node shared by two tree
+ *  sections (every single-root framework anchors its instances at the same
+ *  top folder) must report the documents THAT section renders, not the whole
+ *  forest — otherwise both sections print the same wrong total beside a
+ *  correctly filtered child list. */
+function documentCounts(nodes: SDDNode[], memberPaths?: Set<string>): Map<string, number> {
+  const byId = new Map<string, SDDNode>()
+  for (const node of nodes) byId.set(node.id, node)
+  const counts = new Map<string, number>()
+  const visit = (node: SDDNode, seen: Set<string>): number => {
+    if (seen.has(node.id)) return 0
+    seen.add(node.id)
+    let total = node.kind === 'document' ? 1 : 0
+    for (const childId of node.children) {
+      if (memberPaths !== undefined && !memberPaths.has(childId)) continue
+      const child = byId.get(childId)
+      if (child !== undefined) total += visit(child, seen)
+    }
+    counts.set(node.id, total)
+    return total
+  }
+  for (const node of nodes) {
+    if (!counts.has(node.id)) visit(node, new Set())
+  }
+  return counts
 }
 
-function fileLabel(file: SpecFile): string {
-  return file.title !== undefined && file.title !== '' ? file.title : file.path
+function nodeIcon(node: SDDNode) {
+  return node.kind === 'document' ? FileText : FolderOpen
 }
 
-/** One file leaf: the title (or path when the file carries no heading) with
- *  the relative path on the tooltip, plus a Key Files count chip when the
- *  spec lists any. A DECISIONS leaf with a known git add-date carries it in
- *  its own right-aligned compact column (ADR-109): fixed width so dated
- *  rows align, blue-tinted tabular digits, absent entirely for undated
- *  records (a non-git workspace or an uncommitted file) so no dead space
- *  narrows the title. */
-function FileRow({
-  file,
-  date,
-  onOpen,
-}: {
-  file: SpecFile
-  date?: string
-  onOpen: (relPath: string) => void
-}) {
-  const keyFiles = file.key_files ?? []
-  return (
-    <button
-      type="button"
-      data-testid="specs-file"
-      data-path={file.path}
-      title={file.path}
-      onClick={() => onOpen(file.path)}
-      className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs text-foreground transition-colors hover:bg-muted"
-    >
-      <FileText className="size-3 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{fileLabel(file)}</span>
-      {keyFiles.length > 0 && (
-        <span
-          className="shrink-0 rounded bg-secondary px-1 text-xs text-muted-foreground"
-          title={`${keyFiles.length} key files`}
-        >
-          {keyFiles.length}
-        </span>
-      )}
-      {file.path.startsWith(DECISIONS_PREFIX) && date !== undefined && (
-        <span
-          data-testid="specs-file-date"
-          className="w-[64px] shrink-0 text-right text-xs leading-none tabular-nums text-info/80"
-          title={`Added ${date}`}
-        >
-          {date}
-        </span>
-      )}
-    </button>
-  )
-}
-
-/** One directory node: the header (accented at the top level — icon,
- *  semibold, file count; plain below) and, when expanded, its child
- *  directories and file leaves indented one 16px step per level. Each node
- *  resolves its OWN expansion from the caller's set. */
-function TreeNode({
+/**
+ * One node row: the label (a document opens in the file viewer), the date
+ * column a dated document carries, the missing-companion warning of a
+ * directory instance, and the actions the framework declared FOR THIS
+ * concept — each dispatching its declared skill with `{path}`/`{name}`
+ * substituted by this node.
+ */
+function NodeRow({
   node,
   depth,
-  adrDates,
-  expandedNodes,
-  defaultExpanded,
+  count,
+  date,
+  actions,
+  expanded,
   collapsible,
-  onToggleNode,
-  onOpen,
+  onToggle,
+  onOpenDocument,
+  onDispatch,
 }: {
-  node: SpecsTreeNode
+  node: SDDNode
   depth: number
-  adrDates?: Record<string, string>
-  expandedNodes?: Record<string, boolean>
-  defaultExpanded: boolean
+  count: number
+  date?: string
+  actions: SDDAction[]
+  expanded: boolean
   collapsible: boolean
-  onToggleNode?: (id: string) => void
-  onOpen: (relPath: string) => void
+  onToggle?: () => void
+  onOpenDocument: (modelPath: string) => void
+  onDispatch: (dispatch: SpecsDispatch, newSession: boolean) => void
 }) {
-  const expanded = collapsible
-    ? (expandedNodes?.[node.id] ?? defaultExpanded)
-    : true
+  const Icon = nodeIcon(node)
   const accent = depth === 0
-  const headerClass = accent
-    ? 'flex items-center gap-1 px-0.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-foreground'
-    : 'flex items-center gap-1 px-0.5 py-0.5 text-xs text-muted-foreground'
+  const missing = node.missing ?? []
   return (
-    <div>
+    <div className="flex items-center gap-1">
       {collapsible ? (
         <button
           type="button"
@@ -126,10 +97,10 @@ function TreeNode({
           data-node={node.id}
           aria-expanded={expanded}
           title={expanded ? `Collapse ${node.label}` : `Expand ${node.label}`}
-          onClick={() => onToggleNode?.(node.id)}
+          onClick={onToggle}
           className={cn(
-            headerClass,
-            'w-full cursor-pointer rounded text-left transition-colors hover:text-foreground',
+            'flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 py-0.5 text-left text-xs transition-colors hover:bg-muted',
+            accent ? 'font-semibold uppercase tracking-wide text-foreground' : 'text-foreground',
           )}
         >
           {expanded ? (
@@ -137,98 +108,187 @@ function TreeNode({
           ) : (
             <ChevronRight className="size-3 shrink-0" />
           )}
-          <FolderOpen className="size-3 shrink-0" />
+          <Icon className="size-3 shrink-0 text-muted-foreground" />
           <span className="min-w-0 truncate">{node.label}</span>
-          <span className="text-muted-foreground/60">({node.count})</span>
+          <span className="shrink-0 text-muted-foreground/60">({count})</span>
+        </button>
+      ) : node.kind === 'document' ? (
+        <button
+          type="button"
+          data-testid="specs-node"
+          data-path={node.path}
+          data-concept={node.concept ?? ''}
+          title={node.path}
+          onClick={() => onOpenDocument(node.path)}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 py-0.5 text-left text-xs transition-colors hover:bg-muted',
+            accent ? 'font-semibold uppercase tracking-wide text-foreground' : 'text-foreground',
+          )}
+        >
+          <Icon className="size-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">{node.label}</span>
         </button>
       ) : (
-        <div className={headerClass}>
-          <FolderOpen className="size-3" />
-          <span className="min-w-0 truncate">{node.label}</span>
-          <span className="text-muted-foreground/60">({node.count})</span>
-        </div>
+        // A childless folder/directory is a LABEL, not a file link: opening
+        // it in the file viewer would show a directory error for a click the
+        // row never promised to be an open gesture.
+        <span
+          data-testid="specs-node"
+          data-path={node.path}
+          data-concept={node.concept ?? ''}
+          title={node.path}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 py-0.5 text-left text-xs',
+            accent ? 'font-semibold uppercase tracking-wide text-foreground' : 'text-foreground',
+          )}
+        >
+          <Icon className="size-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">{node.label}</span>
+        </span>
       )}
-      {expanded && (
-        // One 16px indent step per nesting level (zoom-safe: absolute
-        // lengths are meant to scale with the UI zoom).
-        <div className="ml-4 flex flex-col gap-0.5">
-          {node.children.map((child) => (
-            <TreeNode
-              key={child.id}
-              node={child}
-              depth={depth + 1}
-              adrDates={adrDates}
-              expandedNodes={expandedNodes}
-              defaultExpanded={defaultExpanded}
-              collapsible={collapsible}
-              onToggleNode={onToggleNode}
-              onOpen={onOpen}
-            />
-          ))}
-          {node.files.map((file) => (
-            <FileRow
-              key={file.path}
-              file={file}
-              date={adrDates?.[file.path]}
-              onOpen={onOpen}
-            />
-          ))}
-        </div>
+      {missing.length > 0 && (
+        <span
+          data-testid="specs-node-missing"
+          title={`Missing: ${missing.join(', ')}`}
+          className="shrink-0 text-warning"
+        >
+          <AlertTriangle className="size-3" />
+        </span>
       )}
+      {date !== undefined && (
+        <span
+          data-testid="specs-node-date"
+          className="w-[64px] shrink-0 text-right text-xs leading-none tabular-nums text-info/80"
+          title={`Added ${date}`}
+        >
+          {date}
+        </span>
+      )}
+      {actions.map((action) => {
+        const dispatch = actionToDispatch(action, node)
+        if (dispatch === null) return null
+        // An unmet requirement renders DISABLED with the reason — the next
+        // workflow step stays visible (the toolbar's contract), it just does
+        // not run. The per-node gates (companion:/absent:) refine that gate to
+        // THIS node, so a feature that already has its plan.md loses Plan while
+        // an unplanned feature keeps it.
+        const enabled = nodeActionEnabled(action, node)
+        return (
+          <button
+            key={action.kind}
+            type="button"
+            data-testid="specs-node-action"
+            data-action={action.kind}
+            data-node={node.path}
+            data-skill={dispatch.skill}
+            disabled={!enabled}
+            title={
+              enabled
+                ? `${action.label} (${dispatch.skill}) — Shift = new session`
+                : nodeActionReason(action, node)
+            }
+            onClick={(e) => {
+              if (!enabled) return
+              onDispatch(dispatch, e.shiftKey)
+            }}
+            className="shrink-0 rounded border border-border bg-background px-1 text-xs text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+          >
+            {action.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
 
-/** The tree section: the nested directory tree via the pure builder, every
- *  leaf clickable. Expansion is caller-owned (expandedNodes keyed by node
- *  id; an absent key falls back to defaultExpanded) — without onToggleNode
- *  every node renders as a plain always-expanded label. */
+/**
+ * The tree section: `section.nodes` names the top-level entries of the
+ * framework's forest; each entry renders its `children` recursively (one
+ * indent step per level, in absolute units so it scales with the UI zoom).
+ */
 export function SpecsSectionTree({
-  files,
-  onOpen,
-  adrDates,
-  sortSections = 'appearance',
+  section,
+  nodes,
+  documents,
+  actions,
   expandedNodes,
   onToggleNode,
   defaultExpanded = false,
+  memberPaths,
+  onOpenDocument,
+  onDispatch,
 }: {
-  files: SpecFile[]
-  onOpen: (relPath: string) => void
-  /** Git add-dates keyed by the specs-root-relative file path (ADR-109):
-   *  DECISIONS leaves look their date up here. Undated records stay
-   *  column-free. */
-  adrDates?: Record<string, string>
-  sortSections?: SpecsSectionSort
-  /** Expanded node ids keyed by node id (true = expanded). An absent key
-   *  falls back to defaultExpanded, so {} renders everything collapsed. */
+  section: SDDView
+  /** The payload's flat forest — nodes reference each other by id. */
+  nodes: SDDNode[]
+  /** Parsed documents: the source of the date column (never re-parsed). */
+  documents: SDDDocument[]
+  /** The framework's declared actions; the ones targeting a node's concept
+   *  render on that node. */
+  actions: SDDAction[]
   expandedNodes?: Record<string, boolean>
-  /** Called with the node id when a collapsible header is clicked. Its
-   *  presence enables the collapsible headers. */
   onToggleNode?: (id: string) => void
-  /** The fallback for nodes absent from expandedNodes (false = the
-   *  everything-collapsed sidebar default). */
   defaultExpanded?: boolean
+  /** The node ids THIS section owns (its concepts' instances plus their
+   *  ancestor folders), from the backend's per-section membership. When
+   *  provided, a section renders only its own subtree: two sections sharing
+   *  an ancestor folder stop bleeding each other's concepts through it. */
+  memberPaths?: Set<string>
+  onOpenDocument: (modelPath: string) => void
+  onDispatch: (dispatch: SpecsDispatch, newSession: boolean) => void
 }) {
-  let nodes = buildSpecsTree(files)
-  if (sortSections === 'alpha') {
-    nodes = sortTopNodesAlpha(nodes)
-  }
-  const collapsible = onToggleNode !== undefined
-  return (
-    <section data-testid="specs-tree" className="flex flex-col gap-1">
-      {nodes.map((node) => (
-        <TreeNode
-          key={node.id}
+  const byId = useMemo(() => {
+    const map = new Map<string, SDDNode>()
+    for (const node of nodes) map.set(node.id, node)
+    return map
+  }, [nodes])
+  const counts = useMemo(() => documentCounts(nodes, memberPaths), [nodes, memberPaths])
+  const dates = useMemo(() => documentDatesByPath(documents), [documents])
+
+  if (section.nodes.length === 0) return null
+
+  const renderNode = (id: string, depth: number): ReactNode => {
+    const node = byId.get(id)
+    if (node === undefined) return null // a view naming an absent node
+    const children =
+      memberPaths === undefined
+        ? node.children
+        : node.children.filter((childId) => memberPaths.has(childId))
+    const collapsible = children.length > 0
+    const expanded = collapsible
+      ? (expandedNodes?.[node.id] ?? defaultExpanded)
+      : true
+    return (
+      <div key={node.id}>
+        <NodeRow
           node={node}
-          depth={0}
-          adrDates={adrDates}
-          expandedNodes={expandedNodes}
-          defaultExpanded={defaultExpanded}
+          depth={depth}
+          count={counts.get(node.id) ?? 0}
+          date={node.kind === 'document' ? dates[node.path] : undefined}
+          actions={nodeActionsFor(actions, node.concept ?? '')}
+          expanded={expanded}
           collapsible={collapsible}
-          onToggleNode={onToggleNode}
-          onOpen={onOpen}
+          onToggle={collapsible ? () => onToggleNode?.(node.id) : undefined}
+          onOpenDocument={onOpenDocument}
+          onDispatch={onDispatch}
         />
-      ))}
+        {expanded && children.length > 0 && (
+          // One 16px indent step per nesting level (zoom-safe: absolute
+          // lengths are meant to scale with the UI zoom).
+          <div className="ml-4 flex flex-col gap-0.5">
+            {children.map((childId) => renderNode(childId, depth + 1))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <section data-testid="specs-view" data-view={section.id} className="flex flex-col gap-1">
+      <div className="px-0.5 text-xs uppercase tracking-wide text-muted-foreground">
+        {section.label}
+      </div>
+      {section.nodes.map((id) => renderNode(id, 0))}
     </section>
   )
 }

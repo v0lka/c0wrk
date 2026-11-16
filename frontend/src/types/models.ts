@@ -1576,99 +1576,218 @@ export interface NewHypothesisCard {
   parents?: string[]
 }
 
-// --- Specs panel (ADR-106): the parsed specs/ tree of a project ---
+// --- Specs panel: the framework-aware SDD model ---
+//
+// The backend no longer knows a specification layout: it detects WHICH SDD
+// frameworks are installed in the workspace, resolves the operator's active
+// one, and parses that framework's DECLARED tree. Everything the panel
+// renders — sections, node labels, finding labels/messages, lifecycle
+// actions — arrives in this payload, so adding a framework is a YAML
+// document and never a frontend change. These types mirror backend
+// SpecsStatusDTO and its siblings (backend/frontend_api_sdd.go).
 
-/** Tier-1 integrity finding categories (mirrors core/specs FindingKind,
- *  ADR-106 D5). The union covers the current tier; the RPC boundary accepts
- *  any non-empty string kind so a future tier's findings render with a
- *  generic label instead of being dropped. */
-export type SpecFindingKind =
-  | 'PATH_MISSING'
-  | 'CROSS_REF_BROKEN'
-  | 'DUPLICATE_ADR_NUMBER'
-  | 'INDEX_STALE'
-  | 'ROOT_FILE_MISSING'
-  | 'ADR_NAME_MALFORMED'
-  | 'ADR_NUMBER_MISMATCH'
-  | 'SUPERSEDED_TARGET_MISSING'
-  | 'SUPERSEDED_CYCLE'
+/** One installed skill that recognised a framework. */
+export interface SDDMatchedSkill {
+  name: string
+  dir: string
+  /** Discovery tier the skill was found in: project | global | user. */
+  scope: string
+}
 
-/** One parsed .md file of the specs/ tree (mirrors core/specs SpecFile).
- *  `path` is specs-root-relative with forward slashes; an absent `section`
- *  marks the root files INDEX.md and META.md. Optional fields are omitted
- *  on the wire when empty (Go omitempty); the RPC boundary validates them
- *  as well-typed-or-absent. */
-export interface SpecFile {
+/** One detected SDD framework: the definition's identity plus the evidence
+ *  that recognised it. `id` is the stable selection key the operator's
+ *  persisted choice stores. */
+export interface SDDFramework {
+  id: string
+  label: string
+  description?: string
+  docs_url?: string
+  /** Where the definition came from: builtin | global | project. */
+  origin: string
+  /** Strongest skill-discovery tier among the matched skills. */
+  scope: string
+  /** A declared root or marker exists in the parsed workspace. */
+  tree_present: boolean
+  root_present: boolean
+  marker_present: boolean
+  skills: SDDMatchedSkill[]
+}
+
+/** One declared framework root and its presence. */
+export interface SDDRoot {
+  id: string
+  /** Workspace-relative, slash separated. */
   path: string
-  section?: string
-  title?: string
-  /** Backticked entries of the file's "## Key Files" section, in document
-   *  order, verbatim. */
-  key_files?: string[]
-  /** Relative markdown link targets in document order, verbatim (a file
-   *  path with an optional #anchor, or a pure #anchor). */
-  cross_refs?: string[]
+  label?: string
+  required: boolean
+  present: boolean
 }
 
-/** One row of INDEX.md's "## Navigation by Task" table (mirrors core/specs
- *  IndexTask). */
-export interface SpecIndexTask {
+/** One checkbox item of a task-list document. */
+export interface SDDTaskItem {
+  text: string
+  done: boolean
+}
+
+/** One navigation-table row of an index document. */
+export interface SDDIndexTask {
   task: string
-  specs?: string[]
+  specs: string[]
 }
 
-/** One decisions/NNN-slug.md record (mirrors core/specs ADRMeta): number
- *  and slug from the file name, title/status/supersession from the body.
- *  `status` is the classification of the "## Status" first line
- *  ("accepted" / "superseded" / lower-cased first word). */
-export interface SpecADRMeta {
-  number: string
+/** One parsed concept instance that is a file. `path` is WORKSPACE-relative
+ *  (the path a file viewer opens). Only the extractions the framework's
+ *  concept declares are populated, so an unextracted field stays empty. */
+export interface SDDDocument {
+  path: string
+  root: string
+  concept: string
+  label?: string
+  section?: string
+  name: string
+  /** Leading numeric token of the name ("106" for 106-specs-panel.md). */
+  number?: string
   slug: string
-  file: string
   title?: string
-  status: string
-  /** Successor's NNN, set only when status is superseded and the status
-   *  line names a successor. */
-  superseded_by?: string
-  /** Git add-date (YYYY-MM-DD) of the decision file, enriched by the
-   *  backend from the repo's history; absent when the file is uncommitted
-   *  or the workspace has no git history (mirrors ADRMetaDTO's omitempty
-   *  date). */
+  /** Title with the document's own identity prefix removed. */
+  display_title?: string
+  /** Git-derived add date (YYYY-MM-DD) of a decision document; absent when
+   *  the file is uncommitted or the workspace has no git history. */
   date?: string
+  headings: string[]
+  key_files: string[]
+  cross_refs: string[]
+  frontmatter?: Record<string, string>
+  status?: string
+  superseded_by?: string
+  purpose?: string
+  requirements: string[]
+  scenarios: string[]
+  deltas: string[]
+  principles: string[]
+  user_stories: string[]
+  task_items: SDDTaskItem[]
+  tasks: SDDIndexTask[]
+  /** Declared `required` tokens this document does not satisfy. */
+  missing: string[]
 }
 
-/** One deterministic tier-1 integrity finding (mirrors core/specs Finding). */
-export interface SpecFinding {
-  kind: SpecFindingKind
-  /** Specs-root-relative path the finding is about. */
+/** One rendered tree node: an intermediate folder, a document, or a
+ *  DIRECTORY concept instance (a change folder, a feature folder). */
+export interface SDDNode {
+  /** Node identity — the workspace-relative path. */
+  id: string
+  /** folder | document | directory. */
+  kind: string
+  /** Workspace-relative, slash separated. */
+  path: string
+  label: string
+  /** Concept kind for an instance; "" (or absent) for a folder. */
+  concept?: string
+  name: string
+  parent?: string
+  children: string[]
+  /** Companion files the directory's concept declares but lacks. */
+  missing?: string[]
+}
+
+/** One declared view section: `tree`, `findings` or `checks`. */
+export interface SDDView {
+  id: string
+  label: string
+  kind: string
+  /** Top-level node ids of a tree section; empty for the model sections. */
+  nodes: string[]
+  /** Every node id the section owns (its concepts' instances plus their
+   *  ancestor folders) — a tree section renders its OWN subtree through it
+   *  instead of the shared forest. Absent for the model sections. */
+  paths?: string[]
+}
+
+/** One failed DECLARED check. `kind` is the framework's own finding token —
+ *  an open vocabulary, so no union: a framework the frontend has never heard
+ *  of still renders its findings. */
+export interface SDDFinding {
+  kind: string
+  /** Workspace-relative path the finding is about. */
   file: string
+  /** The concrete observation, computed from the tree. */
   detail: string
+  /** The check's declared operator-facing explanation; absent when the
+   *  framework declares none. */
+  message?: string
+  severity: string
 }
 
-/** Aggregate badge model of SpecsStatus: the collection sizes plus the
- *  per-kind findings histogram (keyed by the stringified kind). */
-export interface SpecsCounts {
-  files: number
-  adrs: number
+/** One declared lifecycle gesture. An action carrying a `concept` targets a
+ *  NODE of that concept (node scope — Apply on a change, Plan on a feature);
+ *  every other action is a panel-level gesture (the quick-actions row). */
+export interface SDDAction {
+  kind: string
+  label: string
+  skill?: string
+  prompt?: string
+  concept?: string
+  /** Declared requirement tokens: `root`, `findings`, `concept:<kind>`,
+   *  `companion:<kind>`, `absent:<kind>` — the five the loader accepts
+   *  (`validActionRequirement`), matching the Go `Action.Requires` comment,
+   *  ADR-126 and the DSL guide. The last two are what `unavailable_at` below
+   *  reports per node. */
+  requires: string[]
+  /** Every declared requirement holds for the parsed tree. */
+  available: boolean
+  /** The declared `skill` resolves to an installed, callable skill — a SEPARATE
+   *  fact from `available`, because a framework whose declared skill set is only
+   *  partially installed (detection matches `all_of` plus one `any_of`) leaves a
+   *  gesture inert on a perfectly built tree. Absent on an older payload reads
+   *  as available. */
+  skill_available?: boolean
+  /** Node paths where a per-node gate (`companion:`/`absent:`) does NOT hold:
+   *  `available` answers "could this gesture apply anywhere?", this answers
+   *  "does it apply HERE?" — a node listed here renders the action disabled. */
+  unavailable_at?: string[]
+}
+
+/** Aggregated model sizes for badges and filters. */
+export interface SDDCounts {
+  documents: number
   findings: number
+  by_concept: Record<string, number>
   findings_by_kind: Record<string, number>
 }
 
-/** View model for GetSpecsStatus (ADR-106 D2): the parsed specs/ tree of
- *  one project. The RPC boundary normalizes every collection to `[]`/`{}`
- *  and recomputes `counts` from the normalized collections, so the store
- *  and panel never null-guard and the badges never disagree with the
- *  rendered lists. `present=false` is the neutral state (a missing tree or
- *  No Project), never an error. */
+/** View model for GetSpecsStatus: which SDD frameworks are installed, which
+ *  one is active, and that framework's parsed tree plus its declared
+ *  actions. `present` is the VISIBILITY answer (sidebar gate on AND at least
+ *  one framework detected) — not the tree state, which is `tree_present`.
+ *  Every collection is non-nil on the wire; the RPC boundary re-normalizes
+ *  defensively and recomputes the counts from the normalized model. */
 export interface SpecsStatus {
   present: boolean
-  /** Absolute specs root path ("" for No Project). */
+  tree_present: boolean
+  /** Absolute path of the active framework's first PRESENT root ("" when
+   *  nothing is active). */
   root: string
-  files: SpecFile[]
-  index_tasks: SpecIndexTask[]
-  adrs: SpecADRMeta[]
-  findings: SpecFinding[]
-  counts: SpecsCounts
+  /** Absolute workspace the tree was parsed in. */
+  workspace: string
+  /** Every recognised framework, in detection default order. */
+  detected: SDDFramework[]
+  /** The active framework's id; "" when none is active. */
+  active_id?: string
+  /** The active framework's detection record (the matching `detected`
+   *  element); absent when none is active. */
+  active?: SDDFramework
+  /** More than one framework detected and no persisted choice yet. */
+  selector_needed: boolean
+  roots: SDDRoot[]
+  documents: SDDDocument[]
+  nodes: SDDNode[]
+  views: SDDView[]
+  findings: SDDFinding[]
+  actions: SDDAction[]
+  counts: SDDCounts
+  /** Non-fatal diagnostics: operator DSL faults and parser read warnings. */
+  warnings: string[]
 }
 
 /** One worktree of the active project's repository, enriched with the

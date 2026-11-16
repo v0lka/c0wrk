@@ -532,6 +532,42 @@ how profiles run:
   `max-steps > 0` overrides both.
 - **Redelegation cap** — `orchestration.maxRedelegationDepth` (default **2**)
   bounds recursive delegation when `allow-redelegate` is in play.
+- **Model selection** — an explicit `model` on each `delegate` task wins over
+  the profile's `model:` pin, which wins over the session's active model.
+  Both override fields require a full `provider/model` identifier; the provider
+  must be configured in the session's router. A profile is optional.
+
+**Different providers in one session.** Independent tasks in one `delegate`
+batch can run concurrently on different providers and models without changing
+the Conductor's session model. For example, with both providers configured:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "bash_example",
+      "summary": "Write a Bash hello world example",
+      "task": "Return a Bash hello-world script; do not create files.",
+      "model": "kimi/k3",
+      "depends_on": []
+    },
+    {
+      "id": "perl_example",
+      "summary": "Write a Perl hello world example",
+      "task": "Return a Perl hello-world script; do not create files.",
+      "model": "PT/deepseek-ai/DeepSeek-V4.1-Flash",
+      "depends_on": []
+    }
+  ]
+}
+```
+
+These identifiers are illustrative: use your configured provider names and
+models those endpoints actually serve. The second identifier splits into
+provider `PT` and model `deepseek-ai/DeepSeek-V4.1-Flash` at the first `/`.
+Provider validation checks the configured provider, not the endpoint's model
+availability. See [model override resolution](../specs/domains/orchestration/delegation.md#model-override-resolution)
+and [ADR-123](../specs/decisions/123-per-task-model-override.md).
 
 ### 3.9 Redelegation
 

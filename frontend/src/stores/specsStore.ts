@@ -1,21 +1,24 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { getSpecsStatus } from '@/api/specs'
+import { getSpecsStatus, setActiveSDD } from '@/api/specs'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useSddStore } from '@/stores/sddStore'
 import type { SpecsStatus } from '@/types/models'
 
 // --- State types ---
 
 interface SpecsState {
-  /** Parsed specs/ status of the active project, or null when not yet
-   *  loaded. present=false is a valid neutral state, not an absence of
+  /** Framework-aware SDD status of the active project: the detected
+   *  frameworks, the active one, and its parsed tree, findings and declared
+   *  actions. Null until loaded; `present=false` is a valid neutral state (no
+   *  framework detected, or the sidebar gate is off), not an absence of
    *  data. */
   status: SpecsStatus | null
   /** True while a GetSpecsStatus call is in flight. */
   isLoading: boolean
-  /** Last error from a status fetch; null when clean. The previous status
-   *  (if any) stays rendered alongside an error banner. */
+  /** Last error from a status fetch or a framework switch; null when clean.
+   *  The previous status (if any) stays rendered alongside an error banner. */
   error: string | null
   /** The projectId the current `status` belongs to, stamped at fetch START:
    *  together with the panel's active-project guard it keeps a stale
@@ -34,41 +37,54 @@ interface SpecsState {
    *  applies only while the store's counter still equals the ticket
    *  captured at its start — last-write-wins by initiation order, so an
    *  older fetch that resolves after a newer one never overwrites it (the
-   *  researchStore graphSyncSeq contract). */
+   *  researchStore graphSyncSeq contract). A framework switch rides this
+   *  same ticket: its re-parse starts a newer flight, so a status fetched
+   *  BEFORE the switch can never land after it. */
   fetchSeq: number
   /** The SIDEBAR tree's expanded nodes, keyed by projectId and then by the
-   *  tree node id (the directory path relative to the specs root, '' for
-   *  the root files group) — true = expanded. An absent key is collapsed:
-   *  the whole tree starts collapsed. Keyed per project because the parse
-   *  (and the node ids) belong to one project's specs tree; a foreign
-   *  project must never inherit another project's expansion. The whole map
-   *  is the store's ONLY persisted slice (zustand persist): the panel
-   *  unmounts on every tab switch, and localStorage is the only state that
-   *  survives an app restart. */
+   *  tree node id (the node's workspace-relative path) — true = expanded. An
+   *  absent key is collapsed: the whole tree starts collapsed. Keyed per
+   *  project because the parse (and the node ids) belong to one project's
+   *  tree; a foreign project must never inherit another project's expansion.
+   *  The whole map is the store's ONLY persisted slice (zustand persist): the
+   *  panel unmounts on every tab switch, and localStorage is the only state
+   *  that survives an app restart. */
   treeExpandedNodes: Record<string, Record<string, boolean>>
 }
 
 interface SpecsActions {
-  /** Fetch the specs/ status of a project (one light read-only parse) and
-   *  store it, stamped with the projectId and the active session id. A fetch
-   *  for a DIFFERENT project — or for a NEW session of the same project (the
+  /** Fetch the SDD status of a project (one light read-only parse) and store
+   *  it, stamped with the projectId and the active session id. A fetch for a
+   *  DIFFERENT project — or for a NEW session of the same project (the
    *  backend scans the active session's workspace) — clears the previous
    *  status up front: it must neither render during the flight nor survive
    *  this flight's error path; a same-project same-session refetch keeps the
-   *  old status rendered (no flicker on tree_changed). Superseded responses
-   *  (a newer fetch started while this one was in flight) are discarded; a
-   *  failure stores its message in `error` and keeps the previous status. */
+   *  old status rendered (no flicker on tree_changed, and the framework
+   *  selector keeps the previous tree on screen while its switch re-parses).
+   *  Superseded responses (a newer fetch started while this one was in
+   *  flight) are discarded; a failure stores its message in `error` and
+   *  keeps the previous status. */
   fetchStatus: (projectId: string) => Promise<void>
+  /** Switch the active SDD framework: persist the selection (SetActiveSDD,
+   *  per project, survives restart) and re-parse through fetchStatus. The
+   *  SELECTOR's optimistic state lives in sddStore (the chosen framework is
+   *  shown at once) while the PREVIOUS tree stays rendered until the new
+   *  parse lands — fetchStatus keeps a same-(project, session) status, and
+   *  its LWW ticket drops any status that was already in flight. A failed
+   *  persist reverts the optimistic selection and surfaces the message. */
+  selectFramework: (id: string) => Promise<void>
   /** Set/clear the panel's error banner directly. The quick-actions
-   *  dispatch path uses it to surface a failed spec-* skill send (the
-   *  research store's setError contract — send() rethrows only when the
-   *  auto-created session fails, the splash race). */
+   *  dispatch path uses it to surface a failed skill send (the research
+   *  store's setError contract — send() rethrows only when the auto-created
+   *  session fails, the splash race). */
   setError: (error: string | null) => void
-  /** Expand/collapse one SIDEBAR tree node for the ACTIVE project (keyed
-   *  by node id). A no-op without an active project — there is nothing to
-   *  key the expansion on. */
+  /** Expand/collapse one SIDEBAR tree node for the ACTIVE project (keyed by
+   *  node id). A no-op without an active project — there is nothing to key
+   *  the expansion on. */
   toggleTreeNode: (nodeId: string) => void
-  /** Clear everything (e.g. tests, or a future project-switch hook). */
+  /** Clear everything (e.g. tests, or a future project-switch hook). The
+   *  framework projection in sddStore is cleared with it: both describe the
+   *  same parse. */
   reset: () => void
 }
 
@@ -113,7 +129,8 @@ export const useSpecsStore = create<SpecsStore>()(
       // from a clean slate: the previous parse must neither render during
       // the flight nor survive this flight's error path. A same-project
       // same-session refetch keeps the previous status rendered (no flicker
-      // on tree_changed).
+      // on tree_changed, and a framework switch keeps the old tree until the
+      // new parse lands).
       status: s.projectId === projectId && s.sessionId === sessionId ? s.status : null,
       projectId,
       sessionId,
@@ -123,6 +140,9 @@ export const useSpecsStore = create<SpecsStore>()(
       const status = await getSpecsStatus(projectId)
       if (get().fetchSeq !== seq) return
       set({ status, projectId, sessionId, isLoading: false, error: null })
+      // One RPC, two consumers: the framework context (tab-strip visibility,
+      // the selector's confirmed selection) follows every successful parse.
+      useSddStore.getState().applyStatus(projectId, status)
     } catch (err) {
       if (get().fetchSeq !== seq) return
       set({
@@ -130,6 +150,35 @@ export const useSpecsStore = create<SpecsStore>()(
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  },
+
+  selectFramework: async (id) => {
+    const projectId = get().projectId ?? useProjectStore.getState().activeProjectId
+    if (projectId === null) return
+    // Optimistic: the selector shows the choice at once; the previous tree
+    // stays on screen (fetchStatus keeps it for the same (project, session)).
+    const seq = useSddStore.getState().beginSwitch(id)
+    try {
+      await setActiveSDD(projectId, id)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      useSddStore.getState().failSwitch(seq, message)
+      set({ error: message, isLoading: false })
+      return
+    }
+    // The persist landed, but the world may have moved on while it was in
+    // flight: a NEWER switch owns the continuation (this attempt's completion
+    // must not fire a fetch for it), and a project switch re-anchors the
+    // whole surface anyway. An abandoned attempt leaves the selector to the
+    // newer switch.
+    const sdd = useSddStore.getState()
+    if (sdd.switchSeq !== seq || get().projectId !== projectId) return
+    // The re-parse is the switch's second half: it ENDS the switch whether it
+    // succeeds or fails — a failed re-parse (a transport error, a framework
+    // that vanished between persist and parse) must surface its error and
+    // UNLOCK the selector, never leave it disabled forever.
+    await get().fetchStatus(projectId)
+    useSddStore.getState().endSwitch(seq)
   },
 
   setError: (error) => set({ error, isLoading: false }),
@@ -152,7 +201,10 @@ export const useSpecsStore = create<SpecsStore>()(
     }))
   },
 
-  reset: () => set(initialState),
+  reset: () => {
+    set(initialState)
+    useSddStore.getState().reset()
+  },
     }),
     {
       name: 'c0wrk-specs-view',

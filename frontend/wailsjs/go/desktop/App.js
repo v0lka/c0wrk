@@ -814,6 +814,10 @@ export function SetActiveResearch(arg1, arg2) {
   return window['go']['desktop']['App']['SetActiveResearch'](arg1, arg2);
 }
 
+export function SetActiveSDD(arg1, arg2) {
+  return window['go']['desktop']['App']['SetActiveSDD'](arg1, arg2);
+}
+
 export function SetEmbeddedLLMAutoUnload(arg1, arg2) {
   return window['go']['desktop']['App']['SetEmbeddedLLMAutoUnload'](arg1, arg2);
 }

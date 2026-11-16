@@ -497,9 +497,17 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	// (git already honoured .gitignore with negation; OR-merging the full
 	// verdict would let the resolver's negation-less matching override a git
 	// "un-ignore" !pattern). Non-git: the resolver is the sole authority for
-	// both files, like the indexer and search tools. Resolver construction
-	// failure is non-fatal.
-	if r, rErr := ignore.NewResolver(absRoot); rErr == nil {
+	// both files, like the indexer and search tools. The resolver comes from
+	// the session Manager's per-root cache (shared with the agent path — one
+	// tree walk serves both): a fresh build walks the whole tree and costs
+	// seconds on large workspaces. A build failure is non-fatal — the listing
+	// ships without ignore flags and the next call retries (errors are not
+	// cached).
+	r, rErr := f.ignoreResolverFor(absRoot)
+	if rErr != nil {
+		f.log().Debug("ignore resolver unavailable; listing without ignore flags", "root", absRoot, "error", rErr)
+	}
+	if r != nil {
 		for i := range nodes {
 			if nodes[i].GitIgnored {
 				continue
@@ -516,6 +524,43 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	}
 
 	return nodes, nil
+}
+
+// ignoreResolverFor returns the workspace-root ignore resolver for the file
+// tree: the session Manager's per-root cache in production (one walk per
+// root shared with the agent path), a direct build when no manager is wired
+// (tests).
+func (f *FrontendAPI) ignoreResolverFor(root string) (*ignore.Resolver, error) {
+	if f.app != nil {
+		if mgr := f.app.Manager(); mgr != nil {
+			return mgr.IgnoreResolverFor(f.ctx(), root)
+		}
+	}
+	return ignore.NewResolverContext(f.ctx(), root)
+}
+
+// prewarmIgnoreResolver starts the manager's tracked background resolver
+// build for root, so the first file-tree expand joins an in-flight build
+// instead of paying the full-tree walk synchronously.
+func (f *FrontendAPI) prewarmIgnoreResolver(root string) {
+	if f.app == nil {
+		return
+	}
+	if mgr := f.app.Manager(); mgr != nil {
+		mgr.PrewarmIgnoreResolver(root)
+	}
+}
+
+// invalidateIgnoreResolversOverlapping drops cached ignore resolvers that
+// overlap root, the tree a freshly created watcher now covers: edits made
+// while it was unwatched never reached InvalidateIgnoreCache.
+func (f *FrontendAPI) invalidateIgnoreResolversOverlapping(root string) {
+	if f.app == nil {
+		return
+	}
+	if mgr := f.app.Manager(); mgr != nil {
+		mgr.InvalidateIgnoreCacheOverlapping(root)
+	}
 }
 
 // WatchDirectory re-scopes the watcher to the requested workspace root (the
@@ -545,7 +590,13 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 		if err := config.ValidateNoProjectSessionPath(absRoot, absDir); err != nil {
 			return err
 		}
-		return f.reScopeNoProjectWatcher(absDir)
+		if err := f.reScopeNoProjectWatcher(absDir); err != nil {
+			return err
+		}
+		// ListDirectory resolves ignore rules against the project root, so
+		// prewarm that root, not the session workspace subtree.
+		f.prewarmIgnoreResolver(absRoot)
+		return nil
 	}
 	// CODE mode: renderer-supplied path must belong to this project (active
 	// workspace or a managed worktree) before influencing watcher state.
@@ -630,6 +681,15 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 		}
 		f.activeProjectMu.Unlock()
 	}
+
+	// Prewarm the ignore-resolver cache for the root the file tree lists
+	// against, so the first expand joins an in-flight build instead of paying
+	// the full-tree walk synchronously.
+	prewarmRoot := absRoot
+	if managed {
+		prewarmRoot = managedRoot
+	}
+	f.prewarmIgnoreResolver(prewarmRoot)
 	return nil
 }
 
