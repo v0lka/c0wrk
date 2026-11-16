@@ -45,6 +45,7 @@ func (s *SQLiteProjectStore) createTables() error {
 		saved_session_id TEXT DEFAULT '',
 		open_tabs TEXT NOT NULL DEFAULT '[]',
 		active_file TEXT DEFAULT '',
+		active_sdd TEXT DEFAULT '',
 		updated_at TIMESTAMP NOT NULL
 	);
 
@@ -78,6 +79,16 @@ func (s *SQLiteProjectStore) createTables() error {
 		if _, err := s.db.ExecContext(context.Background(),
 			`ALTER TABLE projects ADD COLUMN research_pins TEXT`); err != nil {
 			return fmt.Errorf("failed to migrate projects.research_pins: %w", err)
+		}
+	}
+
+	// Migration: active_sdd column (the operator's selected SDD framework
+	// per project, "" = the detection default); idempotent, and a fresh DB
+	// already carries it from the CREATE TABLE above.
+	if !s.columnExists("project_ui_state", "active_sdd") {
+		if _, err := s.db.ExecContext(context.Background(),
+			`ALTER TABLE project_ui_state ADD COLUMN active_sdd TEXT DEFAULT ''`); err != nil {
+			return fmt.Errorf("failed to migrate project_ui_state.active_sdd: %w", err)
 		}
 	}
 
@@ -253,14 +264,14 @@ func (s *SQLiteProjectStore) SaveUIState(ctx context.Context, state ProjectUISta
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO project_ui_state (project_id, saved_session_id, open_tabs, active_file, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO project_ui_state (project_id, saved_session_id, open_tabs, active_file, active_sdd, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(project_id) DO UPDATE SET
 			saved_session_id = excluded.saved_session_id,
 			open_tabs = excluded.open_tabs,
 			active_file = excluded.active_file,
 			updated_at = excluded.updated_at`,
-		state.ProjectID, state.SavedSessionID, string(openTabsJSON), state.ActiveFile, updatedAt,
+		state.ProjectID, state.SavedSessionID, string(openTabsJSON), state.ActiveFile, state.ActiveSDD, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save project UI state: %w", err)
@@ -273,11 +284,11 @@ func (s *SQLiteProjectStore) LoadUIState(ctx context.Context, projectID string) 
 	var state ProjectUIState
 	var openTabsJSON string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT project_id, COALESCE(saved_session_id, ''), COALESCE(open_tabs, '[]'), COALESCE(active_file, ''), updated_at
+		SELECT project_id, COALESCE(saved_session_id, ''), COALESCE(open_tabs, '[]'), COALESCE(active_file, ''), COALESCE(active_sdd, ''), updated_at
 		FROM project_ui_state
 		WHERE project_id = ?`,
 		projectID,
-	).Scan(&state.ProjectID, &state.SavedSessionID, &openTabsJSON, &state.ActiveFile, &state.UpdatedAt)
+	).Scan(&state.ProjectID, &state.SavedSessionID, &openTabsJSON, &state.ActiveFile, &state.ActiveSDD, &state.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -311,6 +322,44 @@ func (s *SQLiteProjectStore) SaveSavedSessionID(ctx context.Context, projectID, 
 		return fmt.Errorf("failed to save project saved session id: %w", err)
 	}
 	return nil
+}
+
+// SaveActiveSDD updates ONLY active_sdd, preserving any persisted
+// saved_session_id/open_tabs/active_file; with no row yet it inserts one with
+// empty tabs. An empty sddID clears the selection (stored as "").
+func (s *SQLiteProjectStore) SaveActiveSDD(ctx context.Context, projectID, sddID string) error {
+	updatedAt := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO project_ui_state (project_id, saved_session_id, open_tabs, active_file, active_sdd, updated_at)
+		VALUES (?, '', '[]', '', ?, ?)
+		ON CONFLICT(project_id) DO UPDATE SET
+			active_sdd = excluded.active_sdd,
+			updated_at = excluded.updated_at`,
+		projectID, sddID, updatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save project active SDD: %w", err)
+	}
+	return nil
+}
+
+// LoadActiveSDD returns the persisted active SDD framework id for a project,
+// "" when the project has no UI-state row or no selection.
+func (s *SQLiteProjectStore) LoadActiveSDD(ctx context.Context, projectID string) (string, error) {
+	var sddID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(active_sdd, '')
+		FROM project_ui_state
+		WHERE project_id = ?`,
+		projectID,
+	).Scan(&sddID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to load project active SDD: %w", err)
+	}
+	return sddID, nil
 }
 
 // SaveAppState upserts an app-level key-value pair into the app_state table.

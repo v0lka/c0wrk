@@ -176,7 +176,7 @@ func (s *resumeTaskStore) ReactivateTask(_ context.Context, _ string) error {
 // executes end-to-end. The factory closes over the LLM so each session gets a
 // fresh orchestrator backed by the same mock.
 func functionalOrchestratorFactory(llmCaller agent.LLMCaller) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
 			cw := memory.NewContextWindow(memory.ContextWindowConfig{
@@ -633,7 +633,7 @@ func TestResumeTask_ModelSwitchRebasesContextWindow(t *testing.T) {
 		return core.NewCoreContextManager(cw)
 	}
 
-	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		return core.NewOrchestrator(core.OrchestratorConfig{Model: bigModel}, core.OrchestratorDeps{
 			LLM:            &finishLLM{answer: "resumed-window-done"},
@@ -781,7 +781,7 @@ func TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog(t *testing.T)
 	caller := &gatingLLM{started: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(caller.release) }) }
-	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		return core.NewOrchestrator(core.OrchestratorConfig{Model: unknownModel}, core.OrchestratorDeps{
 			LLM:            caller,
@@ -1599,7 +1599,7 @@ func (t *passthroughTool) Execute(_ context.Context, _ json.RawMessage) (sdktool
 // stub bash_exec, so the complete declare → execute → pause → resume plan
 // workflow runs end-to-end through the manager.
 func planWorkflowFactory(caller agent.LLMCaller, bash *passthroughTool) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		registry.Register(bash)
 		registry.Register(coretools.NewDeclarePlanTool(nil))

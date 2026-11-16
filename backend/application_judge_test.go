@@ -164,7 +164,7 @@ func TestEvaluateJudgeForSession(t *testing.T) {
 		t.Fatal("failed to build session judge from fake caller")
 	}
 
-	factory := session.OrchestratorFactory(func(_ core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := session.OrchestratorFactory(func(_ core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		reg := coretools.NewToolRegistry()
 		reg.SetJudge(judge)
 		return core.NewOrchestrator(core.OrchestratorConfig{Model: "session-model"}, core.OrchestratorDeps{CoreToolRegistry: reg}), nil

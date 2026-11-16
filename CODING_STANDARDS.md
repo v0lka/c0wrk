@@ -17,7 +17,7 @@ Every multi-line comment block in touched code is classified into one of four cl
 | Class | Meaning | Action |
 | ----- | ------- | ------ |
 | **A** | Duplicate of an existing spec | Replace with a 1–4 line essence + relative link into `specs/` |
-| **B** | Unique cross-cutting invariant not yet specified | Document it in the fitting spec (`spec-update`, or `spec-create` for a new document — both vendored Agent Skills, ADR-105), then leave a short essence + link |
+| **B** | Unique cross-cutting invariant not yet specified | Document it in the fitting spec — through the lifecycle skill of whatever SDD framework the workspace has installed (c0wrk itself ships no spec skillset since ADR-126); when no spec workflow is installed in the project, edit the spec document directly — then leave a short essence + link |
 | **C** | Local why (affects only this code: field contracts, non-obvious local mechanics) | Keep, tightened |
 | **D** | Drift or noise (states something the code/spec contradicts, or restates the obvious) | Delete; fix the underlying drift (in spec or code) rather than rewording the comment |
 

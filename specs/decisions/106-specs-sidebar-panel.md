@@ -9,6 +9,27 @@ is a MISSING or non-directory root only; an existing EMPTY or PARTIAL tree
 parses `present: true` with whatever content is readable, never an error.
 Every other decision stands.)
 
+**Re-sourced from the DSL by [ADR-126](./126-sdd-framework-dsl.md)** (the
+panel these decisions built is preserved in shape): decision 2's `core/specs`
+parser and its fixed architecture/domains/contracts/decisions shape, and
+decision 5's hard-coded tier-1 finding vocabulary, are replaced by the
+declarative SDD DSL — detection recognises the workspace's own framework,
+`core/sdd` parses its declared roots, concepts and checks, and the panel
+renders what the active framework declares. Decision 6's visibility clause —
+"any workspace with a `specs/` directory renders the panel" — is re-sourced
+with them and no longer holds: under ADR-126 the Specs tab is
+`gate ∧ detected` ([ADR-126](./126-sdd-framework-dsl.md) decision 10) — it
+renders only while the `specs.enabled` surface gate (decision 8, amending
+[ADR-115](./115-sidebar-pack-gates-reconcile-and-serialization.md)) is on AND
+at least one SDD framework is RECOGNISED through skill detection (decision 3;
+zero recognised frameworks means no Specs surface at all, whether or not a
+`specs/` directory exists). Decision 6's closing sentence (c0wrk's own tree as
+primary consumer and test fixture) stands. Decisions 1 (the Specs tab and its
+No-Project contract), 3 (refresh via mount + `workspace:tree_changed`, in
+[ADR-116](./116-specs-root-follows-active-session.md)'s session-workspace
+form) and 4 (human-triggered reads, everything mutating previewed in the
+panel's dispatch dialog and dispatched into the chat on confirm) stand.
+
 ## Context
 
 Issue [#69](https://github.com/v0lka/c0wrk/issues/69): the vendored `spec-*` skills (ADR-105) let an _agent_ drive the spec lifecycle, but there is no _human_ surface for the specification system. Today `specs/` is browsable only through the generic file tree / file viewer — no task→spec navigation, no ADR timeline, no drift signal.

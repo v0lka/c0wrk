@@ -104,7 +104,7 @@ func finishTestResponse(answer string) *llm.ChatResponse {
 // routingTestFactory builds a real orchestrator WITH a router (the normal
 // route → execute path runs end-to-end); the same caller backs both.
 func routingTestFactory(caller agent.LLMCaller) session.OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
 			cw := memory.NewContextWindow(memory.ContextWindowConfig{

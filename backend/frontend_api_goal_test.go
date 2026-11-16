@@ -17,7 +17,7 @@ import (
 func goalTestApp(t *testing.T) *FrontendAPI {
 	t.Helper()
 	emitFunc := func(session.Event) {}
-	factory := func(coreEmitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(coreEmitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 	mgr := session.NewManager(factory, emitFunc, t.TempDir())

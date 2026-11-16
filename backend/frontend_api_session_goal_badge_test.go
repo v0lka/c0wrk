@@ -41,7 +41,7 @@ func (goalCapableTestProposer) Propose(_ context.Context, p coretools.GoalPropos
 // empty default registry fails the call and the loop exits before
 // activation) and the auto-approving proposer injected.
 func goalBadgeTestFactory(caller agent.LLMCaller) session.OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		registry.Register(coretools.NewProposeGoalTool())
 		registry.Register(coretools.NewDeclareGoalStatusTool())

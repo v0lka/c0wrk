@@ -692,10 +692,14 @@ func ProjectCommandsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".agents", "commands")
 }
 
-// ProjectSpecsPath returns the project-local specs root
-// (<workspacePath>/specs) parsed by core/specs for the Specs sidebar panel.
-// The path is only ever READ — a missing tree is the neutral present=false
-// state and is never created here. See specs/decisions/106-specs-sidebar-panel.md.
+// ProjectSpecsPath names the conventional project-local specs root
+// (<workspacePath>/specs). It is NOT the authority on where a framework's
+// tree lives any more: the SDD surface parses whatever root the active
+// framework declares in its DSL document (core/sdd), and this helper is
+// retained for callers that need the convention (and for the c0wrk specs
+// framework's own declaration, whose root path is exactly this directory).
+// The path is only ever READ — a missing tree is the neutral state and is
+// never created here.
 func ProjectSpecsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, "specs")
 }

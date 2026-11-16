@@ -1088,3 +1088,90 @@ func TestCreateTablesMigrationResearchPins_LegacyTableUpgraded(t *testing.T) {
 		t.Errorf("legacy project should have zero ResearchPins, got %+v", loaded.ResearchPins)
 	}
 }
+
+// TestCreateTablesMigrationActiveSDD_LegacyTableUpgraded pins the
+// active_sdd migration: a project_ui_state table written by an older build
+// (no active_sdd column) is upgraded in place, existing rows survive with an
+// empty selection, and SaveActiveSDD/LoadActiveSDD round-trip without
+// disturbing the other columns.
+func TestCreateTablesMigrationActiveSDD_LegacyTableUpgraded(t *testing.T) {
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.ExecContext(context.Background(), `
+	CREATE TABLE projects (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		workspace_path TEXT NOT NULL,
+		is_external BOOLEAN NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL,
+		last_active_at TIMESTAMP
+	);
+	CREATE TABLE project_ui_state (
+		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		saved_session_id TEXT DEFAULT '',
+		open_tabs TEXT NOT NULL DEFAULT '[]',
+		active_file TEXT DEFAULT '',
+		updated_at TIMESTAMP NOT NULL
+	);
+	INSERT INTO projects (id, name, workspace_path, is_external, created_at, last_active_at)
+	VALUES ('legacy-proj', 'Legacy', '/tmp/legacy', 0, '2024-01-01T10:00:00Z', '2024-01-02T10:00:00Z');
+	INSERT INTO project_ui_state (project_id, saved_session_id, open_tabs, active_file, updated_at)
+	VALUES ('legacy-proj', 'session-1', '["a.md"]', 'a.md', '2024-01-02T10:00:00Z');
+	`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+
+	store, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteProjectStore on legacy db: %v", err)
+	}
+	if !store.columnExists("project_ui_state", "active_sdd") {
+		t.Fatal("active_sdd column should exist after migrating a legacy table")
+	}
+
+	// The existing row survives with an empty selection.
+	got, err := store.LoadActiveSDD(context.Background(), "legacy-proj")
+	if err != nil {
+		t.Fatalf("LoadActiveSDD (legacy row): %v", err)
+	}
+	if got != "" {
+		t.Errorf("legacy row active_sdd = %q, want \"\"", got)
+	}
+
+	// Save only touches active_sdd.
+	if err := store.SaveActiveSDD(context.Background(), "legacy-proj", "openspec"); err != nil {
+		t.Fatalf("SaveActiveSDD: %v", err)
+	}
+	state, err := store.LoadUIState(context.Background(), "legacy-proj")
+	if err != nil {
+		t.Fatalf("LoadUIState: %v", err)
+	}
+	if state == nil {
+		t.Fatal("LoadUIState = nil after the migration")
+	}
+	if state.ActiveSDD != "openspec" {
+		t.Errorf("ActiveSDD = %q, want openspec", state.ActiveSDD)
+	}
+	if state.SavedSessionID != "session-1" || state.ActiveFile != "a.md" {
+		t.Errorf("SaveActiveSDD disturbed other columns: %+v", state)
+	}
+
+	// A full UI-state save must not clobber the selection.
+	state.ActiveSDD = ""
+	if err := store.SaveUIState(context.Background(), *state); err != nil {
+		t.Fatalf("SaveUIState: %v", err)
+	}
+	got, err = store.LoadActiveSDD(context.Background(), "legacy-proj")
+	if err != nil {
+		t.Fatalf("LoadActiveSDD after SaveUIState: %v", err)
+	}
+	if got != "openspec" {
+		t.Errorf("active_sdd after SaveUIState = %q, want the preserved openspec", got)
+	}
+
+	// An idempotent second open re-runs the migration cleanly.
+	if _, err := NewSQLiteProjectStore(db); err != nil {
+		t.Fatalf("re-open after migration: %v", err)
+	}
+}

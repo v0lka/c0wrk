@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -173,11 +174,75 @@ func TestCloseSkillsWatchers_Idempotent(t *testing.T) {
 	}
 }
 
+// TestListSkills_DiscoverySet pins the RPC layer's side of the multi-directory
+// discovery: ListSkills forwards the workspace's whole discovery set (the
+// builder's SkillDirsForWorkspace — project .agents/skills plus the SDD
+// framework's declared dirs such as .claude/skills) to GetSkillDescriptors, and
+// the cache is keyed on that set, so a project/session change that alters the
+// set re-scans even when no watcher fired and no generation bump happened.
+func TestListSkills_DiscoverySet(t *testing.T) {
+	wsOne := filepath.Join(string(filepath.Separator), "tmp", "ws-one")
+	wsTwo := filepath.Join(string(filepath.Separator), "tmp", "ws-two")
+	dirsOne := []string{
+		config.ProjectSkillsPath(wsOne),
+		filepath.Join(wsOne, ".claude", "skills"),
+	}
+	dirsTwo := []string{
+		config.ProjectSkillsPath(wsTwo),
+		filepath.Join(wsTwo, ".claude", "skills"),
+	}
+
+	mock := &mockBuilder{
+		skillDirsRes:           dirsOne,
+		getSkillDescriptorsRes: []skills.SkillDescriptor{{Name: "openspec-propose", Description: "Propose a change"}},
+	}
+	f := &FrontendAPI{emitEvent: func(string, ...any) {}}
+	f.seedPublished.Store(true)
+	f.builderOverride = mock
+	f.activeProjectPath = wsOne
+
+	got := f.ListSkills()
+	if len(got) != 1 || got[0].Name != "openspec-propose" {
+		t.Fatalf("ListSkills: got %v, want the .claude/skills entry", got)
+	}
+	if !reflect.DeepEqual(mock.getSkillDescriptorsDirs, dirsOne) {
+		t.Fatalf("GetSkillDescriptors dirs = %v, want the full discovery set %v",
+			mock.getSkillDescriptorsDirs, dirsOne)
+	}
+
+	// Second call is cache-served: same set, same generation.
+	f.ListSkills()
+	if mock.getSkillDescriptorsCalls != 1 {
+		t.Fatalf("expected the second ListSkills to be cached (1 scan), got %d", mock.getSkillDescriptorsCalls)
+	}
+
+	// A different project contributes a different set — the cache key changes,
+	// so the catalog is re-scanned without any explicit invalidation.
+	mock.skillDirsRes = dirsTwo
+	f.activeProjectPath = wsTwo
+	f.ListSkills()
+	if mock.getSkillDescriptorsCalls != 2 {
+		t.Fatalf("expected a set change to re-scan (2 scans), got %d", mock.getSkillDescriptorsCalls)
+	}
+	if !reflect.DeepEqual(mock.getSkillDescriptorsDirs, dirsTwo) {
+		t.Fatalf("GetSkillDescriptors dirs = %v, want %v", mock.getSkillDescriptorsDirs, dirsTwo)
+	}
+
+	// An explicit invalidation (project switch / watcher) still re-scans the
+	// unchanged set, so per-directory edits are never served stale.
+	f.invalidateSkillCache()
+	f.ListSkills()
+	if mock.getSkillDescriptorsCalls != 3 {
+		t.Fatalf("expected invalidation to re-scan (3 scans), got %d", mock.getSkillDescriptorsCalls)
+	}
+}
+
 // TestResolveSkillResourcePath_RPCWiring verifies the RPC-level wiring: the
-// builder receives the active project's .agents/skills directory (the same
-// workspace snapshot ListSkills uses) plus the raw (skill, path) arguments,
-// and its result and error are propagated verbatim. The catalog resolution
-// itself (precedence + SafeResolvePath) is covered by the core builder test
+// builder receives the active project's WORKSPACE (the same snapshot ListSkills
+// uses — the workspace's full ordered discovery set resolves inside the
+// builder) plus the raw (skill, path) arguments, and its result and error are
+// propagated verbatim. The catalog resolution itself (precedence, framework
+// dirs + SafeResolvePath) is covered by the core builder test
 // TestOrchestratorBuilder_ResolveSkillResourcePath.
 func TestResolveSkillResourcePath_RPCWiring(t *testing.T) {
 	t.Run("no builder", func(t *testing.T) {
@@ -206,12 +271,11 @@ func TestResolveSkillResourcePath_RPCWiring(t *testing.T) {
 		if mock.resolveSkillResourceCalls != 1 {
 			t.Fatalf("expected 1 builder call, got %d", mock.resolveSkillResourceCalls)
 		}
-		wantDir := config.ProjectSkillsPath(f.activeProjectPath)
-		if mock.resolveSkillResourceArgs[0] != wantDir {
-			t.Errorf("projectSkillDir = %q, want %q", mock.resolveSkillResourceArgs[0], wantDir)
+		if mock.resolveSkillResourceArgs[0] != f.activeProjectPath {
+			t.Errorf("workspace = %q, want %q", mock.resolveSkillResourceArgs[0], f.activeProjectPath)
 		}
 		if mock.resolveSkillResourceArgs[1] != "my-skill" || mock.resolveSkillResourceArgs[2] != "references/api.md" {
-			t.Errorf("args = %v, want [dir my-skill references/api.md]", mock.resolveSkillResourceArgs)
+			t.Errorf("args = %v, want [workspace my-skill references/api.md]", mock.resolveSkillResourceArgs)
 		}
 	})
 

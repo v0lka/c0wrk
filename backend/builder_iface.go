@@ -30,8 +30,19 @@ type appBuilder interface {
 	OptimizePrompt(context.Context, string) (*core.OptimizePromptResult, error)
 	GenerateCommitMessage(context.Context, string) (string, error)
 	GetBaseSkillDirs() []string
-	GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor
-	ResolveSkillResourcePath(projectSkillDir, skillName, relPath string) (string, error)
+	// SkillDirsForWorkspace returns the complete ordered skill discovery set for
+	// one session workspace (project-local + SDD framework dirs + base dirs).
+	// sddCheckoutPath is the project's repository checkout whose checkout-local
+	// SDD operator DSL merges into the detection catalog (never the session
+	// tree); an empty value falls back to workspacePath.
+	SkillDirsForWorkspace(workspacePath, sddCheckoutPath string) []string
+	// GetSkillDescriptors scans an explicit discovery set (the same set
+	// SkillDirsForWorkspace returns).
+	GetSkillDescriptors(dirs []string) []skills.SkillDescriptor
+	// ResolveSkillResourcePath resolves a read_skill_resource (skill, path)
+	// call over the workspace's FULL ordered discovery set (the same set
+	// SkillDirsForWorkspace returns for workspacePath — "" in CHAT mode).
+	ResolveSkillResourcePath(workspacePath, skillName, relPath string) (string, error)
 	GetBaseAgentDirs() []string
 	GetAgentDescriptors(projectAgentDir string) []agents.AgentDescriptor
 	ModelRegistry() *llm.ModelRegistry

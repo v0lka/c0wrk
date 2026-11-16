@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted — **superseded in part by [ADR-126](./126-sdd-framework-dsl.md)**:
+decisions 1–4 (the vendored `spec-*` skillset, the `WORKFLOW.md` stance, the
+bundled Subagent Profile, and the "seed globally, always on" invariant with its
+version-marker/reconcile machinery) are withdrawn and the vendored tree is
+removed; decision 5 (`core/seedpack` as the shared seeding core for the packs
+that DO ship — research, papers) stands.
 
 ## Context
 

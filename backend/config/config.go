@@ -76,12 +76,15 @@ type Config struct {
 	Runtime           RuntimeConfig           `yaml:"runtime"`
 	Notifications     NotificationsConfig     `yaml:"notifications"`
 
-	// Research and Specs gate the sidebar's Research and Specs surfaces
-	// together with their globally-seeded skill/agent packs: a disabled
-	// surface hides its sidebar button and unseeds the pack copies; enabling
-	// it reseeds them. Pointer-bools: unset = enabled — the packs seed
-	// exactly as they did before the gates existed. See the sidebar-packs
-	// ADR and specs/domains/{research,specs}.md.
+	// Research gates the sidebar's Research surface together with its
+	// globally-seeded skill/agent pack: a disabled gate hides the sidebar
+	// button and unseeds the pack copies; enabling it reseeds them.
+	// Specs (ADR-126) is a VISIBILITY GATE ONLY: c0wrk ships no spec
+	// skillset, seeds nothing for it, and flipping the gate never touches
+	// the disk — it shows or hides the surface whose content is whatever
+	// specification framework the workspace itself has installed.
+	// Pointer-bools: unset = enabled. See the sidebar-packs ADR,
+	// ADR-126 and specs/domains/{research,specs}.md.
 	Research SidebarPackConfig `yaml:"research"`
 	Specs    SidebarPackConfig `yaml:"specs"`
 
@@ -2185,14 +2188,16 @@ func (c PromptSuggestionsConfig) SuggestionsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
-// SidebarPackConfig gates one sidebar feature surface (Research or Specs)
-// together with its globally-seeded skill/agent pack: a disabled surface
-// hides its sidebar button and unseeds its pack copies; enabling it reseeds
-// them (seedGlobalPacks). See the sidebar-packs ADR and
-// specs/domains/{research,specs}.md.
+// SidebarPackConfig gates one sidebar feature surface. For Research the gate
+// also owns the surface's globally-seeded skill/agent pack: a disabled gate
+// hides the sidebar button and unseeds the pack copies; enabling it reseeds
+// them (seedGlobalPacks). For Specs the gate is visibility-only (ADR-126 —
+// no shipped skillset, no seed, no unseed). See the sidebar-packs ADR,
+// ADR-126 and specs/domains/{research,specs}.md.
 type SidebarPackConfig struct {
 	// Enabled is the surface's master gate; nil defaults to true — explicit
-	// false is the only way the pack goes unseeded.
+	// false is the only way the Research pack goes unseeded (Specs never
+	// seeds anything).
 	Enabled *bool `yaml:"enabled"`
 }
 
