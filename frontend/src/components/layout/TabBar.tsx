@@ -1,6 +1,7 @@
-import { useCallback } from 'react'
-import { Plus, X } from 'lucide-react'
+import { useCallback, useEffect } from 'react'
+import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useTabStore, useTabs, useActiveTabId, type Tab } from '@/stores/tabStore'
@@ -10,6 +11,7 @@ import { useSessionStatusIndicator } from '@/hooks/useSessionStatusIndicator'
 import { SESSION_DOT_CLASSES, SESSION_DOT_TITLES, sessionNameFromSnapshot } from '@/lib/activeSessions'
 import { buildTabLabel } from '@/lib/tabLabel'
 import type { TabController } from '@/hooks/useTabController'
+import { useTabStripOverflow } from '@/hooks/useTabStripOverflow'
 import { cn } from '@/lib/utils'
 
 // The workspace tab bar (rendered above the main row only when
@@ -31,6 +33,19 @@ export interface TabBarProps {
 export function TabBar({ controller }: TabBarProps) {
   const tabs = useTabs()
   const activeTabId = useActiveTabId()
+  // Strip scroll affordances, measured off the live DOM by the hook: the
+  // chevron pair renders only while the strip overflows, and each flag gates
+  // its own button (the authoritative layout description lives in
+  // specs/domains/frontend/tabs.md).
+  const { scrollerRef, overflowing, canScrollLeft, canScrollRight, scrollNext, scrollPrev, revealTab } =
+    useTabStripOverflow({ tabIds: tabs.map((tab) => tab.id), activeTabId })
+
+  // Activation can move the active pointer without a strip click (tab-cycling
+  // hotkeys, notification clicks): reveal the newly active tab so it never
+  // stays hidden past a clipped edge.
+  useEffect(() => {
+    revealTab(activeTabId)
+  }, [revealTab, activeTabId])
 
   const handleClose = useCallback(
     (id: string) => {
@@ -119,17 +134,35 @@ export function TabBar({ controller }: TabBarProps) {
     [controller],
   )
 
+  // One «+» affordance shared by both layouts — in-flow right after the last
+  // tab while the strip fits, pinned right of the right chevron when it
+  // overflows — so exactly one button[aria-label="New tab"] exists either way.
+  const addButton = (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="shrink-0"
+      onClick={handleAdd}
+      aria-label="New tab"
+      title="New tab"
+    >
+      <Plus className="size-4" />
+    </Button>
+  )
+
   return (
     // Zoom-safe by construction: fixed token heights, no viewport units — the
     // bar is a plain flex row shrinking to zero under the h-full app shell.
     <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border bg-background px-2">
-      {/* The «+» rides WITH the strip: this scroll container holds the
-          content-width tablist plus the button, so the button always sits
-          right after the last tab — including when the strip overflows and
-          scrolls (browser tab-strip convention; the custom-scrollbar keeps
-          the 8px app-wide look). The button stays OUTSIDE the tablist
+      {overflowing && <ScrollChevron direction="left" enabled={canScrollLeft} onScroll={scrollPrev} />}
+      {/* Strip scroll/overflow layout — hidden scrollbar, chevron pair + pinned
+          «+» on overflow, in-flow «+» while the strip fits — is specified in
+          specs/domains/frontend/tabs.md. The buttons stay OUTSIDE the tablist
           itself: only role="tab" rows belong in an ARIA tablist. */}
-      <div className="custom-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <div
+        ref={scrollerRef}
+        className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+      >
         <div
           role="tablist"
           aria-label="Workspace tabs"
@@ -146,18 +179,51 @@ export function TabBar({ controller }: TabBarProps) {
             />
           ))}
         </div>
+        {!overflowing && addButton}
+      </div>
+      {overflowing && (
+        <>
+          <ScrollChevron direction="right" enabled={canScrollRight} onScroll={scrollNext} />
+          {addButton}
+        </>
+      )}
+    </div>
+  )
+}
+
+interface ScrollChevronProps {
+  /** Which edge the chevron scrolls toward. */
+  direction: 'left' | 'right'
+  /** False renders the chevron disabled (nothing left to scroll to). */
+  enabled: boolean
+  /** The strip's scrollPrev/scrollNext from useTabStripOverflow. */
+  onScroll: () => void
+}
+
+/**
+ * One overflow chevron. Radix tooltip, not a native title: the hint must
+ * survive the button's disabled state, where a native title does not render
+ * (specs/domains/frontend/button-tooltips.md R4).
+ */
+function ScrollChevron({ direction, enabled, onScroll }: ScrollChevronProps) {
+  const label = direction === 'left' ? 'Scroll tabs left' : 'Scroll tabs right'
+  const Icon = direction === 'left' ? ChevronLeft : ChevronRight
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
         <Button
           variant="ghost"
           size="icon-sm"
           className="shrink-0"
-          onClick={handleAdd}
-          aria-label="New tab"
-          title="New tab"
+          onClick={onScroll}
+          disabled={!enabled}
+          aria-label={label}
         >
-          <Plus className="size-4" />
+          <Icon className="size-4" />
         </Button>
-      </div>
-    </div>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   )
 }
 
