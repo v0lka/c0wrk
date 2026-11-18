@@ -92,6 +92,7 @@ describe('useLLMConfig default replacement', () => {
       anthropic: { api_key: '', models: ['new-model'] },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 
@@ -137,6 +138,7 @@ describe('useLLMConfig default replacement', () => {
         },
       },
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 })
@@ -166,6 +168,7 @@ describe('useLLMConfig compatible provider deletion', () => {
       anthropic: { api_key: '', models: ['default-model'] },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 })
@@ -251,6 +254,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
       anthropic: { api_key: '', models: ['default-model'] },
       openai_compatible: { custom: { api_key: 'k', base_url: 'http://localhost:1234', models: [], tls_fingerprint: '' } },
       anthropic_compatible: {},
+      service_models: {},
     })
     localContainer.remove()
   })
@@ -281,6 +285,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
       anthropic: { api_key: '', models: ['default-model'] },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
     localContainer.remove()
   })
@@ -316,6 +321,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
       anthropic: { api_key: '', models: ['default-model'] },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
     act(() => localRoot.unmount())
     localContainer.remove()
@@ -374,7 +380,7 @@ describe('useLLMConfigSave debounced save flush', () => {
 
   it('flushes a pending debounced save on unmount instead of discarding it', async () => {
     const { localRoot, localContainer } = renderSaveHarness()
-    act(() => saveResult.debouncedSave('anthropic/claude-3-opus', anthropicOnly()))
+    act(() => saveResult.debouncedSave('anthropic/claude-3-opus', anthropicOnly(), {}))
     // Close the dialog BEFORE the 300 ms debounce window elapses.
     act(() => localRoot.unmount())
     // The unmount flush must carry the queued snapshot by itself.
@@ -384,6 +390,7 @@ describe('useLLMConfigSave debounced save flush', () => {
       anthropic: { api_key: 'sk-secret', models: ['claude-3-opus'] },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
     // The abandoned timer must not produce a duplicate save afterwards.
     await act(async () => { await vi.advanceTimersByTimeAsync(300) })
@@ -393,7 +400,7 @@ describe('useLLMConfigSave debounced save flush', () => {
 
   it('cancelDebouncedSave still discards the pending snapshot (no flush on unmount)', async () => {
     const { localRoot, localContainer } = renderSaveHarness()
-    act(() => saveResult.debouncedSave('anthropic/claude-3-opus', anthropicOnly()))
+    act(() => saveResult.debouncedSave('anthropic/claude-3-opus', anthropicOnly(), {}))
     // Structural-change callers cancel first so a stale snapshot cannot
     // land after (or instead of) their own save — that discard semantics
     // must survive the unmount flush.
@@ -854,6 +861,7 @@ describe('useLLMConfig chatgpt auth mode round-trip', () => {
       chatgpt: { api_key: '***configured***', models: ['gpt-5.5'], auth_mode: 'api_key' },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 
@@ -882,6 +890,7 @@ describe('useLLMConfig chatgpt auth mode round-trip', () => {
       chatgpt: { api_key: 'sk-live2', models: ['gpt-5.4'] },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 })
@@ -909,6 +918,7 @@ describe('useLLMConfig kimi auth mode round-trip', () => {
       kimi: { api_key: '***configured***', models: ['k3'], auth_mode: 'api_key', auth_region: 'global' },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 
@@ -944,6 +954,7 @@ describe('useLLMConfig kimi auth mode round-trip', () => {
         },
       },
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 
@@ -989,6 +1000,7 @@ describe('useLLMConfig Kimi region round-trip', () => {
       kimi: { api_key: 'fixed-key', models: ['k3'], auth_mode: 'oauth', auth_region: 'mainland_cn' },
       openai_compatible: {},
       anthropic_compatible: {},
+      service_models: {},
     })
   })
 

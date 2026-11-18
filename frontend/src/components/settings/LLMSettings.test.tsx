@@ -686,12 +686,17 @@ describe('LLMSettings — Embedded LLM block placement', () => {
   // the primary offering, so "+ Add compatible provider" — the escape hatch for
   // a remote endpoint — sits BELOW it, and the accordions an added provider
   // turns into follow in turn. The default-model field stays above both.
-  it('renders "+ Add compatible provider" after the Embedded LLM block', async () => {
+  it('renders "+ Add compatible provider" after the gated blocks (Embedded, Service models)', async () => {
     await renderSettings()
 
     const embeddedBlock = container.querySelector('[data-testid="embedded-llm-settings"]')
     expect(embeddedBlock).not.toBeNull()
     expect(embeddedBlock!.textContent).toContain('Embedded LLM')
+
+    // The service-models override block (ADR-130) rides the same gate and
+    // sits directly below the embedded one, above the add-provider action.
+    const serviceBlock = container.querySelector('[data-testid="service-models-settings"]')
+    expect(serviceBlock).not.toBeNull()
 
     // While its form is closed the button is the add-provider block's only
     // child, so the block is the button's parent.
@@ -702,9 +707,10 @@ describe('LLMSettings — Embedded LLM block placement', () => {
     const addBlock = addButton!.parentElement
     expect(addBlock).not.toBeNull()
 
-    // The embedded block comes first, with only the default-model field above it.
+    // The gated blocks lead, with only the default-model field above them.
     expect(embeddedBlock!.previousElementSibling?.textContent).toContain('Default Model')
-    expect(embeddedBlock!.nextElementSibling).toBe(addBlock)
+    expect(embeddedBlock!.nextElementSibling).toBe(serviceBlock)
+    expect(serviceBlock!.nextElementSibling).toBe(addBlock)
 
     // …and the provider accordions still follow the add-provider block, in order.
     expect(addBlock!.nextElementSibling?.textContent).toContain('Anthropic')
@@ -1046,5 +1052,67 @@ describe('LLMSettings — the backend-owned embedded provider is not user-editab
 
     expect(container.textContent).toContain('"embedded" is a reserved name.')
     expect(mocks.updateLLMConfig).not.toHaveBeenCalled()
+  })
+})
+
+// The service-models override block (ADR-130) rides the SAME experimental
+// gate as the embedded surfaces: while the switch is off the backend adapter
+// drops llm.service_models from every BuilderConfig, so the block must not
+// mount — it would advertise pins that resolve nothing. Gate on, the block
+// mounts as a collapsed-by-default collapsible shell next to the embedded one.
+describe('LLMSettings — the experimental gate hides the service-models block', () => {
+  function gateConfig() {
+    return {
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'anthropic/claude-sonnet',
+        anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
+        service_models: { judge: 'anthropic/claude-3-haiku' },
+      },
+    }
+  }
+
+  async function renderPanel(): Promise<void> {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  afterEach(() => {
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
+  })
+
+  it('gate off: does not mount the ServiceModelsSettings block', async () => {
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: true })
+    })
+    mocks.getConfig.mockResolvedValue(gateConfig())
+    await renderPanel()
+
+    expect(container.querySelector('[data-testid="service-models-settings"]')).toBeNull()
+    // The rest of the section is untouched.
+    expect(defaultModelTrigger()).not.toBeNull()
+  })
+
+  it('gate on: mounts the block collapsed next to the embedded one', async () => {
+    act(() => {
+      useExperimentalStore.setState({ enabled: true, loaded: true })
+    })
+    mocks.getConfig.mockResolvedValue(gateConfig())
+    await renderPanel()
+
+    expect(container.querySelector('[data-testid="service-models-settings"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="embedded-llm-settings"]')).not.toBeNull()
+    // Collapsed by default: the toggle is present, the rows are not.
+    expect(container.querySelector('[data-testid="service-models-toggle"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="service-model-row-judge"]')).toBeNull()
   })
 })

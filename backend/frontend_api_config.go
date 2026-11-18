@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -133,6 +134,11 @@ func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
 func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	resp := ConfigLLMResponse{
 		DefaultModel: f.config.LLM.DefaultModel,
+		// The persisted llm.service_models section, verbatim (cloned): the
+		// LLM tab's draft loads it so a UI save round-trips hand-edited
+		// pins instead of silently dropping them (ADR-130). Cloned so a
+		// concurrent builder read can never alias the live map.
+		ServiceModels: maps.Clone(f.config.LLM.ServiceModels),
 		// The clamping bound for the Settings form's auto-retry interval input,
 		// published as the single source of truth (ADR-065,
 		// specs/decisions/065-auto-resend-retryable-errors.md).
@@ -372,6 +378,21 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 					config.KimiRegionGlobal, config.KimiRegionMainlandCN, region)
 			}
 		}
+	}
+
+	// llm.service_models (ADR-130): the nil-map sentinel mirrors the load
+	// contract — a field ABSENT from the payload (nil; older drafts and any
+	// caller that predates the UI editor) preserves the persisted pins,
+	// while a non-nil map REPLACES the section wholesale ({} clears it).
+	// Entries are cleaned with the load pipeline's format rule; invalid
+	// ones drop fail-soft with the same warning texts, and a fully-invalid
+	// map leaves the section empty (vanishing at the next save).
+	if req.ServiceModels != nil {
+		cleaned, dropped := config.CleanServiceModels(req.ServiceModels)
+		for _, w := range dropped {
+			f.log().Warn("service-model override dropped", "warning", w)
+		}
+		candidate.ServiceModels = cleaned
 	}
 
 	// The `embedded` provider record is BACKEND-OWNED: a request carrying

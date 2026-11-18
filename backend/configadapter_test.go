@@ -545,6 +545,48 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 	}
 }
 
+// TestToBuilderConfig_ServiceModelsExperimentalGate pins the fail-closed gate
+// for the experimental llm.service_models section (ADR-130): with the gate off
+// the adapter maps it to nil — every pin consumer (session router overrides,
+// the judge/router/reflector overrides, the embedded readiness gates'
+// ServiceModelPin advisory) resolves nothing and every one-shot call falls
+// back to the session default — while the persisted section itself stays
+// untouched, so flipping the switch back restores the pins at the next
+// config rebuild.
+func TestToBuilderConfig_ServiceModelsExperimentalGate(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+	pins := map[string]string{
+		config.ServiceModelJudge: "anthropic/claude-3-haiku",
+		config.ServiceModelTitle: "openai/gpt-4o-mini",
+	}
+	cfg.LLM.ServiceModels = pins
+
+	// Fail-closed: gate off (the zero value) → no overrides reach the builder.
+	cfg.Experimental.Enabled = false
+	if got := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).LLM.ServiceModels; got != nil {
+		t.Errorf("BuilderLLMConfig.ServiceModels = %v, want nil while the experimental gate is off", got)
+	}
+	// The closed gate must not mutate the persisted section.
+	if len(cfg.LLM.ServiceModels) != 2 {
+		t.Errorf("persisted ServiceModels = %v, want the two entries intact", cfg.LLM.ServiceModels)
+	}
+
+	// Gate on: the entries flow through, CLONED — a builder-side mutation
+	// must never alias the loaded config map.
+	cfg.Experimental.Enabled = true
+	got := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).LLM.ServiceModels
+	if len(got) != 2 || got[config.ServiceModelJudge] != "anthropic/claude-3-haiku" ||
+		got[config.ServiceModelTitle] != "openai/gpt-4o-mini" {
+		t.Errorf("BuilderLLMConfig.ServiceModels = %v, want both pins through the open gate", got)
+	}
+	got[config.ServiceModelJudge] = "mutated"
+	if cfg.LLM.ServiceModels[config.ServiceModelJudge] != "anthropic/claude-3-haiku" {
+		t.Errorf("builder config aliases the loaded map: persisted judge pin mutated to %q",
+			cfg.LLM.ServiceModels[config.ServiceModelJudge])
+	}
+}
+
 // TestToBuilderConfig_E2SObservationBudget pins that the token-proportional
 // observation-budget knobs reach the core layer: e2s.observation_budget_tokens
 // and e2s.observation_fill_fraction pass through to BuilderE2SConfig (from

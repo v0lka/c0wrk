@@ -50,6 +50,10 @@ llm:
   # an empty/bare/"provider/"-only value) are dropped with a load warning
   # and rewritten away at the next save. Omit the whole section for the
   # default behavior — every service call on the session's default model.
+  # EXPERIMENTAL: the section is effective only while experimental.enabled
+  # (see the experimental section below) is on; while the gate is off it
+  # stays persisted but inert. Settings → LLM exposes a "Service models"
+  # editor under the same gate.
   # The full key set:
   #   judge                  — tool-call confirmation judge
   #   router                 — CHAT/CODE task router

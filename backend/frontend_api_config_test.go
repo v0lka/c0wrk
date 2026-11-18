@@ -687,6 +687,117 @@ func TestUpdateLLMConfig_PreservesServiceModels(t *testing.T) {
 	}
 }
 
+// TestUpdateLLMConfig_ReplacesServiceModels pins the UI-draft contract for
+// llm.service_models (ADR-130): a non-nil request field REPLACES the whole
+// section ({} clears it — the empty map survives serialization because the
+// request field carries no omitempty), entries are cleaned with the load
+// pipeline's format rule (invalid drop fail-soft, valid persist), and a nil
+// field keeps the preserved-verbatim behavior of the test above.
+func TestUpdateLLMConfig_ReplacesServiceModels(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+	persistedDefault := func() LLMFullConfigRequest {
+		return LLMFullConfigRequest{
+			DefaultModel: "anthropic/claude-3-sonnet",
+			Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+		}
+	}
+	readPins := func() map[string]string {
+		f.configMu.RLock()
+		defer f.configMu.RUnlock()
+		return f.config.LLM.ServiceModels
+	}
+
+	t.Run("replaces the section with the request map", func(t *testing.T) {
+		f.configMu.Lock()
+		f.config.LLM.ServiceModels = map[string]string{config.ServiceModelTitle: "openai/gpt-4o"}
+		f.configMu.Unlock()
+
+		req := persistedDefault()
+		req.ServiceModels = map[string]string{config.ServiceModelJudge: "anthropic/claude-3-haiku"}
+		if err := f.UpdateLLMConfig(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := readPins()
+		if len(got) != 1 || got[config.ServiceModelJudge] != "anthropic/claude-3-haiku" {
+			t.Errorf("service_models = %v, want the section replaced wholesale", got)
+		}
+	})
+
+	t.Run("clears the section with an explicitly empty map", func(t *testing.T) {
+		req := persistedDefault()
+		req.ServiceModels = map[string]string{}
+		if err := f.UpdateLLMConfig(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := readPins(); got != nil {
+			t.Errorf("service_models = %v, want nil after the explicit clear", got)
+		}
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatalf("read persisted config: %v", err)
+		}
+		if strings.Contains(string(data), "service_models:") {
+			t.Errorf("persisted config still carries service_models after the clear:\n%s", data)
+		}
+	})
+
+	t.Run("drops invalid entries fail-soft and keeps valid ones", func(t *testing.T) {
+		req := persistedDefault()
+		req.ServiceModels = map[string]string{
+			config.ServiceModelTitle: "openai/gpt-4o",            // valid
+			"future_thing":           "anthropic/claude-3-haiku", // unknown key
+			config.ServiceModelJudge: "no-slash",                 // malformed value
+		}
+		if err := f.UpdateLLMConfig(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := readPins()
+		if len(got) != 1 || got[config.ServiceModelTitle] != "openai/gpt-4o" {
+			t.Errorf("service_models = %v, want only the valid title entry", got)
+		}
+	})
+
+	t.Run("nil field still preserves (the pre-UI contract)", func(t *testing.T) {
+		f.configMu.Lock()
+		f.config.LLM.ServiceModels = map[string]string{config.ServiceModelTitle: "openai/gpt-4o"}
+		f.configMu.Unlock()
+
+		if err := f.UpdateLLMConfig(persistedDefault()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := readPins()
+		if len(got) != 1 || got[config.ServiceModelTitle] != "openai/gpt-4o" {
+			t.Errorf("service_models = %v, want preserved by the nil field", got)
+		}
+	})
+}
+
+// TestGetConfig_ExposesServiceModels pins the GetConfig half of the UI
+// round-trip: the sanitized LLM response carries the persisted section so the
+// settings draft can load hand-edited pins, and the response map is a CLONE —
+// mutating it must never alias the live config.
+func TestGetConfig_ExposesServiceModels(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.configMu.Lock()
+	f.config.LLM.ServiceModels = map[string]string{
+		config.ServiceModelCommitMessage: "local-llm/qwen/qwen3-coder-30b",
+	}
+	f.configMu.Unlock()
+
+	resp := f.GetConfig()
+	got := resp.LLM.ServiceModels
+	if len(got) != 1 || got[config.ServiceModelCommitMessage] != "local-llm/qwen/qwen3-coder-30b" {
+		t.Errorf("GetConfig service_models = %v, want the persisted commit_message pin", got)
+	}
+	got[config.ServiceModelCommitMessage] = "mutated"
+	f.configMu.RLock()
+	live := f.config.LLM.ServiceModels[config.ServiceModelCommitMessage]
+	f.configMu.RUnlock()
+	if live != "local-llm/qwen/qwen3-coder-30b" {
+		t.Errorf("GetConfig aliases the live map: pin mutated to %q", live)
+	}
+}
+
 func TestUpdateLLMConfig_AnthropicCompatible(t *testing.T) {
 	t.Run("adds provider and persists", func(t *testing.T) {
 		f, _, _ := newTestAPI(t)
