@@ -11,12 +11,16 @@ authoritative for everything else — binding once at `Build`, no re-bind path,
 no sync closure, the selector lock, and "global default changes never re-bind
 a live session's judge".
 
-Amended by [ADR-132](132-service-models-experimental-gate.md): the section
-is effective only while `experimental.enabled` is on (persisted but inert
-while off), and decision 1's "deliberately no UI surface" clause is
-relaxed — the section is edited through a Settings → LLM block under the
-same gate. The key set, load validation, resolution, application, and
-gate mechanics of this ADR are unchanged.
+The experimental gate and the Settings UI for the section were briefly
+drafted as a separate ADR-131 (same session, same branch); they are folded
+into this record as decisions 5 and 6 and the separate file was removed —
+freeing number 131, which this record now carries: mid-cycle the branch
+merged main's ADR-130 (lexical scorch persister deadlock) and renumbered
+from 130 to the vacated 131 (numbers are never reused). The section is
+effective only while `experimental.enabled` is on
+(persisted but inert while off), and the original "deliberately no UI
+surface" clause of decision 1 is superseded within this record: the section
+is edited through a Settings → LLM block under the same gate.
 
 ## Context
 
@@ -41,6 +45,16 @@ at once, per-message overrides move the whole session, and the per-delegation
 overrides ([ADR-122](122-subagent-model-provider-override.md),
 [ADR-123](123-per-task-model-override.md)) apply only to subagents.
 
+The gate-and-UI half has its own motivation. The section is a power-user
+routing surface whose wrong values silently re-route the tool-call judge — a
+safety-adjacent consumer — so it belongs with the other opt-in machinery the
+experimental master gates (E2S, the embedded model's frontend surfaces)
+rather than in every operator's default posture. Hand-editing composite ids
+is error-prone precisely because the value format is strict; the same
+ModelPickerMenu the default-model field uses eliminates the whole
+malformed-value class, and a visible block makes the ten keys discoverable
+without the example file.
+
 ## Decision
 
 1. **One config section, ten fixed keys.** `llm.service_models` maps a
@@ -57,10 +71,11 @@ overrides ([ADR-122](122-subagent-model-provider-override.md),
    unknown key or a broken value (empty, bare, `"/model"`, `"provider/"`) is
    dropped at load with a per-key warning and rewritten away at the next save;
    an absent or empty section warns about nothing and is the no-override
-   behavior. There is deliberately no UI surface — the section is
-   config-file-authored, and the settings draft (`UpdateLLMConfig`) carries no
-   `service_models` field, so a partial UI save preserves the section verbatim
-   (`candidate := previous`).
+   behavior. Delivery is experimental-gated and UI-edited: the section is
+   effective only while `experimental.enabled` is on (decision 5) and is
+   edited through a Settings → LLM block (decision 6). Hand-authored entries
+   keep normalizing (and warning) through the load pipeline even while the
+   gate is off, so a typo is reported in an inert section too.
 
 2. **Resolution is per-build and fail-soft.** `core/model_overrides.go`
    `resolveServiceModelOverrides` resolves the configured map ONCE per
@@ -110,12 +125,43 @@ overrides ([ADR-122](122-subagent-model-provider-override.md),
    request's own budget. Compaction and goal-suggest have no pre-dispatch gate
    by design: they run inside a task, guarded by the transport.
 
+5. **Adapter-level gate, fail-closed.** `backend/configadapter.go`
+   (`serviceModelsWithExperimentalGate` — the single config →
+   `BuilderConfig` conversion point) maps the persisted section to nil
+   while `experimental.enabled` is off. Every pin consumer is covered at
+   once: session builds and per-config router rebuilds resolve no
+   overrides, and the embedded readiness gates' `ServiceModelPin` advisory
+   resolves nothing. The section itself stays persisted untouched, so
+   flipping the switch back restores the pins at the next config rebuild —
+   the persist-but-inert semantics the `web_access` section has under its
+   own gate. The gate is deliberately NOT part of the load validation:
+   hand-edited entries keep normalizing (and warning) so a typo is
+   reported even while the section is inert.
+
+6. **Settings UI, draft-owned section, live application.** A
+   collapsed-by-default collapsible block ("Service models") in
+   Settings → LLM — the `EmbeddedLLMSettings` shell pattern, mounted by
+   the same `useExperimentalStore` gate — lists all ten keys, each with a
+   ModelPickerMenu over the draft's enabled models and an explicit
+   "Default" entry that clears the pin. `GetConfig` exposes the persisted
+   section on `ConfigLLMResponse` (`service_models`, cloned); the settings
+   draft OWNS the section and every full-form save transmits it.
+   `UpdateLLMConfig`'s `service_models` request field uses a nil-map
+   sentinel: nil (the field absent from the JSON) preserves the section —
+   the pre-UI contract, still pinned — while a non-nil map replaces it
+   wholesale (`{}` clears), entries cleaned with the load pipeline's
+   format rule (`config.CleanServiceModels`), invalid ones dropped
+   fail-soft. An LLM save already rebuilds the session router, and the
+   experimental toggle rebuilds it too (`UpdateExperimentalFeatures`), so
+   a gate flip or a pin edit reaches the session router without a
+   restart; brand-new sessions resolve at build as before.
+
 ## Consequences
 
 - An operator can give each auxiliary purpose its own model — a strong judge
   and router on cloud providers while the session converses on a local model,
   or cheap local models for titles and suggestions — without touching the
-  session's default and without a UI round-trip.
+  session's default.
 - With an embedded default and a pin pointing away from it, background service
   calls no longer trigger multi-gigabyte local weight loads; the gates follow
   the effective target.
@@ -132,9 +178,17 @@ overrides ([ADR-122](122-subagent-model-provider-override.md),
 - The closed key set is maintained in two packages (backend/config canonical,
   core mirror) — a new service call site must extend both and their tests, or
   its key is silently dropped at load.
-- The section rides outside the settings draft, so the UI cannot clear it and
-  a careless future extension of the draft request cannot erase it (guarded by
-  `TestUpdateLLMConfig_PreservesServiceModels`).
+- The settings draft OWNS the section: a UI save can clear pins — by design,
+  the operator sees the block — while the nil-field sentinel keeps every
+  other caller safe (field absent from the JSON = the section is preserved;
+  pinned by `TestUpdateLLMConfig_PreservesServiceModels`).
+- The section is invisible and inert by default; enabling it requires the
+  explicit experimental opt-in, matching the risk profile of a feature that
+  can re-route the judge.
+- Composite-id typos disappear on the UI path: the picker only offers enabled
+  models of configured providers; hand-edited files keep the load-time
+  fail-soft behavior, and the warnings keep firing for an inert section's
+  typos.
 
 ## Alternatives Considered
 
@@ -154,9 +208,25 @@ overrides ([ADR-122](122-subagent-model-provider-override.md),
   composite parsing and provider checks in the backend) — two resolvers that
   can drift; rejected in favor of exposing `ServiceModelPin` from the same
   resolution the call uses.
-- **A settings UI for per-purpose pickers** — deferred: the config-file
-  surface keeps the draft-preservation semantics trivial, and the ten keys are
-  an operator/power-user surface, not a first-run one.
+- **A settings UI for per-purpose pickers without the gate** — deferred in
+  the original draft of this record (the config-file surface kept
+  draft-preservation trivial), then shipped under the experimental gate once
+  the judge-rerouting risk profile and the malformed-value argument landed
+  (decisions 5 and 6); the surviving rejected variant is a UI **without**
+  the gate.
+- **A separate `llm.service_models.enabled` bool** — a second switch for a
+  section whose availability is exactly the experimental master's job; the
+  all-or-nothing gate exists to avoid per-feature masters (the E2S
+  precedent). Rejected.
+- **Gate at load (drop the section while off)** — would destroy
+  hand-edited pins on every load while the gate is off, forcing re-editing
+  on each flip; persist-but-inert keeps them. Rejected.
+- **UI without the gate** — adds discoverability but keeps the section
+  always-on, leaving a safety-adjacent, judge-rerouting surface on by
+  default; the gate is the point. Rejected.
+- **Gate without the UI** — a gated but undiscoverable section serves
+  nobody; the strict value format is exactly what a picker removes.
+  Rejected.
 
 ## Related
 
@@ -169,12 +239,24 @@ overrides ([ADR-122](122-subagent-model-provider-override.md),
   calls.
 - [ADR-066](066-embedded-llm-runtime.md) / [ADR-067](067-memory-aware-embedded-llm-provisioning.md)
   — the embedded runtime whose cold-load cost motivated the advisory gates.
+- [ADR-068](068-embedded-llm-frontend-experimental-gate.md) — the
+  frontend-gate precedent the Settings block follows (same store, same
+  hide-when-off contract; here the backend side is gated too).
+- [ADR-103](103-vector-index-master-switch.md) — the validate → persist →
+  apply-live flip pattern the adapter gate mirrors for the toggle path.
 - [domains/llm-providers.md](../domains/llm-providers.md) (Model Override,
   Service Call Observability, Configuration),
   [architecture/security-model.md](../architecture/security-model.md) (Judge
   Provisioning), [domains/orchestration/router.md](../domains/orchestration/router.md)
-  (routing/reflection models).
+  (routing/reflection models),
+  [contracts/desktop-frontend.md](../contracts/desktop-frontend.md)
+  (`ConfigResponse.llm.service_models`, `LLMFullConfigRequest.service_models`).
 - `core/model_overrides.go` (resolver, `pinnedModelCaller`, the seams),
-  `backend/config/service_models.go` (canonical key set, load validation),
-  `core/builder.go` (per-build resolution and the judge/router/reflector
-  wiring), `backend/frontend_api_embedded.go` (advisory gates).
+  `backend/config/service_models.go` (canonical key set, load validation,
+  `CleanServiceModels`), `core/builder.go` (per-build resolution and the
+  judge/router/reflector wiring), `backend/configadapter.go`
+  (`serviceModelsWithExperimentalGate`), `backend/frontend_api_config.go`
+  (`buildLLMResponse` exposure, `UpdateLLMConfig` sentinel),
+  `backend/frontend_api_embedded.go` (advisory gates),
+  `frontend/src/components/settings/ServiceModelsSettings.tsx` (the
+  Settings block).
