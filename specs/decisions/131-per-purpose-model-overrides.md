@@ -175,6 +175,21 @@ without the example file.
   judge's bind still passes the session's usage tracker, and service calls
   keep their existing timeouts (`timeouts.serviceLLMRequestTimeout` where
   armed).
+- The reasoning effort of a pinned router/reflector FOLLOWS THE PIN: its
+  requests serve the pin's model exclusively, so every request carries the
+  pin's own tier-Off spelling — the component's one-shot policy re-resolved
+  for the pin's family — never the session effort, which keys on the session
+  model's family and would be a foreign spelling for the pin (a qwen3 `off`
+  sent to an OpenAI-family model is rejected or silently reinterpreted). The
+  stamp lives in the consumer's `pinnedModelCaller` wrap (re-stamped on every
+  `Call`, the same immunity model as the provider/model re-stamp): no
+  session-side effort path — build time, `ApplyRequestOverrides` (step 0 of
+  every message and resume), an explicit per-message UI effort — can diverge
+  it, and `""` (the pin's family unknown to the catalog) sends no reasoning
+  field at all instead of sp4rk's `SetReasoningEffort("")` clearing the
+  override and falling back to the session identity's spelling. Unpinned
+  components, the direct caller, and the config record keep the session
+  effort.
 - The closed key set is maintained in two packages (backend/config canonical,
   core mirror) — a new service call site must extend both and their tests, or
   its key is silently dropped at load.

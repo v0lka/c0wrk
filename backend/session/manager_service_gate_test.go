@@ -7,6 +7,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/v0lka/c0wrk/core"
 )
 
 // This file pins the readiness gate on the manager's own one-shot service LLM
@@ -94,7 +96,7 @@ func (c *recordingTitleCaller) callCount() int {
 // title request starts already expired, gate first and it starts with its whole
 // budget. Comparing the two order log entries alone would NOT catch a
 // gate-after-budget regression — both orders still run the gate before the call.
-func gateThenTitle(t *testing.T, gate func(context.Context) error, configure ...func(*Manager, string)) (*recordingTitleCaller, *orderLog, *Manager) {
+func gateThenTitle(t *testing.T, gate func(context.Context, string) error, configure ...func(*Manager, string)) (*recordingTitleCaller, *orderLog, *Manager) {
 	t.Helper()
 	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "done"}), func(Event) {}, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
@@ -110,9 +112,12 @@ func gateThenTitle(t *testing.T, gate func(context.Context) error, configure ...
 	mgr.SetTitleGenerator(NewTitleGenerator(caller))
 	if gate != nil {
 		wrapped := gate
-		mgr.SetServiceLLMGate(func(ctx context.Context) error {
+		mgr.SetServiceLLMGate(func(ctx context.Context, kind string) error {
+			if want := string(core.ServiceKindTitle); kind != want {
+				t.Errorf("gate kind = %q, want %q", kind, want)
+			}
 			order.record("gate")
-			return wrapped(ctx)
+			return wrapped(ctx, kind)
 		})
 	}
 
@@ -153,7 +158,7 @@ func TestServiceLLMGateRunsBeforeTheTitleRequest(t *testing.T) {
 			synctest.Wait()
 			mgr.Shutdown()
 		}()
-		mgr.SetServiceLLMGate(func(ctx context.Context) error {
+		mgr.SetServiceLLMGate(func(ctx context.Context, _ string) error {
 			order.record("gate")
 			close(entered)
 			select {
@@ -206,7 +211,7 @@ func TestServiceLLMGateRunsBeforeTheTitleRequest(t *testing.T) {
 // reports the cause to the user.
 func TestServiceLLMGateFailureSkipsTheTitleRequest(t *testing.T) {
 	gateErr := errors.New("the embedded model could not be loaded")
-	caller, order, mgr := gateThenTitle(t, func(context.Context) error { return gateErr }, func(m *Manager, id string) {
+	caller, order, mgr := gateThenTitle(t, func(context.Context, string) error { return gateErr }, func(m *Manager, id string) {
 		captureManagerDiagnostics(t, m, warningDiagnostic("skipping session title generation: the model is not ready", map[string]string{"session": id, "error": gateErr.Error()}))
 	})
 
@@ -251,7 +256,7 @@ func TestTitleGenerationIsSkippedForAnAlreadyNamedSession(t *testing.T) {
 	}
 	caller := newRecordingTitleCaller()
 	mgr.SetTitleGenerator(NewTitleGenerator(caller))
-	mgr.SetServiceLLMGate(func(context.Context) error {
+	mgr.SetServiceLLMGate(func(context.Context, string) error {
 		t.Error("the gate ran for a session that is not eligible for a title")
 		return nil
 	})

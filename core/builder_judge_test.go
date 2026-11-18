@@ -262,7 +262,7 @@ func (c *judgeGarbageServer) snapshot() (model string, calls int) {
 func judgeOverrideCfg(pin string) *BuilderConfig {
 	return &BuilderConfig{
 		Orchestration: BuilderOrchestrationConfig{MaxJudgeCacheSize: 8},
-		LLM:           BuilderLLMConfig{ServiceModels: map[string]string{serviceModelJudgeKey: pin}},
+		LLM:           BuilderLLMConfig{ServiceModels: map[string]string{ServiceModelKeyJudge: pin}},
 	}
 }
 

@@ -444,3 +444,84 @@ func TestOrchestratorBuilder_ServiceModelPin(t *testing.T) {
 		t.Error("ServiceModelPin on a builder with no set must be ok=false")
 	}
 }
+
+// effortRecordingCaller wraps a capturing caller and records SetReasoningEffort
+// — the optional surface Orchestrator.SetReasoningEffort propagates the
+// session effort through (the direct caller), distinct from the pinned
+// router/reflector wire shapes.
+type effortRecordingCaller struct {
+	*capturingLLMCaller
+	mu     sync.Mutex
+	effort string
+}
+
+func (c *effortRecordingCaller) SetReasoningEffort(effort string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.effort = effort
+}
+
+func (c *effortRecordingCaller) recordedEffort() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.effort
+}
+
+// TestOrchestrator_SetReasoningEffortPinnedComponentsFollowPin verifies the
+// runtime re-stamp path (ApplyRequestOverrides → SetReasoningEffort, step 0
+// of every message and resume) cannot diverge a pinned router/reflector: the
+// wire still carries each pin's own tier-Off spelling (the pinnedModelCaller
+// wrap re-stamps it per Call), the two pins stay independent, and the session
+// effort still reaches the direct caller. Without the wrap-level stamp the
+// build-time pin-derived effort would be clobbered here on the first message
+// (ADR-131).
+func TestOrchestrator_SetReasoningEffortPinnedComponentsFollowPin(t *testing.T) {
+	overrides := resolveServiceModelOverrides(modelOverrideValidatorTestRouter(t), map[string]string{
+		ServiceModelKeyRouter:    "local-llm/qwen3:8b",
+		ServiceModelKeyReflector: "openai/gpt-4o",
+	}, nil)
+	if overrides == nil {
+		t.Fatal("router/reflector overrides must resolve")
+	}
+	capture, agents := buildCoreAgentsUnderTest(t, overrides, "")
+	effortCaller := &effortRecordingCaller{capturingLLMCaller: capture}
+	var logBuf strings.Builder
+	o := NewOrchestrator(OrchestratorConfig{Model: "qwen3:8b"}, OrchestratorDeps{
+		Router:         agents.router,
+		Reflector:      agents.reflector,
+		LLM:            effortCaller,
+		ServiceModels:  overrides,
+		ServiceMetrics: newServiceMetrics(),
+		Logger:         slog.New(slog.NewTextHandler(&logBuf, nil)),
+	})
+
+	o.SetReasoningEffort("low")
+
+	if got := effortCaller.recordedEffort(); got != "low" {
+		t.Errorf("direct caller recorded effort %q, want the session effort %q", got, "low")
+	}
+
+	if _, err := agents.router.Route(context.Background(), "classify me", nil, nil, nil); err != nil {
+		t.Fatalf("Route failed: %v", err)
+	}
+	req, ok := lastCaptured(capture)
+	if !ok {
+		t.Fatal("Route issued no LLM request")
+	}
+	wantRouter := serviceReasoningEffort("local-llm/qwen3:8b", llm.ReasoningTierOff)
+	if req.ReasoningEffort != wantRouter {
+		t.Errorf("pinned Route request ReasoningEffort = %q, want the router pin's tier-Off spelling %q", req.ReasoningEffort, wantRouter)
+	}
+
+	if _, err := agents.reflector.Reflect(context.Background(), nil, nil, nil); err != nil {
+		t.Fatalf("Reflect failed: %v", err)
+	}
+	req, ok = lastCaptured(capture)
+	if !ok {
+		t.Fatal("Reflect issued no LLM request")
+	}
+	wantReflector := serviceReasoningEffort("openai/gpt-4o", llm.ReasoningTierOff)
+	if req.ReasoningEffort != wantReflector {
+		t.Errorf("pinned Reflect request ReasoningEffort = %q, want the reflector pin's tier-Off spelling %q", req.ReasoningEffort, wantReflector)
+	}
+}

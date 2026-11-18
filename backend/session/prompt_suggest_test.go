@@ -198,7 +198,10 @@ func TestPromptSuggestionsOutcomeGate(t *testing.T) {
 			mgr, rec := newPromptSuggestManager(t, store, caller)
 			const id = "gate-session"
 			suggestTestSession(mgr, id, project.NoProjectID)
-			mgr.SetServiceLLMGate(func(context.Context) error {
+			mgr.SetServiceLLMGate(func(_ context.Context, kind string) error {
+				if want := string(core.ServiceKindPromptSuggest); kind != want {
+					t.Errorf("gate kind = %q, want %q", kind, want)
+				}
 				if tc.wantPasses == 0 {
 					t.Error("the readiness gate ran for a non-triggering outcome")
 				}
@@ -498,7 +501,7 @@ func TestPromptSuggestionsDisabledCostsNothing(t *testing.T) {
 			mgr, rec := newPromptSuggestManager(t, store, caller)
 			mgr.SetPromptSuggestionsEnabled(false)
 			suggestTestSession(mgr, "sess-1", "proj-1")
-			mgr.SetServiceLLMGate(func(context.Context) error {
+			mgr.SetServiceLLMGate(func(context.Context, string) error {
 				t.Error("the readiness gate ran for a disabled feature")
 				return nil
 			})
@@ -554,7 +557,7 @@ func TestPromptSuggestionsGateFailureSkipsGeneration(t *testing.T) {
 	caller := newRecordingSuggestCaller()
 	mgr, rec := newPromptSuggestManager(t, store, caller)
 	suggestTestSession(mgr, "sess-1", project.NoProjectID)
-	mgr.SetServiceLLMGate(func(context.Context) error { return gateErr })
+	mgr.SetServiceLLMGate(func(context.Context, string) error { return gateErr })
 
 	mgr.emitTaskComplete("sess-1", &core.HandleResult{
 		Output: "out",
@@ -598,7 +601,7 @@ func TestServiceLLMGateRunsBeforePromptSuggestionRequest(t *testing.T) {
 			synctest.Wait()
 			mgr.Shutdown()
 		}()
-		mgr.SetServiceLLMGate(func(ctx context.Context) error {
+		mgr.SetServiceLLMGate(func(ctx context.Context, _ string) error {
 			order.record("gate")
 			close(entered)
 			select {

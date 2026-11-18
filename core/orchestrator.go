@@ -2077,7 +2077,10 @@ func (o *Orchestrator) setCurrentReasoningEffort(effort string) {
 }
 
 // SetReasoningEffort propagates the per-request reasoning effort to all components
-// that make LLM calls: router, reflector, and the direct LLM caller.
+// that make LLM calls: router, reflector, and the direct LLM caller. A pinned
+// router/reflector (llm.service_models, ADR-131) carries the pin's own effort —
+// stamped onto every request by its pinnedModelCaller wrap (overrideWrap),
+// so this propagation cannot diverge it.
 func (o *Orchestrator) SetReasoningEffort(effort string) {
 	o.setCurrentReasoningEffort(effort)
 	if o.router != nil {

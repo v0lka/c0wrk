@@ -16,8 +16,9 @@ import (
 // turns the configured "key → composite id" map into an immutable per-build set
 // of pinned (provider, model) pairs, checked against the router being built.
 // Keys are opaque strings here — the canonical service-key set lives in
-// backend/config (it cannot be imported from core); consumers read the set with
-// their own key constants.
+// backend/config (it cannot be imported from core); the three keys core wires
+// itself are the exported constants below, test-enforced in lockstep with
+// config (backend's TestServiceModelKeysInLockstep).
 //
 // Resolution rules (fail-soft, mirroring the delegation composite rule of
 // specs/domains/orchestration/delegation.md): a value must be a full
@@ -32,10 +33,18 @@ import (
 // providers produce ONE aggregated Warn naming every dropped key, its
 // provider, and the known providers.
 
-// serviceModelJudgeKey is core's local spelling of the "judge" service-model
-// key (backend/config.ServiceModelJudge — core cannot import backend/config,
-// see the package comment above).
-const serviceModelJudgeKey = "judge"
+// Core-side service-model keys for the consumers core itself wires (judge,
+// router, reflector). The canonical key set (with its config validation)
+// lives in backend/config — core cannot import it, so these constants mirror
+// those values; the lockstep is enforced by backend's
+// TestServiceModelKeysInLockstep, because a typo on either side would
+// silently drop the pin at resolution (backend/config/service_models.go,
+// ADR-131).
+const (
+	ServiceModelKeyJudge     = "judge"
+	ServiceModelKeyRouter    = "router"
+	ServiceModelKeyReflector = "reflector"
+)
 
 // ServiceModelOverride is one resolved service-model pin.
 type ServiceModelOverride struct {
@@ -109,7 +118,7 @@ func resolveServiceModelOverrides(llmRouter *llm.Router, configured map[string]s
 			for _, u := range unknowns {
 				pairs = append(pairs, u.key+" → "+u.provider)
 			}
-			logger.Warn("service model overrides name unknown providers — keys fall back to the session model",
+			logger.Warn("service model overrides name unknown providers — keys fall back to the router's active model",
 				"unknown", pairs,
 				"known_providers", strings.Join(llmRouter.KnownProviders(), ", "))
 		}
@@ -130,9 +139,18 @@ func resolveServiceModelOverrides(llmRouter *llm.Router, configured map[string]s
 //
 // The pin is immune to Router.SetModel: every Call re-stamps req.Model (and
 // req.Provider), so a mid-task switch never redirects a pinned service call.
+// When effortStamp is set (router/reflector wraps only — see overrideWrap)
+// every Call also re-stamps req.ReasoningEffort with the pin's own effort,
+// the same immunity model: no session-side re-stamp path can diverge it.
 type pinnedModelCaller struct {
 	inner     agent.LLMCaller
 	composite string
+	// effortStamp, when non-nil, is written into req.ReasoningEffort on every
+	// Call before the request leaves the wrapper. Nil for the oneshot service
+	// sites (they compute the kind's own tier into the request before calling)
+	// and for the judge (it resolves effort from the ActiveModel probe);
+	// set by overrideWrap for the router/reflector pins.
+	effortStamp *string
 }
 
 // Interface conformance: the wrapper is usable wherever the raw caller was
@@ -159,8 +177,13 @@ func newPinnedModelCaller(inner agent.LLMCaller, provider, model string) *pinned
 }
 
 // Call delegates to the pinned inner layer, which stamps the override onto the
-// request before it reaches the router.
+// request before it reaches the router; the effort stamp (router/reflector
+// pins) overwrites whatever effort the requesting component derived from its
+// session identity, so the wire carries the pin model's spelling.
 func (c *pinnedModelCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if c.effortStamp != nil {
+		req.ReasoningEffort = *c.effortStamp
+	}
 	return c.inner.Call(ctx, req)
 }
 
@@ -217,22 +240,31 @@ func (b *OrchestratorBuilder) ServiceModelPin(kind string) (ServiceModelOverride
 	return set.Lookup(kind)
 }
 
-// Core-side service-model keys for the consumers core itself wires. The
-// canonical key set (with its config validation) lives in backend/config —
-// core cannot import it, so these constants mirror those values and the two
-// sides must stay in lockstep (backend/config/service_models.go).
-const (
-	serviceModelKeyRouter    = "router"
-	serviceModelKeyReflector = "reflector"
-)
-
 // overrideWrap pins the resolved service-model override for key onto caller;
 // without a resolved pin the caller passes through unchanged (the same
 // instance — no extra layer), preserving the pre-override wiring exactly.
 // Each consumer gets its own wrap so two consumers never share one pin.
+//
+// The router/reflector wraps also carry the pin's REASONING EFFORT: their
+// requests serve the pin's model exclusively, so they must carry the pin's
+// own tier-Off spelling (the component's one-shot policy re-resolved for the
+// pin's family) — the session effort keys on the session model's family and
+// is a foreign spelling for the pin (a qwen3 "off" sent to an OpenAI-family
+// model is rejected or silently reinterpreted). Stamping per Call makes the
+// effort immune to every session-side re-stamp path (build time,
+// ApplyRequestOverrides, resume — ADR-131); "" (the pin's family unknown to
+// the catalog) sends no reasoning field at all — the fail-closed
+// service-policy spelling, where sp4rk's SetReasoningEffort("") would instead
+// clear the override and fall back to the session identity's spelling. The
+// oneshot service sites and the judge are NOT stamped here: they resolve
+// their own kind tier from the pin before/at the call.
 func overrideWrap(caller agent.LLMCaller, overrides *ServiceModelOverrides, key string) agent.LLMCaller {
-	if pin, ok := overrides.Lookup(key); ok {
-		return newPinnedModelCaller(caller, pin.Provider, pin.Model)
+	pin, ok := overrides.Lookup(key)
+	if !ok {
+		return caller
 	}
-	return caller
+	wrapped := newPinnedModelCaller(caller, pin.Provider, pin.Model)
+	effort := serviceReasoningEffort(pin.Composite, llm.ReasoningTierOff)
+	wrapped.effortStamp = &effort
+	return wrapped
 }
