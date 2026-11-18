@@ -4,27 +4,18 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { EllipsisHint } from './EllipsisHint'
-import { TooltipProvider, TOOLTIP_DELAY_MS } from '@/components/ui/tooltip'
 
 describe('EllipsisHint', () => {
   let container: HTMLElement
   let root: Root
 
   beforeEach(() => {
-    // Radix tooltip positioning uses ResizeObserver, which jsdom lacks.
+    // jsdom lacks ResizeObserver, which the component measures overflow with.
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
       disconnect() {}
     })
-    // vi.useFakeTimers() does not fake requestAnimationFrame; Radix schedules
-    // post-open updates (popper position, presence) via rAF, which would fire
-    // after the act() block and warn. Run frames synchronously instead.
-    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-      cb(0)
-      return 0
-    })
-    vi.stubGlobal('cancelAnimationFrame', () => {})
     container = document.createElement('div')
     document.body.replaceChildren(container)
     root = createRoot(container)
@@ -32,12 +23,11 @@ describe('EllipsisHint', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.useRealTimers()
   })
 
   const render = (el: React.ReactElement) =>
     act(() => {
-      root.render(<TooltipProvider>{el}</TooltipProvider>)
+      root.render(el)
     })
 
   it('renders the visible children', () => {
@@ -62,45 +52,55 @@ describe('EllipsisHint', () => {
     expect(span!.className).toContain('text-sm')
   })
 
-  it('renders a plain span without a tooltip when fullText is empty', () => {
+  it('renders a plain span without a title when fullText is empty', () => {
     render(
       <EllipsisHint fullText="" className="truncate">
         short
       </EllipsisHint>,
     )
-    // No Radix tooltip trigger mounted — plain span only.
-    expect(container.querySelector('[data-slot="tooltip-trigger"]')).toBeNull()
+    expect(container.querySelector('span')!.hasAttribute('title')).toBe(false)
     expect(container.textContent).toContain('short')
   })
 
-  it('mounts the Radix tooltip trigger when fullText is provided', () => {
+  it('carries no title when the content does not overflow', () => {
     render(
       <EllipsisHint fullText="the full long value" className="truncate">
         short
       </EllipsisHint>,
     )
-    // The Trigger's data-slot is merged onto the span via asChild.
-    expect(container.querySelector('[data-slot="tooltip-trigger"]')).not.toBeNull()
+    // jsdom reports scrollWidth === clientWidth === 0 → the overflow gate is
+    // off, so the span renders without a title.
+    expect(container.querySelector('span')!.hasAttribute('title')).toBe(false)
   })
 
-  it('reveals the full value in a wrapping tooltip on hover when alwaysShow', async () => {
-    vi.useFakeTimers()
+  it('reveals the full value via title with alwaysShow, regardless of overflow', () => {
     const full = 'very long untruncated value here that should wrap'
     render(
       <EllipsisHint fullText={full} alwaysShow className="truncate">
         short
       </EllipsisHint>,
     )
-    const trigger = container.querySelector('[data-slot="tooltip-trigger"]') as HTMLElement
-    // Async act: flushes microtask-scheduled Radix updates (popper/presence)
-    // inside the act scope instead of after it.
-    await act(async () => {
-      trigger.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }))
-      trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
-      vi.advanceTimersByTime(TOOLTIP_DELAY_MS)
-    })
-    // Radix portals the content to document.body; it must escape the container
-    // and contain the full untruncated value.
-    expect(document.body.textContent).toContain(full)
+    expect(container.querySelector('span')!.getAttribute('title')).toBe(full)
+  })
+
+  it('sets the title when the measured content overflows', () => {
+    // jsdom has no layout — force every element to report overflow so the
+    // mount measurement flips the overflow gate on.
+    const scrollDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!
+    const clientDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!
+    Object.defineProperty(Element.prototype, 'scrollWidth', { configurable: true, get: () => 400 })
+    Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get: () => 100 })
+    try {
+      const full = 'a value too wide for the truncated span'
+      render(
+        <EllipsisHint fullText={full} className="truncate">
+          short
+        </EllipsisHint>,
+      )
+      expect(container.querySelector('span')!.getAttribute('title')).toBe(full)
+    } finally {
+      Object.defineProperty(Element.prototype, 'scrollWidth', scrollDesc)
+      Object.defineProperty(Element.prototype, 'clientWidth', clientDesc)
+    }
   })
 })
