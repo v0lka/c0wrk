@@ -17,6 +17,7 @@ import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
+import { escapeGlobLiteral } from '@/lib/pathFilter'
 import { logger } from '@/lib/logger'
 import type { FileEntry } from '@/types/models'
 import { generateUUID } from '@/lib/ids'
@@ -234,7 +235,14 @@ export function FileTreeContextMenu({
     // prefix (e.g. "src/components" would otherwise also match
     // "src/components-extra"). Uses the platform-aware separator so it
     // works on Windows as well as macOS/Linux.
-    const filter = entry.is_dir ? relativePath + pathSep() : relativePath
+    //
+    // The path itself must enter the matcher as a LITERAL: it is repo data
+    // (attacker-influenceable via a cloned repository or an agent-written
+    // file) that picomatch would otherwise parse as glob syntax — wrong
+    // matches for metachar filenames and a parse-time ReDoS vector. See
+    // escapeGlobLiteral.
+    const literal = escapeGlobLiteral(relativePath)
+    const filter = entry.is_dir ? literal + pathSep() : literal
     useGitPanelStore.getState().setPendingHistoryFilter(filter)
     onClose()
   }, [entry.is_dir, relativePath, onClose])

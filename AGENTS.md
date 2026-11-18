@@ -56,7 +56,7 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the
 - `make build` — installs frontend deps, runs `wails build` with version ldflags, then `make fetch-onnx` + `make fetch-embedding-model`
 - `make dev-desktop` — full desktop hot-reload loop (`wails dev` with the platform build tags; on Linux `-tags webkit2_41` is mandatory or the cgo build fails against webkit2gtk-4.0 and `wails dev` hangs without a window)
 - `make dev-frontend` — Vite dev server only (`cd frontend && npm run dev`); no Go bridge, so the UI stays on the startup splash
-- `make fetch-onnx` — downloads ONNX Runtime 1.28.1 into `.cache/` and copies it into the platform build output. **Required after every direct `wails build`** or the app won't launch.
+- `make fetch-onnx` — downloads the ONNX Runtime native library (1.28.1, from the npmmirror binary mirror of the official release archives — the microsoft/onnxruntime GitHub release channel was removed on 2026-11-17, and the mirror serves the same archives byte-identically, digest-pinned from both channels) into `.cache/` and copies it into the platform build output. **Required after every direct `wails build`** or the app won't launch.
 - `make bump` — resolves the latest `github.com/v0lka/sp4rk` remote commit and updates the module with `GOWORK=off`; use only at the release point of a cross-repo development cycle
 - `make clean` — removes `build/bin`, `.cache`, `frontend/dist`
 

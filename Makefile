@@ -4,7 +4,18 @@
 # same `make vulncheck` command; upgrade deliberately, both repos in lockstep).
 GOVULNCHECK_VERSION := v1.7.0
 
-# ONNX Runtime version
+# ONNX Runtime version, fetched from the npmmirror binary mirror of the
+# official release archives (https://registry.npmmirror.com/-/binary/onnxruntime,
+# the npm ecosystem's binary host operated by cnpm). History: these artifacts
+# were originally pinned from microsoft/onnxruntime GitHub releases; that
+# repository (and every release asset URL on it) was removed from GitHub on
+# 2026-11-17, but the mirror still carries the same release archives —
+# including 1.28.1 (the last version GitHub published, which NuGet never
+# received) and every platform build, Windows and macOS included, from a
+# registry the frontend toolchain needs anyway. Every artifact below was
+# re-downloaded from the mirror and verified byte-identical (SHA256) to the
+# GitHub-era pins recorded in this file's git history, so the pins carry
+# provenance from both channels.
 ONNX_VERSION := 1.28.1
 
 # Detect OS and architecture
@@ -12,16 +23,16 @@ UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
 # Platform-specific configuration, together with the pinned SHA256 digests of
-# the release archive (ONNX_SHA256) and of the shared library extracted from it
-# (ONNX_LIB_SHA256 — the artifact cached in $(ONNX_CACHE_DIR)).
+# the downloaded release archive (ONNX_SHA256) and of the shared library
+# extracted from it (ONNX_LIB_SHA256 — the artifact cached in
+# $(ONNX_CACHE_DIR)).
 #
-# No checksum FILES are attached to onnxruntime GitHub releases, so the digests
-# are pinned trust-on-first-use from fresh downloads of the official release
-# URLs. For v1.28.1 every archive digest was additionally cross-verified
-# against the server-computed "digest" (sha256) field GitHub publishes for
-# release assets in the REST API (api.github.com .../releases/tags/v<version>).
-# When bumping ONNX_VERSION, recompute and update every digest below (see also
-# scripts/fetch-onnx.ps1, which carries the win-x64 digests):
+# No checksum files are attached to the release archives (true on the removed
+# GitHub releases and on the mirror alike), so the digests are pinned
+# trust-on-first-use — originally from GitHub releases, re-verified
+# byte-identical against a fresh mirror download. When bumping ONNX_VERSION,
+# recompute and update every digest below (see also scripts/fetch-onnx.ps1,
+# which carries the win-x64 digests):
 #   curl -LO <ONNX_URL> && shasum -a 256 <archive>
 #   tar -xzf <archive> && shasum -a 256 <archive-top>/lib/<lib name>
 ifeq ($(UNAME_S),Darwin)
@@ -31,12 +42,11 @@ ifeq ($(UNAME_S),Darwin)
 		ONNX_SHA256 := 18c853e5c5deba90e244e1b953a65121f23747ba2c04e6743885caa6ce1ea12f
 		ONNX_LIB_SHA256 := a3504a59b3178c40a972772730a27eda06bf447fb6d4f26c88bf5df81746a167
 	else
-		# onnxruntime v1.28.1 publishes no Intel-only macOS asset (same as v1.24.1):
-		# the download
-		# URL below returns a 9-byte "Not Found" body, and the osx-arm64 dylib is
-		# arm64-only (not universal2). No digest can be pinned for a nonexistent
-		# asset, so verification fails closed with a clear message instead of
-		# tar's earlier "Unrecognized archive format".
+		# onnxruntime publishes no Intel-only macOS archive (the v1.28.1 mirror
+		# listing carries only osx-arm64, matching the removed GitHub releases
+		# whose osx-x86_64 asset never existed). No digest can be pinned for a
+		# nonexistent asset, so verification fails closed with a clear message
+		# instead of installing an unverified file.
 		ONNX_ARCHIVE := onnxruntime-osx-x86_64-$(ONNX_VERSION).tgz
 		ONNX_LIB_NAME := libonnxruntime.$(ONNX_VERSION).dylib
 		ONNX_SHA256 :=
@@ -116,7 +126,14 @@ else
 	APP_MODELS_DIR := build/bin/models
 endif
 
-ONNX_URL := https://github.com/microsoft/onnxruntime/releases/download/v$(ONNX_VERSION)/$(ONNX_ARCHIVE)
+# Versioned mirror URL. The mirror serves the original release archives
+# verbatim (verified byte-identical to the GitHub-era pins in this file's git
+# history) but attaches no digest manifest — hence the TOFU pins above. The
+# pins are per version, so a mirror-side rewrite cannot slip past
+# verification: it fails the build loudly.
+ONNX_URL := https://registry.npmmirror.com/-/binary/onnxruntime/v$(ONNX_VERSION)/$(ONNX_ARCHIVE)
+# Top-level directory inside the extracted archive (the tar extraction root).
+# For the Windows .zip the same name is derived inside scripts/fetch-onnx.ps1.
 ONNX_DIR := $(ONNX_ARCHIVE:.tgz=)
 # Cache directory for downloaded ONNX library
 ONNX_CACHE_DIR := .cache
@@ -142,24 +159,39 @@ ONNX_STAMP := $(APP_BUNDLE_DIR)/.onnxruntime-version
 # instead of silently keeping the GPU libraries. Consequence: rerun
 # `make fetch-onnx-gpu` after every `make build` to keep the GPU flavor.
 #
-# Digests pinned trust-on-first-use exactly like the CPU ones above (archive
-# digest cross-verified against GitHub's server-computed asset digest); on an
+# Digests pinned trust-on-first-use exactly like the CPU ones above; on an
 # ONNX_VERSION bump recompute all four:
 #   curl -LO <ONNX_GPU_URL> && shasum -a 256 <archive>
-#   tar -xzf <archive> && shasum -a 256 <top>/lib/{libonnxruntime.so,libonnxruntime_providers_cuda.so,libonnxruntime_providers_shared.so}
+#   tar -xzf <archive> && shasum -a 256 <archive-top>/lib/{libonnxruntime.so,libonnxruntime_providers_cuda.so,libonnxruntime_providers_shared.so}
 # Windows is out of scope: scripts/fetch-onnx.ps1 keeps fetching the CPU build.
+#
+# Distribution channel (decided 2026-11-18, supersedes both the removed GitHub
+# release channel and the NuGet interlude): the archive below,
+# onnxruntime-linux-x64-gpu_cuda13-<version>.tgz, comes from the same npmmirror
+# mirror the CPU flavor rides and is the very artifact the removed GitHub
+# repository used to publish under this name — digest-verified byte-identical
+# to the GitHub-era pin in this file's git history. It is a CUDA-13 build
+# (the shipped libonnxruntime_providers_cuda.so carries the CUDA 13 sonames
+# libcudart.so.13, libcublas.so.13, libcublasLt.so.13, libcurand.so.10 — the
+# CUDA 12 names in its strings are dlopen probes, not link requirements), so
+# the host driver stack documented in README/config.example.yaml is unchanged,
+# the release archive stays c0wrk-desktop-linux-amd64-cuda13.tar.gz, and the
+# in-app updater's flavor matching is untouched. The archive additionally
+# bundles libonnxruntime_providers_tensorrt.so, which is deliberately NOT
+# installed: the TensorRT EP needs a host TensorRT stack c0wrk does not pin,
+# and this flavor's contract is exactly the three libraries below.
 ONNX_GPU_ARCHIVE := onnxruntime-linux-x64-gpu_cuda13-$(ONNX_VERSION).tgz
-ONNX_GPU_URL := https://github.com/microsoft/onnxruntime/releases/download/v$(ONNX_VERSION)/$(ONNX_GPU_ARCHIVE)
+ONNX_GPU_URL := https://registry.npmmirror.com/-/binary/onnxruntime/v$(ONNX_VERSION)/$(ONNX_GPU_ARCHIVE)
 ONNX_GPU_DIR := $(ONNX_GPU_ARCHIVE:.tgz=)
+ONNX_GPU_ARCHIVE_SHA256 := 9ed39480d57f2d39e84a8b50d243c9a063a786b454195bb08eeac2dcbdfb9a01
 ONNX_GPU_CACHE_DIR := $(ONNX_CACHE_DIR)/onnx-gpu
 ONNX_GPU_STAMP_VALUE := $(ONNX_VERSION)-gpu-cuda13
 ONNX_GPU_STAMP := $(APP_BUNDLE_DIR)/.onnxruntime-gpu-version
 ONNX_GPU_LIB := libonnxruntime.so
 ONNX_GPU_CUDA_LIB := libonnxruntime_providers_cuda.so
 ONNX_GPU_SHARED_LIB := libonnxruntime_providers_shared.so
-ONNX_GPU_ARCHIVE_SHA256 := 9ed39480d57f2d39e84a8b50d243c9a063a786b454195bb08eeac2dcbdfb9a01
-ONNX_GPU_LIB_SHA256 := 4680895afc920629c16fd4aea9d04e1b40cf6d66cbb1495dead4953de9377e6c
-ONNX_GPU_CUDA_LIB_SHA256 := a3a9e9d3d99b8292e9a472176367fd5e03a0dfd07762150f2a8a6c93bdd97e31
+ONNX_GPU_LIB_SHA256 := 87097979b341c4df9c1bf71b14f7376f84a91206fbc64c0ccc4733dcbbab9e40
+ONNX_GPU_CUDA_LIB_SHA256 := 051136fa473e255634421b8e1cd61379fc3ed72c34918a60edc5ac15e792f6c0
 ONNX_GPU_SHARED_LIB_SHA256 := c6a12593396095f5670160e284c35d1700b7708cf3037b7042e2a5200ccae772
 
 # --- ONNX Runtime OpenVINO EP flavor (Intel GPU/NPU/CPU, Linux x64 only) ---------
@@ -412,16 +444,25 @@ fetch-onnx:
 			echo "NOTE: stamp mismatch at $(ONNX_STAMP) (found '$$(cat "$(ONNX_STAMP)" 2>/dev/null)', expected '$(ONNX_VERSION)') - deliberately reinstalling the CPU flavor over it"; \
 			rm -f $(APP_BUNDLE_DIR)/libonnxruntime_providers_cuda.so $(APP_BUNDLE_DIR)/libonnxruntime_providers_shared.so $(ONNX_GPU_STAMP); \
 		fi; \
+		cache_hit=0; \
 		if [ -f "$(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT)" ]; then \
-			echo "Using cached ONNX Runtime library..."; \
-			$(call verify_sha256,$(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT),$(ONNX_LIB_SHA256)); \
-			cp $(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT) $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT); \
-		else \
+			cache_digest=$$($(SHASUM) "$(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT)" | awk '{print $$1}'); \
+			if [ "$$cache_digest" = "$(ONNX_LIB_SHA256)" ]; then \
+				echo "Using cached ONNX Runtime library..."; \
+				cp $(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT) $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT); \
+				cache_hit=1; \
+			else \
+				echo "NOTE: cached library digest does not match $(ONNX_VERSION) - removing the stale cache entry and downloading instead"; \
+				rm -f "$(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT)"; \
+			fi; \
+		fi; \
+		if [ "$$cache_hit" = 0 ]; then \
 			mkdir -p $(ONNX_CACHE_DIR); \
-			echo "Downloading ONNX Runtime $(ONNX_VERSION) for $(UNAME_S)/$(UNAME_M)..."; \
+			echo "Downloading ONNX Runtime $(ONNX_VERSION) ($(ONNX_ARCHIVE))..."; \
+			rm -rf /tmp/$(ONNX_ARCHIVE) /tmp/$(ONNX_DIR); \
 			curl -f -L -o /tmp/$(ONNX_ARCHIVE) $(ONNX_URL); \
 			$(call verify_sha256,/tmp/$(ONNX_ARCHIVE),$(ONNX_SHA256)); \
-			echo "Extracting ONNX Runtime library..."; \
+			echo "Extracting ONNX Runtime library ($(ONNX_DIR)/lib/$(ONNX_LIB_NAME))..."; \
 			tar -xzf /tmp/$(ONNX_ARCHIVE) -C /tmp; \
 			$(call verify_sha256,/tmp/$(ONNX_DIR)/lib/$(ONNX_LIB_NAME),$(ONNX_LIB_SHA256)); \
 			cp /tmp/$(ONNX_DIR)/lib/$(ONNX_LIB_NAME) $(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT); \
@@ -460,37 +501,48 @@ fetch-onnx-gpu:
 	fi; \
 	if [ -f "$(APP_BUNDLE_DIR)/$(ONNX_GPU_CUDA_LIB)" ] && [ "$$(cat "$(ONNX_GPU_STAMP)" 2>/dev/null)" = "$(ONNX_GPU_STAMP_VALUE)" ]; then \
 		echo "ONNX Runtime $(ONNX_GPU_STAMP_VALUE) already installed at $(APP_BUNDLE_DIR)"; \
-	elif [ -f "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB)" ] && [ -f "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB)" ] && [ -f "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB)" ]; then \
-		echo "Using cached ONNX Runtime GPU libraries..."; \
-		$(call verify_sha256,$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB),$(ONNX_GPU_LIB_SHA256)); \
-		$(call verify_sha256,$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB),$(ONNX_GPU_CUDA_LIB_SHA256)); \
-		$(call verify_sha256,$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB),$(ONNX_GPU_SHARED_LIB_SHA256)); \
-		cp $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_LIB); \
-		cp $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_CUDA_LIB); \
-		cp $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_SHARED_LIB); \
-		echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_GPU_STAMP); \
-		echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_STAMP); \
-		echo "ONNX Runtime GPU libraries installed to $(APP_BUNDLE_DIR)"; \
 	else \
-		mkdir -p $(ONNX_GPU_CACHE_DIR); \
-		echo "Downloading ONNX Runtime $(ONNX_GPU_STAMP_VALUE) for $(UNAME_S)/$(UNAME_M)..."; \
-		curl -f -L -o /tmp/$(ONNX_GPU_ARCHIVE) $(ONNX_GPU_URL); \
-		$(call verify_sha256,/tmp/$(ONNX_GPU_ARCHIVE),$(ONNX_GPU_ARCHIVE_SHA256)); \
-		echo "Extracting ONNX Runtime GPU libraries..."; \
-		tar -xzf /tmp/$(ONNX_GPU_ARCHIVE) -C /tmp; \
-		$(call verify_sha256,/tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_LIB),$(ONNX_GPU_LIB_SHA256)); \
-		$(call verify_sha256,/tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_CUDA_LIB),$(ONNX_GPU_CUDA_LIB_SHA256)); \
-		$(call verify_sha256,/tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_SHARED_LIB),$(ONNX_GPU_SHARED_LIB_SHA256)); \
-		cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB); \
-		cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_CUDA_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB); \
-		cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_SHARED_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB); \
-		cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_LIB); \
-		cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_CUDA_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_CUDA_LIB); \
-		cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_SHARED_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_SHARED_LIB); \
-		echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_GPU_STAMP); \
-		echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_STAMP); \
-		rm -rf /tmp/$(ONNX_GPU_ARCHIVE) /tmp/$(ONNX_GPU_DIR); \
-		echo "ONNX Runtime GPU libraries installed to $(APP_BUNDLE_DIR)"; \
+		cache_hit=0; \
+		if [ -f "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB)" ] && [ -f "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB)" ] && [ -f "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB)" ]; then \
+			cache_d1=$$($(SHASUM) "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB)" | awk '{print $$1}'); \
+			cache_d2=$$($(SHASUM) "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB)" | awk '{print $$1}'); \
+			cache_d3=$$($(SHASUM) "$(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB)" | awk '{print $$1}'); \
+			if [ "$$cache_d1" = "$(ONNX_GPU_LIB_SHA256)" ] && [ "$$cache_d2" = "$(ONNX_GPU_CUDA_LIB_SHA256)" ] && [ "$$cache_d3" = "$(ONNX_GPU_SHARED_LIB_SHA256)" ]; then \
+				echo "Using cached ONNX Runtime GPU libraries..."; \
+				cache_hit=1; \
+				cp $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_LIB); \
+				cp $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_CUDA_LIB); \
+				cp $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_SHARED_LIB); \
+				echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_GPU_STAMP); \
+				echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_STAMP); \
+				echo "ONNX Runtime GPU libraries installed to $(APP_BUNDLE_DIR)"; \
+			else \
+				echo "NOTE: cached GPU libraries do not match $(ONNX_GPU_STAMP_VALUE) - removing the stale cache entries and downloading instead"; \
+				rm -f $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB); \
+			fi; \
+		fi; \
+		if [ "$$cache_hit" = 0 ]; then \
+			mkdir -p $(ONNX_GPU_CACHE_DIR); \
+			echo "Downloading ONNX Runtime $(ONNX_GPU_STAMP_VALUE) for $(UNAME_S)/$(UNAME_M) ($(ONNX_GPU_ARCHIVE))..."; \
+			rm -rf /tmp/$(ONNX_GPU_ARCHIVE) /tmp/$(ONNX_GPU_DIR); \
+			curl -f -L -o /tmp/$(ONNX_GPU_ARCHIVE) $(ONNX_GPU_URL); \
+			$(call verify_sha256,/tmp/$(ONNX_GPU_ARCHIVE),$(ONNX_GPU_ARCHIVE_SHA256)); \
+			echo "Extracting ONNX Runtime GPU libraries ($(ONNX_GPU_DIR)/lib/)..."; \
+			tar -xzf /tmp/$(ONNX_GPU_ARCHIVE) -C /tmp; \
+			$(call verify_sha256,/tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_LIB),$(ONNX_GPU_LIB_SHA256)); \
+			$(call verify_sha256,/tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_CUDA_LIB),$(ONNX_GPU_CUDA_LIB_SHA256)); \
+			$(call verify_sha256,/tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_SHARED_LIB),$(ONNX_GPU_SHARED_LIB_SHA256)); \
+			cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_LIB); \
+			cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_CUDA_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_CUDA_LIB); \
+			cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_SHARED_LIB) $(ONNX_GPU_CACHE_DIR)/$(ONNX_GPU_SHARED_LIB); \
+			cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_LIB); \
+			cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_CUDA_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_CUDA_LIB); \
+			cp /tmp/$(ONNX_GPU_DIR)/lib/$(ONNX_GPU_SHARED_LIB) $(APP_BUNDLE_DIR)/$(ONNX_GPU_SHARED_LIB); \
+			echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_GPU_STAMP); \
+			echo "$(ONNX_GPU_STAMP_VALUE)" > $(ONNX_STAMP); \
+			rm -rf /tmp/$(ONNX_GPU_ARCHIVE) /tmp/$(ONNX_GPU_DIR); \
+			echo "ONNX Runtime GPU libraries installed to $(APP_BUNDLE_DIR)"; \
+		fi; \
 	fi
 else
 fetch-onnx-gpu:

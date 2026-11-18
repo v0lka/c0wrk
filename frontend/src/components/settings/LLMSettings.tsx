@@ -242,7 +242,7 @@ export function LLMSettings({
           default-model picker above. */}
       {experimentalEnabled && <EmbeddedLLMSettings />}
 
-      {/* Service-model overrides (ADR-130) — the SAME experimental gate as the
+      {/* Service-model overrides (ADR-131) — the SAME experimental gate as the
           embedded block above. Honest end-to-end: while the switch is off the
           backend adapter drops llm.service_models from every BuilderConfig,
           so a block rendered then would advertise pins that resolve nothing.

@@ -106,7 +106,7 @@ export function ProviderAccordion({
     const seen = new Set<string>()
     const result: string[] = []
     if (isOAuth) {
-      // Preset order (most capable first) is the product decision — keep it.
+      // Preset order (subscription-catalog priority) is the product decision — keep it.
       for (const entry of presetModels ?? []) {
         if (seen.has(entry.name)) continue
         seen.add(entry.name)

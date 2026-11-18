@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// ServiceModelsSettings — the collapsed service-model override shell (ADR-130).
+// ServiceModelsSettings — the collapsed service-model override shell (ADR-131).
 //
 // ModelPickerMenu is mocked at the component boundary: these tests pin OUR
 // logic — the collapsed-by-default shell, the fixed ten-row catalog in the

@@ -9,6 +9,7 @@ package desktop
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
+#import <dispatch/dispatch.h>
 #import <objc/runtime.h>
 
 // c0wrkOnPowerWake is implemented in Go. It is invoked from the Objective-C
@@ -19,6 +20,12 @@ extern void c0wrkOnPowerWake(void);
 // below each time the WKWebView's web-content process terminates and is
 // recovered, so the previously-silent death surfaces in the slog log.
 extern void c0wrkLogWebviewRecovery(char *reason);
+
+// c0wrkRecoveryHookInstalled is implemented in Go. The install is routed
+// onto the main queue (see c0wrkInstallRecoveryOnMain below), so its status
+// cannot be returned to the Go caller; the main-queue block reports it back
+// through this export instead.
+extern void c0wrkRecoveryHookInstalled(int status);
 
 // NOTE ON API: WKNavigationDelegate exposes exactly ONE
 // web-content-process-termination hook, -webViewWebContentProcessDidTerminate:
@@ -147,11 +154,12 @@ static void c0wrkReloadWebview(void) {
 // rename; the wake path remains as best-effort fallback), 2 = WailsContext
 // already implements the selector (its implementation is left in place).
 //
-// Called from registerPowerWakeObserver during Startup, by which point Wails
-// has loaded WailsContext and installed it as the webview's navigation
-// delegate. class_addMethod mutates the method table consulted at every
-// message dispatch, so the hook takes effect on the already-created instance
-// immediately.
+// Never call this directly from Go: the mutation MUST run on the main thread
+// (c0wrkInstallRecoveryOnMain below). It is called from a main-queue block by
+// which point Wails has loaded WailsContext and installed it as the webview's
+// navigation delegate. class_addMethod mutates the method table consulted at
+// every message dispatch, so the hook takes effect on the already-created
+// instance as soon as the main thread services the block.
 static int c0wrkInstallWebviewRecovery(void) {
     Class cls = objc_getClass("WailsContext");
     if (cls == NULL) {
@@ -165,6 +173,38 @@ static int c0wrkInstallWebviewRecovery(void) {
     class_addMethod(cls, sel,
                     (IMP)c0wrkWebContentProcessDidTerminateIMP, "v@:@");
     return 0;
+}
+
+// c0wrkInstallRecoveryOnMain routes c0wrkInstallWebviewRecovery onto the MAIN
+// queue (inline when already there) and reports the status back to Go through
+// the c0wrkRecoveryHookInstalled export.
+//
+// WHY THE MAIN THREAD IS REQUIRED. Wails v2.16.0 runs the Go OnStartup
+// callback — this install's only caller chain — on a background goroutine
+// (frontend.go Run: `go func() { OnStartup(ctx) }()`), while WebKit dispatches
+// WailsContext's script-message-handler and delegate methods on the main
+// thread in a tight loop (WailsContext IS the WKScriptMessageHandler and the
+// WKWebView's UIDelegate/navigation delegate). objc_msgSend's fast path reads
+// the class's method cache without a lock, and class_addMethod mutates the
+// method table and flushes that cache. Mutating it from a non-main thread
+// while the main thread is mid-dispatch on the same class loses the runtime's
+// deferred cache-reclamation race under heavy dispatch traffic: the dispatch
+// reads a freed/garbage cache bucket and the process dies with SIGSEGV
+// (SEGV_ACCERR at a cache-bucket address, PC in the shared cache) — exactly
+// the silent startup crash of 2026-11-18 07:21 (pid 33443, ~12s after launch,
+// on a build that had started cleanly 8 consecutive times). Scheduling the
+// mutation on the main queue serializes it with every WebKit dispatch of the
+// class, eliminating the race.
+static void c0wrkInstallRecoveryOnMain(void) {
+    void (^installBlock)(void) = ^{
+        int status = c0wrkInstallWebviewRecovery();
+        c0wrkRecoveryHookInstalled(status);
+    };
+    if ([NSThread isMainThread]) {
+        installBlock();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), installBlock);
+    }
 }
 
 // c0wrkRegisterWakeObserver registers NSWorkspace observers for system wake
@@ -221,7 +261,37 @@ func registerPowerWakeObserver(log *slog.Logger, onPowerWake func()) {
 	// the package links under the standard Go toolchain (a category would
 	// emit an unresolved _OBJC_CLASS_$_WailsContext). See
 	// specs/decisions/018-macos-webview-recovery.md.
-	switch int(C.c0wrkInstallWebviewRecovery()) {
+	//
+	// The mutation is routed onto the MAIN queue (registerPowerWakeObserver
+	// itself runs on Wails's background OnStartup goroutine): WailsContext is
+	// dispatched by WebKit on the main thread, and class_addMethod must not
+	// race that dispatch — the background mutation corrupted the method cache
+	// once (SIGSEGV during cgo execution in RunMainLoop, 2026-11-18). The
+	// install status surfaces through the c0wrkRecoveryHookInstalled export
+	// because the install is asynchronous now.
+	C.c0wrkInstallRecoveryOnMain()
+
+	C.c0wrkRegisterWakeObserver()
+	log.Info("registered macOS power-state wake observer")
+}
+
+//export c0wrkRecoveryHookInstalled
+func c0wrkRecoveryHookInstalled(status C.int) {
+	logRecoveryHookInstalled(int(status))
+}
+
+// logRecoveryHookInstalled maps the main-queued install status to its log
+// line: 0/2 informational, 1 (WailsContext not found) a warning because only
+// the best-effort wake path remains. Plain Go (not the //export wrapper) so
+// darwin unit tests can exercise it — cgo is not supported in _test.go files.
+func logRecoveryHookInstalled(status int) {
+	log := recoveryLogger.Load()
+	if log == nil {
+		// Top-level-boundary fallback: the callback fired before Startup wired
+		// the logger. Still log so the install outcome is never silent.
+		log = slog.Default()
+	}
+	switch status {
 	case 0:
 		log.Info("installed WKWebView web-content-process recovery hook on WailsContext")
 	case 1:
@@ -229,9 +299,6 @@ func registerPowerWakeObserver(log *slog.Logger, onPowerWake func()) {
 	case 2:
 		log.Info("WailsContext already implements webContentProcessDidTerminate; recovery hook not installed")
 	}
-
-	C.c0wrkRegisterWakeObserver()
-	log.Info("registered macOS power-state wake observer")
 }
 
 //export c0wrkOnPowerWake

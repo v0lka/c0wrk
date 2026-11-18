@@ -135,7 +135,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
       req.openai_compatible = openaiCompatible
       req.anthropic_compatible = anthropicCompatible
 
-      // The service-model pins (ADR-130) are part of the full-form payload:
+      // The service-model pins (ADR-131) are part of the full-form payload:
       // transmit ALWAYS (like the compatible maps — this is a replacement
       // payload). The backend sentinel: a present map replaces the section
       // wholesale, {} clears it, and invalid entries drop fail-soft on the

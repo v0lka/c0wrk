@@ -670,7 +670,7 @@ export interface ConfigLLMResponse {
   kimi: ConfigProviderFull
   all_models: ModelInfo[]
   models_ready: boolean
-  /** The persisted llm.service_models section (ADR-130): composite
+  /** The persisted llm.service_models section (ADR-131): composite
    *  "provider/model" pins per fixed one-shot service call key. Optional:
    *  the backend omits it when no pins are configured (empty section) —
    *  read absence as {}. Exposed regardless of the experimental gate; the
@@ -945,7 +945,7 @@ export interface LLMFullConfigRequest {
   anthropic_compatible?: Record<string, ProviderConfigRequest>
   chatgpt?: ProviderConfigRequest
   kimi?: ProviderConfigRequest
-  /** The llm.service_models section (ADR-130). Backend sentinel: a field
+  /** The llm.service_models section (ADR-131). Backend sentinel: a field
    *  ABSENT from the payload (undefined — dropped by JSON serialization)
    *  preserves the persisted pins; a present map REPLACES the section
    *  wholesale ({} clears it). The full-form save always transmits it. */

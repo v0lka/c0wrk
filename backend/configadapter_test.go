@@ -546,7 +546,7 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 }
 
 // TestToBuilderConfig_ServiceModelsExperimentalGate pins the fail-closed gate
-// for the experimental llm.service_models section (ADR-130): with the gate off
+// for the experimental llm.service_models section (ADR-131): with the gate off
 // the adapter maps it to nil — every pin consumer (session router overrides,
 // the judge/router/reflector overrides, the embedded readiness gates'
 // ServiceModelPin advisory) resolves nothing and every one-shot call falls

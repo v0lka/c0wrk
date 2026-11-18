@@ -836,10 +836,14 @@ func TestInitChatGPTAuth_RestoreMirrorsSeamRebuildsOnlyInOAuth(t *testing.T) {
 // --- GetChatGPTModelPreset ---
 
 // TestGetChatGPTModelPreset_PinsNamesAndOrder pins the preset itself: the
-// five Codex models, most capable first, exactly the intersection of sp4rk's
-// registry and the subscription allowed-list.
+// seven Codex models in subscription-catalog priority order (the order the
+// live catalog renders), exactly the intersection of sp4rk's registry and
+// the subscription allowed-list.
 func TestGetChatGPTModelPreset_PinsNamesAndOrder(t *testing.T) {
-	want := []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "codex-mini-latest"}
+	want := []string{
+		"gpt-6.2-sol", "gpt-6.2-astra",
+		"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "codex-mini-latest",
+	}
 
 	f, mock, _ := newChatGPTAuthTestAPI(t)
 	// With no registry wired the entries carry names only (fail-soft).

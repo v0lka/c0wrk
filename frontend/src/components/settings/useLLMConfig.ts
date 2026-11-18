@@ -47,7 +47,7 @@ interface UseLLMConfigResult {
      *  fails the load loudly instead of silently clamping against a stale
      *  constant. Undefined only until the first successful load. */
     autoRetryMaxSeconds: number | undefined
-    /** The persisted llm.service_models section (ADR-130) as loaded from
+    /** The persisted llm.service_models section (ADR-131) as loaded from
      *  GetConfig: composite "provider/model" pins per fixed one-shot call
      *  key. {} = no pins (the backend omits the section). The draft OWNS
      *  the section — every full-form save transmits it, so hand-edited
@@ -307,7 +307,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 setProviderConfigs(configs)
                 setOpenaiCompatibleProviderNames(openaiNames)
                 setAnthropicCompatibleProviderNames(anthropicNames)
-                // The service-model pins ride the same payload (ADR-130);
+                // The service-model pins ride the same payload (ADR-131);
                 // absence = no pins — the backend omits the empty section.
                 setServiceModelState(llm.service_models ? { ...llm.service_models } : {})
                 onDefaultModelChangeRef.current?.(effective)

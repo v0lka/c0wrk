@@ -1,4 +1,4 @@
-# ADR-130: Per-Purpose Service-Model Overrides (`llm.service_models`)
+# ADR-131: Per-Purpose Service-Model Overrides (`llm.service_models`)
 
 ## Status
 
@@ -13,9 +13,11 @@ a live session's judge".
 
 The experimental gate and the Settings UI for the section were briefly
 drafted as a separate ADR-131 (same session, same branch); they are folded
-into this record as decisions 5 and 6 and the separate file is removed —
-ADR-131 no longer exists and its number stays unused (numbers are never
-reused). The section is effective only while `experimental.enabled` is on
+into this record as decisions 5 and 6 and the separate file was removed —
+freeing number 131, which this record now carries: mid-cycle the branch
+merged main's ADR-130 (lexical scorch persister deadlock) and renumbered
+from 130 to the vacated 131 (numbers are never reused). The section is
+effective only while `experimental.enabled` is on
 (persisted but inert while off), and the original "deliberately no UI
 surface" clause of decision 1 is superseded within this record: the section
 is edited through a Settings → LLM block under the same gate.

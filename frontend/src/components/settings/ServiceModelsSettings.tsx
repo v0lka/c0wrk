@@ -1,4 +1,4 @@
-// Service-model override section of the Settings "LLM" tab (ADR-130).
+// Service-model override section of the Settings "LLM" tab (ADR-131).
 //
 // One collapsed-by-default collapsible shell — the provider accordions' /
 // EmbeddedLLMSettings header anatomy — listing every fixed one-shot service

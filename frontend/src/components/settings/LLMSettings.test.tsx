@@ -693,7 +693,7 @@ describe('LLMSettings — Embedded LLM block placement', () => {
     expect(embeddedBlock).not.toBeNull()
     expect(embeddedBlock!.textContent).toContain('Embedded LLM')
 
-    // The service-models override block (ADR-130) rides the same gate and
+    // The service-models override block (ADR-131) rides the same gate and
     // sits directly below the embedded one, above the add-provider action.
     const serviceBlock = container.querySelector('[data-testid="service-models-settings"]')
     expect(serviceBlock).not.toBeNull()
@@ -1055,7 +1055,7 @@ describe('LLMSettings — the backend-owned embedded provider is not user-editab
   })
 })
 
-// The service-models override block (ADR-130) rides the SAME experimental
+// The service-models override block (ADR-131) rides the SAME experimental
 // gate as the embedded surfaces: while the switch is off the backend adapter
 // drops llm.service_models from every BuilderConfig, so the block must not
 // mount — it would advertise pins that resolve nothing. Gate on, the block

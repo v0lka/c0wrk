@@ -688,7 +688,7 @@ func TestUpdateLLMConfig_PreservesServiceModels(t *testing.T) {
 }
 
 // TestUpdateLLMConfig_ReplacesServiceModels pins the UI-draft contract for
-// llm.service_models (ADR-130): a non-nil request field REPLACES the whole
+// llm.service_models (ADR-131): a non-nil request field REPLACES the whole
 // section ({} clears it — the empty map survives serialization because the
 // request field carries no omitempty), entries are cleaned with the load
 // pipeline's format rule (invalid drop fail-soft, valid persist), and a nil

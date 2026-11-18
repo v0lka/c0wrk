@@ -96,7 +96,7 @@ func activeModelProfile(persist config.ModelProfilesPersistConfig, catalog []con
 // readiness gates' ServiceModelPin advisory resolves nothing either. The
 // section itself stays persisted untouched, so flipping the switch back
 // restores the pins on the next config rebuild (UpdateLLMConfig and the
-// experimental toggle both rebuild the session router). See ADR-130.
+// experimental toggle both rebuild the session router). See ADR-131.
 func serviceModelsWithExperimentalGate(cfg *config.Config) map[string]string {
 	if !cfg.Experimental.Enabled {
 		return nil
@@ -223,7 +223,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			// Clone: the loaded config map must stay untouched by the
 			// builder side, and re-adapter calls (config saves) must not
 			// alias stale entries into a fresh BuilderConfig. The section
-			// is EXPERIMENTAL (ADR-130): serviceModelsWithExperimentalGate
+			// is EXPERIMENTAL (ADR-131): serviceModelsWithExperimentalGate
 			// maps it to nil while experimental.enabled is off.
 			ServiceModels: maps.Clone(serviceModelsWithExperimentalGate(cfg)),
 			Retry: core.BuilderRetryConfig{

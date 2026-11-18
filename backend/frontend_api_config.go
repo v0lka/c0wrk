@@ -136,7 +136,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 		DefaultModel: f.config.LLM.DefaultModel,
 		// The persisted llm.service_models section, verbatim (cloned): the
 		// LLM tab's draft loads it so a UI save round-trips hand-edited
-		// pins instead of silently dropping them (ADR-130). Cloned so a
+		// pins instead of silently dropping them (ADR-131). Cloned so a
 		// concurrent builder read can never alias the live map.
 		ServiceModels: maps.Clone(f.config.LLM.ServiceModels),
 		// The clamping bound for the Settings form's auto-retry interval input,
@@ -380,7 +380,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
-	// llm.service_models (ADR-130): the nil-map sentinel mirrors the load
+	// llm.service_models (ADR-131): the nil-map sentinel mirrors the load
 	// contract — a field ABSENT from the payload (nil; older drafts and any
 	// caller that predates the UI editor) preserves the persisted pins,
 	// while a non-nil map REPLACES the section wholesale ({} clears it).

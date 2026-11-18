@@ -97,7 +97,7 @@ type ConfigLLMResponse struct {
 	AllModels           []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 	ModelsReady         bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
 	// ServiceModels mirrors the persisted llm.service_models section
-	// (composite "provider/model" pins per one-shot call, ADR-130) so the
+	// (composite "provider/model" pins per one-shot call, ADR-131) so the
 	// LLM tab's draft round-trips hand-edited entries through a UI save.
 	// Exposed regardless of the experimental gate: it is persisted data;
 	// the UI hides its editor while the gate is off.
@@ -187,7 +187,7 @@ type LLMFullConfigRequest struct {
 	AnthropicCompatible map[string]ProviderConfigRequest `json:"anthropic_compatible,omitempty"`
 	ChatGPT             *ProviderConfigRequest           `json:"chatgpt,omitempty"`
 	Kimi                *ProviderConfigRequest           `json:"kimi,omitempty"`
-	// ServiceModels carries the llm.service_models section (ADR-130). The
+	// ServiceModels carries the llm.service_models section (ADR-131). The
 	// nil-map pointer sentinel mirrors the load contract: a field ABSENT
 	// from the payload (nil) preserves the persisted pins; a non-nil map
 	// REPLACES the section wholesale ({} clears it). No omitempty: an
@@ -254,7 +254,8 @@ type ChatGPTAuthStatusResponse struct {
 }
 
 // ChatGPTModelPresetResponse is the curated ChatGPT (Codex) preset — the
-// models c0wrk's registry knows, most capable first (ADR-074).
+// models c0wrk's registry knows, in subscription-catalog priority order
+// (the order the live FetchChatGPTModels ranking renders; ADR-074).
 type ChatGPTModelPresetResponse struct {
 	Models []ChatGPTModelPresetEntry `json:"models"`
 }
