@@ -511,7 +511,8 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 }
 
 // installServiceLLMGate routes the session manager's one-shot service LLM
-// requests (session title generation) through the embedded readiness gate.
+// requests (session title generation, follow-up prompt suggestions — each
+// threading its own service-model kind) through the embedded readiness gate.
 // Installed unconditionally — the gate costs one config read for providers
 // that are always listening; it is a method because the manager is built
 // inside NewApplication before any FrontendAPI exists, and an unobservable

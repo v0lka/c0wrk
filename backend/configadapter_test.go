@@ -587,6 +587,29 @@ func TestToBuilderConfig_ServiceModelsExperimentalGate(t *testing.T) {
 	}
 }
 
+// TestServiceModelKeysInLockstep pins core's local spelling of the three
+// service-model keys it wires (judge, router, reflector) against
+// backend/config's canonical set: core cannot import config, so its constants
+// are mirrors, and a typo on either side would silently drop the pin at
+// resolution (core.ServiceModelOverrides.Lookup answers ok=false, the call
+// falls back to the session model). ADR-131.
+func TestServiceModelKeysInLockstep(t *testing.T) {
+	for _, pair := range []struct {
+		name string
+		core string
+		cfg  string
+	}{
+		{"judge", core.ServiceModelKeyJudge, config.ServiceModelJudge},
+		{"router", core.ServiceModelKeyRouter, config.ServiceModelRouter},
+		{"reflector", core.ServiceModelKeyReflector, config.ServiceModelReflector},
+	} {
+		if pair.core != pair.cfg {
+			t.Errorf("service-model key %s drifted: core %q != config %q — a pin under this key would silently fall back to the session model",
+				pair.name, pair.core, pair.cfg)
+		}
+	}
+}
+
 // TestToBuilderConfig_E2SObservationBudget pins that the token-proportional
 // observation-budget knobs reach the core layer: e2s.observation_budget_tokens
 // and e2s.observation_fill_fraction pass through to BuilderE2SConfig (from

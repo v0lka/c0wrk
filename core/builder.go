@@ -2444,11 +2444,14 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	providerName := cfg.LLM.DefaultProviderName()
 	loggedCaller := agent.NewLoggingLLMCaller(caller, providerName, logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
-	coreRouter := newCoreRouter(overrideWrap(loggedCaller, serviceModels, serviceModelKeyRouter), cfg.Router.HistoryWindow)
-	coreReflector := newCoreReflector(overrideWrap(loggedCaller, serviceModels, serviceModelKeyReflector))
+	coreRouter := newCoreRouter(overrideWrap(loggedCaller, serviceModels, ServiceModelKeyRouter), cfg.Router.HistoryWindow)
+	coreReflector := newCoreReflector(overrideWrap(loggedCaller, serviceModels, ServiceModelKeyReflector))
 
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)
+	// For a pinned router/reflector the session effort above is inert on the
+	// wire: the consumer's pinnedModelCaller wrap re-stamps the pin's own
+	// tier-Off spelling onto every request (overrideWrap, ADR-131).
 
 	return coreRouter, coreReflector, nil
 }
@@ -2570,7 +2573,7 @@ func (b *OrchestratorBuilder) newJudgeForRouter(cfg *BuilderConfig, llmRouter *l
 	debugEnabled := b.logger != nil && b.logger.Enabled(context.Background(), slog.LevelDebug)
 
 	var caller llm.Caller = newJudgeDumpCaller(llmRouter, b.logger, debugEnabled)
-	if override, ok := overrides.Lookup(serviceModelJudgeKey); ok {
+	if override, ok := overrides.Lookup(ServiceModelKeyJudge); ok {
 		caller = newPinnedModelCaller(caller, override.Provider, override.Model)
 	}
 

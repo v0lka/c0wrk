@@ -3037,7 +3037,7 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 		// the only observable effect is a late (or skipped) auto-name. See
 		// specs/domains/embedded-llm.md.
 		if serviceLLMGate != nil {
-			if err := serviceLLMGate(m.shutdownCtx); err != nil {
+			if err := serviceLLMGate(m.shutdownCtx, string(core.ServiceKindTitle)); err != nil {
 				m.log().Warn("skipping session title generation: the model is not ready",
 					"session", id, "error", err)
 				return

@@ -1873,14 +1873,13 @@ func (f *FrontendAPI) serviceEmbeddedGateInteractive(ctx context.Context, kinds 
 }
 
 // serviceEmbeddedGateBackground is serviceEmbeddedGate for the session
-// manager's one-shot background services — title generation AND follow-up
-// prompt suggestions ride this one gate (Manager.SetServiceLLMGate): a long
-// invisible wait; the caller skips the request when the gate fails. Its kind
-// set is therefore the UNION of both callers' keys — warm iff at least one of
-// them still resolves to the embedded provider.
-func (f *FrontendAPI) serviceEmbeddedGateBackground(ctx context.Context) error {
-	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitBackground,
-		config.ServiceModelTitle, config.ServiceModelPromptSuggest)
+// manager's one-shot background services (Manager.SetServiceLLMGate): a long
+// invisible wait; the caller skips the request when the gate fails. Each
+// caller threads its own llm.service_models key through the gate, so the
+// advisory keys on THE imminent request's effective target — no shared union
+// to remember extending when a third background service appears.
+func (f *FrontendAPI) serviceEmbeddedGateBackground(ctx context.Context, kind string) error {
+	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitBackground, kind)
 }
 
 // activeModelIsEmbedded reports whether the DEFAULT model resolves to the

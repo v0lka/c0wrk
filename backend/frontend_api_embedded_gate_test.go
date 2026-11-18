@@ -547,7 +547,7 @@ func TestServiceEmbeddedGateAdvisesTheEffectiveTarget(t *testing.T) {
 		}
 	})
 
-	t.Run("the background gate covers its two callers' union", func(t *testing.T) {
+	t.Run("the background gate follows each caller's kind", func(t *testing.T) {
 		f, _, mock := newEmbeddedTestAPI(t)
 		installEmbeddedAsDefault(t, f)
 		forbidEmbeddedSideEffects(t, f)
@@ -558,8 +558,10 @@ func TestServiceEmbeddedGateAdvisesTheEffectiveTarget(t *testing.T) {
 		}
 		mock.mu.Unlock()
 
-		if err := f.serviceEmbeddedGateBackground(t.Context()); err != nil {
-			t.Fatalf("both background services pinned away: the gate must be inert: %v", err)
+		for _, kind := range []string{config.ServiceModelTitle, config.ServiceModelPromptSuggest} {
+			if err := f.serviceEmbeddedGateBackground(t.Context(), kind); err != nil {
+				t.Fatalf("background kind %q pinned away: the gate must be inert: %v", kind, err)
+			}
 		}
 	})
 }

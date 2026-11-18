@@ -199,9 +199,11 @@ type Manager struct {
 	promoteRename func(oldpath, newpath string) error
 	// serviceLLMGate gates a one-shot service LLM request BEFORE its timeout
 	// context is armed — a cold embedded-model load must never be charged to
-	// serviceLLMTimeout (specs/domains/embedded-llm.md; ADR-066 D13). A gate
+	// serviceLLMTimeout (specs/domains/embedded-llm.md; ADR-066 D13). The kind
+	// argument is the caller's llm.service_models key (a core.ServiceKind), so
+	// the gate advises on THE imminent request's effective target. A gate
 	// failure skips the request; nil is the posture for always-on providers.
-	serviceLLMGate  func(context.Context) error
+	serviceLLMGate  func(ctx context.Context, kind string) error
 	projectResolver ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
 	// workspaceEnsurer recreates a restored managed worktree before the
 	// orchestrator is built on it (ADR-080); managed restores fail closed
@@ -627,7 +629,8 @@ func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 
 // SetServiceLLMGate installs the pre-dispatch readiness gate for one-shot
 // service LLM requests (see serviceLLMGate); a failure skips the request.
-func (m *Manager) SetServiceLLMGate(fn func(context.Context) error) {
+// kind is the caller's llm.service_models key (core.ServiceKind).
+func (m *Manager) SetServiceLLMGate(fn func(ctx context.Context, kind string) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.serviceLLMGate = fn

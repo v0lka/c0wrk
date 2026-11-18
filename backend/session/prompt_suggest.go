@@ -139,14 +139,14 @@ func (m *Manager) runPromptSuggestionPasses(
 	sessionID, projectID, taskID, output string,
 	gen *PromptSuggestGenerator,
 	store SessionStore,
-	serviceLLMGate func(context.Context) error,
+	serviceLLMGate func(ctx context.Context, kind string) error,
 	serviceLLMTimeout time.Duration,
 ) {
 	// The gate sits outside the serviceLLMTimeout envelope: the embedded
 	// model's cold load exceeds the service timeout, so arming it first
 	// would spend the budget on the load.
 	if serviceLLMGate != nil {
-		if err := serviceLLMGate(m.shutdownCtx); err != nil {
+		if err := serviceLLMGate(m.shutdownCtx, string(core.ServiceKindPromptSuggest)); err != nil {
 			m.log().Debug("skipping prompt suggestions: the model is not ready",
 				"session", sessionID, "error", err)
 			return
