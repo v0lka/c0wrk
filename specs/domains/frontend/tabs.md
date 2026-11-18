@@ -12,7 +12,9 @@ The workspace tab layer is the outermost context layer of the app shell: each ta
 - `frontend/src/hooks/useTabController.ts` — the React seam: one engine instance per mount, `attachWriteBack` mounted in an effect, exposes `{activate, createAndActivate, writeBack}`.
 - `frontend/src/hooks/useTabHotkeys.ts` — the system-standard tab-cycling shortcuts (host-platform pairs), routed through the app's single TabController; the pure matchers (`tabSwitchDelta`, `selectNeighborTabId`) are exported for tests.
 - `frontend/src/components/layout/AppLayout.tsx` — THE single controller mount for the app plus the `{tabsEnabled && <TabBar/>}` render gate.
-- `frontend/src/components/layout/TabBar.tsx` — the presentational tab strip; every interaction routes through the `TabController` prop; labels and task-status dots derive LIVE from the project/session/chat stores by id, so renames and lifecycle events repaint without a stale copy on the tab.
+- `frontend/src/components/layout/TabBar.tsx` — the presentational tab strip; every interaction routes through the `TabController` prop; labels and task-status dots derive LIVE from the project/session/chat stores by id, so renames and lifecycle events repaint without a stale copy on the tab; the strip's overflow affordances (the scroll-chevron pair, the «+» pinning and the hidden-scrollbar scroller) come from `useTabStripOverflow` (see the Strip overflow layout subsection under Behavior).
+- `frontend/src/lib/tabStripScroll.ts` — the PURE strip scroll geometry, no DOM/store/React dependency — callers measure the strip element and pass numbers in: `isOverflowing` / `canScrollLeft` / `canScrollRight` over a `StripMetrics {scrollLeft, clientWidth, scrollWidth}`, and the one-tab scroll targets `nextTabLeft` / `prevTabLeft` over `TabSpan {start, end}` extents, with `clampScrollLeft` and a 1 px `EDGE_EPSILON` that absorbs fractional px widths.
+- `frontend/src/hooks/useTabStripOverflow.ts` — the React seam that measures the strip and exposes `{scrollerRef, overflowing, canScrollLeft, canScrollRight, scrollNext, scrollPrev, revealTab}`; re-measured on mount, tab-list/active-tab changes, passive `scroll`, and `ResizeObserver` over BOTH the scroller and the tablist (skipped where the constructor is unavailable); identical measurements keep the previous state object.
 - `frontend/src/lib/tabLabel.ts` — `buildTabLabel`, the pure label algebra behind the strip: `Project: Session`, `Project`, `CHAT: Session`, `New Tab` (absent segments are dropped, never rendered as empty text).
 - `frontend/src/components/layout/SidebarHeader.tsx` — keeps its Settings gear in BOTH flag states: the gear is unconditional (it opens Settings on the default tab, as it always has); the ADR-085 gear handoff was dropped by [ADR-093](../../decisions/093-sidebar-gear-unconditional.md).
 - `frontend/src/components/settings/TabsSettings.tsx` — the Appearance-tab master switch over `uiStore.tabsEnabled`.
@@ -117,6 +119,30 @@ The macOS pair is matched on the physical key (`code` `BracketRight`/`BracketLef
 
 The rendered strip is itself a keyboard surface: the rows are `role="tab"` inside a `role="tablist"`, only the ACTIVE row is tabbable (roving `tabindex`, each row carries `data-tab-id`), and `←`/`→` move DOM FOCUS to the neighbor row with wrap-around over the current order; `Home`/`End` jump to the first/last row. Activation stays MANUAL — focus-only arrows never switch tabs; `Enter`/`Space` on the focused row routes through the same single-engine controller as clicks (the row is a `div`, so the keys are handled explicitly and preventDefaulted, which also stops Space's page scroll). Row keys apply only while the row ITSELF has focus: the nested close button is a real button and keeps its native semantics. The whole surface exists only with the flag on — off renders no bar at all.
 
+### Strip overflow layout (chevron pair, «+» pinning, hidden scrollbar)
+
+When the tabs outgrow the bar's width, the strip switches between two mutually exclusive layouts built from the same children:
+
+| Strip state | Bar layout |
+| ----------- | ---------- |
+| Fits (`overflowing` false) | `[ tabs … «+» ]` — the «+» renders in-flow INSIDE the scroller, immediately right of the tablist; no chevrons exist |
+| Overflows (`overflowing` true) | `[<] tabs [>] [+]` — both chevrons and the «+» sit OUTSIDE the scroller as the bar's rightmost children; the scroller's sole child is the tablist |
+
+One shared `addButton` element renders in exactly one of the two branches, so the bar carries exactly one `button[aria-label="New tab"]` in either state, and it sits outside the ARIA tablist both times — in both layouts the `role="tablist"` keeps only `role="tab"` rows as direct children (chevrons and «+» are siblings of the scroller, never tablist chrome).
+
+Scroll semantics — the geometry is pure in `lib/tabStripScroll`, the DOM wiring in `useTabStripOverflow`:
+
+- **One tab per click.** A chevron click scrolls by exactly one tab, never a fixed distance: `nextTabLeft` picks the smallest tab right edge (`TabSpan.end`) lying beyond the viewport's right edge and aligns it with that edge via `scrollTo({left, behavior: 'instant'})`; `prevTabLeft` mirrors this at the left edge (the largest `start` before `scrollLeft`, aligned with the left edge). Targets clamp into `[0, scrollWidth − clientWidth]`; when no tab is clipped at that edge the current position is returned unchanged, so the click is a no-op.
+- **Edge flags.** `canScrollLeft` / `canScrollRight` are re-read on every measurement and gate each chevron's `disabled` state; the 1 px `EDGE_EPSILON` absorbs fractional px widths, so a fully-scrolled strip never leaves a chevron enabled for a fractional remainder and a 1 px sliver of hidden content does not light one up.
+- **Auto-reveal of the active tab.** An effect keyed on `[revealTab, activeTabId]` calls `revealTab(activeTabId)` on every active-tab change — a `scrollIntoView({block: 'nearest', inline: 'nearest'})` on the row carrying the matching `data-tab-id` — so hotkey and notification-click activations reveal the newly active tab even when it sits past a clipped edge. An absent id, or an environment without `scrollIntoView` (jsdom, some embedded webviews), is a silent no-op.
+- **Measurement cadence.** The strip is re-measured on mount, when the tab list or the active tab id changes (tab widths react to labels, status dots and active styling), on `scroll` (a passive listener — scrolling only moves the two edge flags), and on resizes of BOTH the scroller and the tablist via one `ResizeObserver` (skipped where the constructor is unavailable). Identical measurements keep the previous state object, so resize churn costs no re-renders.
+
+Deliberate presentation decisions:
+
+- **Hidden scrollbar.** The scroller carries the `no-scrollbar` utility (`index.css` hides the gutter on WebKit, Firefox and IE/Edge), so the bar keeps its fixed height instead of growing a scrollbar track. Scrolling itself is preserved — the class hides only the gutter; wheel, trackpad and shift+wheel gestures keep scrolling the strip.
+- **Vertical wheel is NOT remapped to horizontal.** There is no wheel handler on the scroller: a vertical wheel event is never converted into horizontal scrolling, DELIBERATELY. Horizontal movement stays on the browser's native channel (trackpad horizontal gesture, shift+wheel); synthesizing a wheel-to-scroll conversion would hijack the vertical axis users expect to scroll the page and double-handle trackpads that already scroll horizontally.
+- **Chevron hints ride the Radix tooltip channel.** Each chevron renders its hint through `Tooltip`/`TooltipTrigger asChild` with `aria-label` kept for tests and assistive tech, and carries NO native `title`: the hint must survive the button's disabled state, where a native title does not render ([button-tooltips.md](button-tooltips.md) R4). The «+» has no trigger ancestor and keeps its native `title` — the two channels are mutually exclusive and never combine on one button.
+
 ### Edge handling
 
 | Situation | Behavior |
@@ -156,11 +182,18 @@ The rendered strip is itself a keyboard surface: the rows are `role="tab"` insid
 - Exactly one engine with write-back subscriptions exists per app (the `AppLayout` controller mount); every other engine instance runs bare, without `attachWriteBack`.
 - The file viewer's open tabs stay per-project: viewer tabs and the active file ride the project-switch persistence, outside every workspace tab's snapshot; only the viewer panel's geometry (pinned/collapsed/width) is a snapshot slice.
 - With the flag off, the shell layout stays byte-identical to the pre-tab UI: no bar, no wrapper artifacts, and the single tab remains the invisible live mirror.
+- The bar carries exactly one `button[aria-label="New tab"]` in both strip states: in-flow as the scroller's last child while the strip fits, pinned outside the scroller right of the right chevron while it overflows.
+- The `role="tablist"` contains only `role="tab"` rows as direct children in both strip states; the chevron pair and the «+» stay outside it.
+- The strip's scroller hides the native scrollbar (`no-scrollbar`) while scrolling stays native: no handler converts a vertical wheel event into horizontal scrolling, so horizontal movement comes only from the browser's native gestures (trackpad, shift+wheel).
+- Each chevron is enabled exactly while hidden content remains on its side (beyond the 1 px epsilon), and each enabled click fully reveals the tab clipped at that edge — the right chevron aligns the tab's right edge with the viewport's right edge, the left chevron its left edge with the viewport's left edge.
+- Every active-tab change reveals the newly active tab in the strip (`scrollIntoView` nearest on the row carrying its `data-tab-id`), so the active tab never stays hidden past a clipped edge.
+- The chevron hints render through the Radix tooltip trigger channel, keep their `aria-label`s, surface while the buttons are disabled, and carry no native `title`.
 
 ## Related Specs
 
 - [stores.md](stores.md) — `tabStore` in the store catalog; `uiStore` owns the persisted flag (v8) and the per-project maps the snapshot slices capture
 - [system-notifications.md](system-notifications.md) — the flag-on banner-click branch of `useNotificationClicks`
 - [README.md](README.md) — the app shell the tab bar sits above and the project-switch flow the engine drives
+- [button-tooltips.md](button-tooltips.md) — the chevron hints' channel rule (R4: a Radix trigger carries no native `title`, and the hint works while the button is disabled)
 - [ADR-085](../../decisions/085-workspace-tabs-single-engine.md) — the single-engine / disabled-mode-is-one-tab / snapshot-slices decision
 - [ADR-093](../../decisions/093-sidebar-gear-unconditional.md) — the sidebar Settings gear is unconditional; the flag's gate narrowed to tab-bar rendering + hotkey gating + banner-click routing
