@@ -113,8 +113,12 @@ var chatGPTModelPreset = []string{
 }
 
 const (
-	chatGPTModelsPath           = "/models"
-	chatGPTCatalogClientVersion = "0.159.3"
+	chatGPTModelsPath = "/models"
+	// The current stable Codex CLI release. The ChatGPT backend gates the
+	// model catalog PER ENTRY by minimal_client_version and answers a stale
+	// client with a 200 and an empty (or clipped) catalog, so this pin must
+	// track Codex CLI releases or newly shipped models stay invisible.
+	chatGPTCatalogClientVersion = "0.170.0"
 )
 
 type chatGPTModelsCatalog struct {
