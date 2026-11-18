@@ -141,7 +141,7 @@ Deliberate presentation decisions:
 
 - **Hidden scrollbar.** The scroller carries the `no-scrollbar` utility (`index.css` hides the gutter on WebKit, Firefox and IE/Edge), so the bar keeps its fixed height instead of growing a scrollbar track. Scrolling itself is preserved — the class hides only the gutter; wheel, trackpad and shift+wheel gestures keep scrolling the strip.
 - **Vertical wheel is NOT remapped to horizontal.** There is no wheel handler on the scroller: a vertical wheel event is never converted into horizontal scrolling, DELIBERATELY. Horizontal movement stays on the browser's native channel (trackpad horizontal gesture, shift+wheel); synthesizing a wheel-to-scroll conversion would hijack the vertical axis users expect to scroll the page and double-handle trackpads that already scroll horizontally.
-- **Chevron hints ride the Radix tooltip channel.** Each chevron renders its hint through `Tooltip`/`TooltipTrigger asChild` with `aria-label` kept for tests and assistive tech, and carries NO native `title`: the hint must survive the button's disabled state, where a native title does not render ([button-tooltips.md](button-tooltips.md) R4). The «+» has no trigger ancestor and keeps its native `title` — the two channels are mutually exclusive and never combine on one button.
+- **Chevron hints are native titles.** Each chevron carries its `aria-label` (tests and assistive tech) plus a plain native `title` naming the action — the same channel as the «+» (an icon-only button outside any `TooltipTrigger` hover-explains itself through `title`). No chevron sits under a trigger, so the two tooltip channels never combine on one button ([button-tooltips.md](button-tooltips.md) R4); a chevron disabled at its scroll extreme carries no hint at all — there is nothing left to scroll toward.
 
 ### Edge handling
 
@@ -187,13 +187,13 @@ Deliberate presentation decisions:
 - The strip's scroller hides the native scrollbar (`no-scrollbar`) while scrolling stays native: no handler converts a vertical wheel event into horizontal scrolling, so horizontal movement comes only from the browser's native gestures (trackpad, shift+wheel).
 - Each chevron is enabled exactly while hidden content remains on its side (beyond the 1 px epsilon), and each enabled click fully reveals the tab clipped at that edge — the right chevron aligns the tab's right edge with the viewport's right edge, the left chevron its left edge with the viewport's left edge.
 - Every active-tab change reveals the newly active tab in the strip (`scrollIntoView` nearest on the row carrying its `data-tab-id`), so the active tab never stays hidden past a clipped edge.
-- The chevron hints render through the Radix tooltip trigger channel, keep their `aria-label`s, surface while the buttons are disabled, and carry no native `title`.
+- The chevron hints ride the native `title` channel (mirroring the «+»), keep their `aria-label`s, and never sit under a Radix tooltip trigger; a chevron disabled at its scroll extreme carries no hint.
 
 ## Related Specs
 
 - [stores.md](stores.md) — `tabStore` in the store catalog; `uiStore` owns the persisted flag (v8) and the per-project maps the snapshot slices capture
 - [system-notifications.md](system-notifications.md) — the flag-on banner-click branch of `useNotificationClicks`
 - [README.md](README.md) — the app shell the tab bar sits above and the project-switch flow the engine drives
-- [button-tooltips.md](button-tooltips.md) — the chevron hints' channel rule (R4: a Radix trigger carries no native `title`, and the hint works while the button is disabled)
+- [button-tooltips.md](button-tooltips.md) — the strip buttons' tooltip-channel rule (R4: the channels never combine — chevrons and «+» all stay native-`title` buttons outside any trigger)
 - [ADR-085](../../decisions/085-workspace-tabs-single-engine.md) — the single-engine / disabled-mode-is-one-tab / snapshot-slices decision
 - [ADR-093](../../decisions/093-sidebar-gear-unconditional.md) — the sidebar Settings gear is unconditional; the flag's gate narrowed to tab-bar rendering + hotkey gating + banner-click routing

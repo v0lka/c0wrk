@@ -1,7 +1,6 @@
 import { useCallback, useEffect } from 'react'
 import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useTabStore, useTabs, useActiveTabId, type Tab } from '@/stores/tabStore'
@@ -201,29 +200,28 @@ interface ScrollChevronProps {
 }
 
 /**
- * One overflow chevron. Radix tooltip, not a native title: the hint must
- * survive the button's disabled state, where a native title does not render
- * (specs/domains/frontend/button-tooltips.md R4).
+ * One overflow chevron. Native `title`, not a Radix tooltip: the hints stay
+ * on the plain native channel like the «+» button (an icon-only button
+ * outside any TooltipTrigger names its action through `title`), and the
+ * disabled extreme carries no hint at all — there is nothing left to
+ * scroll toward. No trigger ancestor exists, so the R4 channel rule
+ * (specs/domains/frontend/button-tooltips.md) is respected.
  */
 function ScrollChevron({ direction, enabled, onScroll }: ScrollChevronProps) {
   const label = direction === 'left' ? 'Scroll tabs left' : 'Scroll tabs right'
   const Icon = direction === 'left' ? ChevronLeft : ChevronRight
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="shrink-0"
-          onClick={onScroll}
-          disabled={!enabled}
-          aria-label={label}
-        >
-          <Icon className="size-4" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="shrink-0"
+      onClick={onScroll}
+      disabled={!enabled}
+      aria-label={label}
+      title={label}
+    >
+      <Icon className="size-4" />
+    </Button>
   )
 }
 
