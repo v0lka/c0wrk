@@ -29,7 +29,7 @@ const fourTabs: TabSpan[] = [
 describe('tabStripScroll — overflow state', () => {
   it('reports no scrolling possible without overflow', () => {
     const m = metrics(0, 200, 200)
-    expect(isOverflowing(m)).toBe(false)
+    expect(isOverflowing(m.scrollWidth, m.clientWidth)).toBe(false)
     expect(canScrollLeft(m)).toBe(false)
     expect(canScrollRight(m)).toBe(false)
   })
@@ -41,7 +41,7 @@ describe('tabStripScroll — overflow state', () => {
       { start: 100, end: 200 },
       { start: 200, end: 300 },
     ]
-    expect(isOverflowing(m)).toBe(false)
+    expect(isOverflowing(m.scrollWidth, m.clientWidth)).toBe(false)
     expect(canScrollLeft(m)).toBe(false)
     expect(canScrollRight(m)).toBe(false)
     expect(nextTabLeft(m, spans)).toBe(0)
@@ -49,8 +49,8 @@ describe('tabStripScroll — overflow state', () => {
   })
 
   it('ignores sub-epsilon overflow', () => {
-    expect(isOverflowing(metrics(0, 300, 300 + EDGE_EPSILON))).toBe(false)
-    expect(isOverflowing(metrics(0, 300, 300 + EDGE_EPSILON + 1))).toBe(true)
+    expect(isOverflowing(300 + EDGE_EPSILON, 300)).toBe(false)
+    expect(isOverflowing(300 + EDGE_EPSILON + 1, 300)).toBe(true)
   })
 
   it('pins the epsilon contract at 1px', () => {
