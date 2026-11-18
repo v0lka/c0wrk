@@ -27,7 +27,6 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { listAllSessions } from '@/api/sessions'
 import { getPendingActions, type PendingActionsResponse } from '@/api/chat'
-import { TooltipProvider, TOOLTIP_DELAY_MS } from '@/components/ui/tooltip'
 import type { ProjectInfo, SessionInfo } from '@/types/models'
 
 // --- Fixtures ---------------------------------------------------------------
@@ -378,18 +377,8 @@ function pendingToolConfirm(): PendingActionsResponse {
 }
 
 describe('ActiveSessionsIndicator dropdown', () => {
-  afterEach(() => {
-    // Global stubs are installed/cleared at file level; the fake timers used
-    // by the tooltip test are always returned to real here.
-    vi.useRealTimers()
-  })
-
   function renderIndicator(): HTMLElement {
-    return render(
-      <TooltipProvider>
-        <ActiveSessionsIndicator />
-      </TooltipProvider>,
-    )
+    return render(<ActiveSessionsIndicator />)
   }
 
   /** Radix's trigger toggles on `pointerdown` (left button), not click. */
@@ -403,7 +392,7 @@ describe('ActiveSessionsIndicator dropdown', () => {
   const menuItems = (): HTMLElement[] => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
 
   const rowName = (item: HTMLElement): string =>
-    item.querySelector<HTMLElement>('[data-slot="tooltip-trigger"]')?.textContent ?? ''
+    item.querySelector<HTMLElement>('span.truncate')?.textContent ?? ''
 
   it('opens on pointerdown, refreshes the snapshot and lists only live sessions', async () => {
     useProjectStore.setState({ projects: makeProjects(), activeProjectId: 'p1' })
@@ -521,8 +510,8 @@ describe('ActiveSessionsIndicator dropdown', () => {
     const container = renderIndicator()
     await openMenu(container)
     const items = menuItems()
-    const currentName = items[0]!.querySelector<HTMLElement>('[data-slot="tooltip-trigger"]')!
-    const otherName = items[1]!.querySelector<HTMLElement>('[data-slot="tooltip-trigger"]')!
+    const currentName = items[0]!.querySelector<HTMLElement>('span.truncate')!
+    const otherName = items[1]!.querySelector<HTMLElement>('span.truncate')!
     expect(currentName.className).toContain('font-medium')
     expect(otherName.className).not.toContain('font-medium')
     // Navigation-only surface: no check mark, no rename/pin/fork/archive/delete.
@@ -530,8 +519,7 @@ describe('ActiveSessionsIndicator dropdown', () => {
     expect(items[0]!.querySelectorAll('button')).toHaveLength(0)
   })
 
-  it('truncates the title and reveals the full name in a tooltip when it overflows', async () => {
-    vi.useFakeTimers()
+  it('truncates the title and reveals the full name via the native title when it overflows', async () => {
     // jsdom has no layout — force every element to report overflow so
     // EllipsisHint's mount measurement flips its overflow gate on.
     const scrollDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!
@@ -546,17 +534,11 @@ describe('ActiveSessionsIndicator dropdown', () => {
       const container = renderIndicator()
       await openMenu(container)
 
-      const span = document.body.querySelector<HTMLElement>('[data-slot="tooltip-trigger"]')
+      const span = document.body.querySelector<HTMLElement>('span.truncate')
       expect(span).not.toBeNull()
       expect(span!.className).toContain('truncate')
-
-      await act(async () => {
-        span!.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }))
-        span!.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
-        vi.advanceTimersByTime(TOOLTIP_DELAY_MS + 50)
-      })
-      // Radix portals the tooltip to document.body with the full name.
-      expect(document.body.textContent).toContain(longName)
+      // The native title on the truncated span carries the full name.
+      expect(span!.getAttribute('title')).toBe(longName)
     } finally {
       Object.defineProperty(Element.prototype, 'scrollWidth', scrollDesc)
       Object.defineProperty(Element.prototype, 'clientWidth', clientDesc)

@@ -6,7 +6,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { ReviewHunk } from '@/api/review'
 import { summarizeHunk, hunkLineRangeLabel } from './diffParsing'
@@ -40,7 +39,7 @@ interface HunkComboBoxProps {
  * every file. Each row carries three pieces of info:
  *  - the changed file's relative path, **left-truncated** with an ellipsis
  *    (so the filename — the most distinctive part — stays visible) and a
- *    tooltip revealing the full path;
+ *    native `title` revealing the full path;
  *  - the hunk's changed-line range in the new file (`LX` / `LX-Y`);
  *  - colored added / removed line counts, pinned to the right edge.
  */
@@ -128,7 +127,7 @@ interface HunkRowProps {
 
 /**
  * A single hunk descriptor row, shared by the combobox trigger and each
- * dropdown item: left-truncated path (full path in tooltip) · `LX-Y` range ·
+ * dropdown item: left-truncated path (full path via native `title`) · `LX-Y` range ·
  * right-aligned colored +/- counts.
  */
 function HunkRow({ entry, summary, className }: HunkRowProps) {
@@ -146,24 +145,13 @@ function HunkRow({ entry, summary, className }: HunkRowProps) {
             leading directories. `direction: rtl` makes the overflow land on
             the left; `<bdi>` isolates the LTR path so neutral chars (/ . -)
             don't reorder under the rtl flow. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis text-foreground/90"
-              style={{ direction: 'rtl' }}
-            >
-              <bdi>{entry.filePath}</bdi>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent
-            align="start"
-            sideOffset={6}
-            collisionPadding={16}
-            className="max-w-md whitespace-normal break-words text-left"
-          >
-            {entry.filePath}
-          </TooltipContent>
-        </Tooltip>
+        <span
+          className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis text-foreground/90"
+          style={{ direction: 'rtl' }}
+          title={entry.filePath}
+        >
+          <bdi>{entry.filePath}</bdi>
+        </span>
 
         <code className="shrink-0 tabular-nums text-muted-foreground">
           {range}
