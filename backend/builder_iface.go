@@ -47,6 +47,12 @@ type appBuilder interface {
 	GetAgentDescriptors(projectAgentDir string) []agents.AgentDescriptor
 	ModelRegistry() *llm.ModelRegistry
 	JudgeAvailable() bool
+	// ServiceModelPin resolves the llm.service_models pin for one service key
+	// against the builder's cached router — the same resolution the service
+	// call itself performs (core resolveServiceModelOverrides, fail-soft to
+	// the default model). ok=false when no pin resolves: an unconfigured
+	// section, a dropped key, or a test double without a router.
+	ServiceModelPin(kind string) (core.ServiceModelOverride, bool)
 }
 
 // builder returns the appBuilder used by FrontendAPI: f.builderOverride in tests,

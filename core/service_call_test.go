@@ -38,7 +38,7 @@ func testServiceMetricsPerKindCounters(t *testing.T) {
 			{Message: llm.Message{Content: "Fix auth"}},
 		},
 	}
-	if _, err := generateTitleWithCaller(context.Background(), titleMock, metrics, "qwen3.8-max", logger, "fix auth", nil); err != nil {
+	if _, err := generateTitleWithCaller(context.Background(), titleMock, metrics, "qwen3.8-max", nil, logger, "fix auth", nil); err != nil {
 		t.Fatalf("title: unexpected error: %v", err)
 	}
 

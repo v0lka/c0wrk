@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // OptimizePrompt rewrites the user's prompt to be more specific and
@@ -23,9 +25,12 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 	// (ADR-066 D13): a cold load is never charged to the request's own
 	// timeout, so the worst case is serviceLLMTimeout + the gate's load wait
 	// (derived on the constant itself). No-op for other providers; the
-	// frontend keeps a spinner and no client-side timeout aborts it. See
+	// frontend keeps a spinner and no client-side timeout aborts it. The gate
+	// is advised by the RPC's two service keys: when both pins route their
+	// calls away from the local model, nothing is warmed or deferred. See
 	// specs/domains/embedded-llm.md.
-	if err := f.serviceEmbeddedGateInteractive(f.ctx()); err != nil {
+	if err := f.serviceEmbeddedGateInteractive(f.ctx(),
+		config.ServiceModelOptimizeExtract, config.ServiceModelOptimizeRewrite); err != nil {
 		return nil, err
 	}
 

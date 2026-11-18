@@ -301,9 +301,12 @@ type BlackboardFactory func(taskID string) orchestration.Blackboard
 // Orchestrator coordinates the agent's reasoning cycle: c0wrk-specific concerns
 // (routing, PersistentBlackboard, history) around the sp4rk Plan&Execute engine.
 type Orchestrator struct {
-	router           *router.Router
-	llm              agent.LLMCaller
-	modelSwitcher    *llm.Router // raw LLM router for per-message model override
+	router        *router.Router
+	llm           agent.LLMCaller
+	modelSwitcher *llm.Router // raw LLM router for per-message model override
+	// serviceModels is the immutable per-build resolution of llm.service_models
+	// against modelSwitcher (deps.ServiceModels); read via ServiceModels().
+	serviceModels    *ServiceModelOverrides
 	visionResolver   markitdown.VisionResolver
 	toolRegistry     *sdktools.ToolRegistry
 	toolExec         agent.ToolExecutor  // executor tool surface (per-session policy view)
@@ -635,6 +638,9 @@ type OrchestratorDeps struct {
 	AgentManager             *agents.AgentManager // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
 	CoreToolRegistry         *tools.ToolRegistry  // per-session registry for No-Project tool disabling
 	ModelSwitcher            *llm.Router          // raw LLM router for per-message model override
+	// ServiceModels is the per-build resolution of llm.service_models against
+	// ModelSwitcher (resolveServiceModelOverrides); nil when unconfigured.
+	ServiceModels *ServiceModelOverrides
 
 	// VisionResolver inspects the CURRENT active model and returns markitdown
 	// connection parameters when it is vision-capable; injected so document
@@ -712,6 +718,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		router:                     deps.Router,
 		llm:                        deps.LLM,
 		modelSwitcher:              deps.ModelSwitcher,
+		serviceModels:              deps.ServiceModels,
 		visionResolver:             deps.VisionResolver,
 		toolRegistry:               deps.ToolRegistry,
 		toolExec:                   deps.ToolExec,
@@ -2008,6 +2015,12 @@ func (o *Orchestrator) Emitter() Emitter {
 // nil when not wired; nil-check.
 func (o *Orchestrator) ToolRegistry() *tools.ToolRegistry {
 	return o.coreToolRegistry
+}
+
+// ServiceModels returns the per-build resolution of llm.service_models against
+// this session's router; nil (empty behavior) when the section is unconfigured.
+func (o *Orchestrator) ServiceModels() *ServiceModelOverrides {
+	return o.serviceModels
 }
 
 // LookupSkillDescriptors converts skill names to SkillDescriptors using the

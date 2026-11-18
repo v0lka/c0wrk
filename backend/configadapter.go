@@ -2,6 +2,7 @@ package backend
 
 import (
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
@@ -203,6 +204,10 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		LLM: core.BuilderLLMConfig{
 			DefaultModel:    cfg.LLM.DefaultModel,
 			ProviderConfigs: providerConfigs,
+			// Clone: the loaded config map must stay untouched by the
+			// builder side, and re-adapter calls (config saves) must not
+			// alias stale entries into a fresh BuilderConfig.
+			ServiceModels: maps.Clone(cfg.LLM.ServiceModels),
 			Retry: core.BuilderRetryConfig{
 				MaxRetries:     cfg.LLM.Retry.MaxRetries,
 				InitialBackoff: cfg.LLM.Retry.InitialBackoff,

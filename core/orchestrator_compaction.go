@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/llm"
 	sdkmemory "github.com/v0lka/sp4rk/memory"
-	"github.com/v0lka/sp4rk/oneshot"
 )
 
 // ErrNothingToCompact is returned by CompactConversationHistory for an empty
@@ -187,23 +185,10 @@ func (o *Orchestrator) manualCompactionDeps() sdkmemory.CompactionDeps {
 			if o.llm == nil {
 				return "", errors.New("compaction summarize: LLM caller not available")
 			}
-			req := llm.ChatRequest{
-				Messages: []llm.Message{
-					{Role: "system", Content: coreprompts.CompactionSummarize},
-					{Role: "user", Content: blockText},
-				},
-				// Oneshot service policy: minimal tier, resolved from the
-				// session's ACTIVE model — profile seeds don't reach service calls.
-				ReasoningEffort: serviceReasoningEffort(o.currentModel(), oneshotTierCompaction),
-				// Compaction summaries are deterministic calls: no vendor
-				// preset, temperature pinned to the family-safe floor.
-				CallPurpose: llm.CallPurposeCompaction,
-			}
-			summary, err := serviceCall(ctx, o.serviceMetrics, o.logger, ServiceKindCompactionSummary, o.currentModel(), o.llm, req, compactionSummarizeContent, oneshot.Options[string]{})
-			if err != nil {
-				return "", fmt.Errorf("compaction summarize: %w", err)
-			}
-			return summary, nil
+			// The compaction_summarize service-model pin rides the shared seam
+			// (applied before the request is built, so the reasoning tier
+			// resolves from the pin).
+			return compactionSummarizeWithCaller(ctx, o.serviceModels, o.llm, o.serviceMetrics, o.logger, o.currentModel(), blockText)
 		},
 	}
 }

@@ -52,7 +52,7 @@ func TestOneshotServices_ModelMatrix(t *testing.T) {
 				run  func(*mockLLMCaller) error
 			}{
 				{"title", model.off, func(c *mockLLMCaller) error {
-					_, err := generateTitleWithCaller(context.Background(), c, nil, model.model, b.log(), "fix a bug", nil)
+					_, err := generateTitleWithCaller(context.Background(), c, nil, model.model, nil, b.log(), "fix a bug", nil)
 					return err
 				}},
 				{"commit", model.off, func(c *mockLLMCaller) error {

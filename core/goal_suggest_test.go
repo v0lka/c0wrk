@@ -132,7 +132,7 @@ func TestSuggestGoalModeWithCaller(t *testing.T) {
 	routing := &router.RoutingDecision{Domain: router.DomainCode, Complexity: 4}
 
 	got, err := suggestGoalModeWithCaller(
-		context.Background(), caller, newServiceMetrics(), slog.New(slog.DiscardHandler), "test-model",
+		context.Background(), caller, newServiceMetrics(), slog.New(slog.DiscardHandler), "test-model", nil,
 		"fix the failing tests in package foo and make them pass",
 		routing,
 	)
@@ -174,7 +174,7 @@ func TestSuggestGoalModeWithCaller_RoutingNil(t *testing.T) {
 		resp: goalSuggestJSON(`{"suggest": false, "reason": ""}`),
 	}
 	if _, err := suggestGoalModeWithCaller(
-		context.Background(), caller, newServiceMetrics(), slog.New(slog.DiscardHandler), "m", "hello", nil,
+		context.Background(), caller, newServiceMetrics(), slog.New(slog.DiscardHandler), "m", nil, "hello", nil,
 	); err != nil {
 		t.Fatalf("suggestGoalModeWithCaller() error = %v", err)
 	}

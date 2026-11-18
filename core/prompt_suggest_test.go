@@ -408,7 +408,7 @@ func TestSuggestPromptsWithCaller_RequestShape(t *testing.T) {
 		Sessions: []PromptSuggestSession{promptSuggestSession("s", 2)},
 	}
 	got, err := suggestPromptsWithCaller(
-		context.Background(), caller, newServiceMetrics(), "test-model", slog.New(slog.DiscardHandler),
+		context.Background(), caller, newServiceMetrics(), "test-model", nil, slog.New(slog.DiscardHandler),
 		SuggestionKindNextTask, in,
 	)
 	if err != nil {
@@ -446,7 +446,7 @@ func TestSuggestPromptsWithCaller_RequestShape(t *testing.T) {
 func TestSuggestPromptsWithCaller_GoalAdvancePrompt(t *testing.T) {
 	caller := &promptSuggestStubCaller{resp: promptSuggestResp("Добавь тест на недетерминизм")}
 	if _, err := suggestPromptsWithCaller(
-		context.Background(), caller, nil, "m", slog.New(slog.DiscardHandler),
+		context.Background(), caller, nil, "m", nil, slog.New(slog.DiscardHandler),
 		SuggestionKindGoalAdvance, PromptSuggestInput{Sessions: []PromptSuggestSession{promptSuggestSession("s", 1)}},
 	); err != nil {
 		t.Fatalf("suggestPromptsWithCaller() error = %v", err)
@@ -464,7 +464,7 @@ func TestSuggestPromptsWithCaller_GoalAdvancePrompt(t *testing.T) {
 func TestSuggestPromptsWithCaller_FailSafeFallback(t *testing.T) {
 	caller := &promptSuggestStubCaller{resp: promptSuggestResp("```\n```\n```")}
 	got, err := suggestPromptsWithCaller(
-		context.Background(), caller, newServiceMetrics(), "m", slog.New(slog.DiscardHandler),
+		context.Background(), caller, newServiceMetrics(), "m", nil, slog.New(slog.DiscardHandler),
 		SuggestionKindNextTask, PromptSuggestInput{Sessions: []PromptSuggestSession{promptSuggestSession("s", 1)}},
 	)
 	if err != nil {
@@ -491,7 +491,7 @@ func TestSuggestPromptsWithCaller_PreconditionErrors(t *testing.T) {
 	t.Run("empty window", func(t *testing.T) {
 		caller := &promptSuggestStubCaller{resp: promptSuggestResp("ok")}
 		if _, err := suggestPromptsWithCaller(
-			context.Background(), caller, nil, "m", slog.New(slog.DiscardHandler),
+			context.Background(), caller, nil, "m", nil, slog.New(slog.DiscardHandler),
 			SuggestionKindNextTask, PromptSuggestInput{},
 		); !errors.Is(err, errPromptSuggestEmptyWindow) {
 			t.Fatalf("error = %v, want errPromptSuggestEmptyWindow", err)
@@ -503,7 +503,7 @@ func TestSuggestPromptsWithCaller_PreconditionErrors(t *testing.T) {
 	t.Run("unknown kind", func(t *testing.T) {
 		caller := &promptSuggestStubCaller{resp: promptSuggestResp("ok")}
 		if _, err := suggestPromptsWithCaller(
-			context.Background(), caller, nil, "m", slog.New(slog.DiscardHandler),
+			context.Background(), caller, nil, "m", nil, slog.New(slog.DiscardHandler),
 			SuggestionKind("bogus"), PromptSuggestInput{Sessions: []PromptSuggestSession{promptSuggestSession("s", 1)}},
 		); err == nil {
 			t.Fatal("unknown kind must fail")

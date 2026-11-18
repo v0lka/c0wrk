@@ -537,6 +537,19 @@ type LLMConfig struct {
 	// not mapped into ToBuilderConfig — the timer lives in the c0wrk session
 	// layer. See specs/decisions/128-auto-resend-network-errors.md.
 	NetworkAutoRetrySeconds *int `yaml:"network_auto_retry_seconds,omitempty"`
+	// ServiceModels re-routes the one-shot service LLM calls onto dedicated
+	// models, keyed by the fixed service key (judge, router, reflector,
+	// title, commit_message, optimize_extract, optimize_rewrite,
+	// compaction_summarize, goal_suggest, prompt_suggest) with full
+	// composite "provider/model" values (split on the FIRST "/" only). A
+	// missing/empty section means "no override" — every service call uses
+	// the session's default model as before. Load-time validation is
+	// format-only and fail-soft: an unknown key or a non-composite value is
+	// warned about and DROPPED in place (the next save rewrites the section
+	// without it). The provider/model pair itself is NOT checked here —
+	// that is the session-build runtime resolution, which fails soft to the
+	// session default when the provider or model is not configured.
+	ServiceModels map[string]string `yaml:"service_models,omitempty"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -2795,6 +2808,13 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// session_artifacts.go / ADR-116.
 	artifactWarnings := normalizeSessionArtifacts(&cfg)
 
+	// Validate the service-model overrides (fail-soft: an unknown service
+	// key or a non-composite value warned + DROPPED in place — the next
+	// save rewrites the section without it). Format-only: the provider/model
+	// pair resolves at session build with its own fail-soft fallback. See
+	// service_models.go.
+	serviceModelWarnings := normalizeServiceModels(&cfg)
+
 	// Warnings collected before validation, in a deterministic order.
 	warnings := autonomyWarnings
 	warnings = append(warnings, shellExecWarnings...)
@@ -2803,6 +2823,7 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	warnings = append(warnings, mcpModeWarnings...)
 	warnings = append(warnings, capWarnings...)
 	warnings = append(warnings, artifactWarnings...)
+	warnings = append(warnings, serviceModelWarnings...)
 
 	// Validate configuration
 	if err := validate(&cfg); err != nil {

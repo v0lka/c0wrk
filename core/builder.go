@@ -74,7 +74,14 @@ type OrchestratorBuilder struct {
 	logger        *slog.Logger
 	// serviceMetrics collects per-kind telemetry for the one-shot service calls; locks
 	// internally (never b.mu), shared into every orchestrator via OrchestratorDeps.
-	serviceMetrics   *ServiceMetrics
+	serviceMetrics *ServiceMetrics
+	// serviceModels is the builder-level resolution of llm.service_models against
+	// the cached llmRouter — consumed by the builder-level service calls (title,
+	// commit_message, optimize_extract/optimize_rewrite, compaction_summarize,
+	// prompt_suggest). Immutable once resolved; re-resolved against the current
+	// router by Build and RebuildRouter (unknown providers fail soft at resolution,
+	// never here). Guarded by b.mu.
+	serviceModels    *ServiceModelOverrides
 	vectorSearchFunc builtins.VectorSearchFunc
 	// vectorSearchWaitFunc is the bounded readiness waiter paired with vectorSearchFunc:
 	// the RAG-hint path waits under the same deadline as the search. Guarded by b.mu.
@@ -517,6 +524,17 @@ func (b *OrchestratorBuilder) Build(
 		return nil, errors.New("no active LLM provider configured - check your config.yaml")
 	}
 
+	// llm.service_models: resolve the configured service keys against THIS
+	// session's router once per build. Unknown providers warn once (aggregated)
+	// and those keys fall back to the session model — never a build failure.
+	serviceModels := resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, logger)
+	// The builder-level service calls (GenerateTitle, GenerateCommitMessage,
+	// OptimizePrompt, GeneratePromptSuggestions, the compaction summarize
+	// closure) resolve their pins through the same set.
+	b.mu.Lock()
+	b.serviceModels = serviceModels
+	b.mu.Unlock()
+
 	usageTracker := llm.NewUsageTracker()
 	// Adaptive request budget: budgetIngestCaller sits between tracker and router so each
 	// sample's duration is the winning provider attempt; the table rides the session
@@ -548,9 +566,10 @@ func (b *OrchestratorBuilder) Build(
 	// Build context factory
 	contextFactory := b.buildContextFactory(trackingCaller, cfg, modelReg, dumpWriter, llmRouter)
 
-	// Build core agents (router, planner, reflector) with tracking caller
+	// Build core agents (router, planner, reflector) with tracking caller;
+	// service-model overrides pin routing/reflection calls per consumer.
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, dumpWriter)
+	coreRouter, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, dumpWriter, serviceModels)
 	if err != nil {
 		return nil, fmt.Errorf("building core agents: %w", err)
 	}
@@ -682,8 +701,9 @@ func (b *OrchestratorBuilder) Build(
 	sessionRegistry.SetToolCallTimeout(time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second)
 
 	// Bind the session judge to the session's OWN router — even the first escalation is
-	// judged on this session's provider/model (specs/decisions/028-session-pinned-judge.md).
-	b.bindSessionJudge(cfg, llmRouter, sessionRegistry, usageTracker)
+	// judged on this session's provider/model, or on the llm.service_models.judge pin
+	// when one resolved for this router (specs/decisions/028-session-pinned-judge.md).
+	b.bindSessionJudge(cfg, llmRouter, serviceModels, sessionRegistry, usageTracker)
 
 	// HITLHandler.OnToolCall runs before every tool call; PolicyUserConfirm tools fall
 	// through to auto-execute when ConfirmFunc is nil — intended, the HITL handler already
@@ -748,6 +768,7 @@ func (b *OrchestratorBuilder) Build(
 		Router:                coreRouter,
 		LLM:                   loggedLLM,
 		ModelSwitcher:         llmRouter,
+		ServiceModels:         serviceModels,
 		VisionResolver:        newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
 		ValidateModelOverride: modelOverrideValidator(llmRouter),
 		ToolExec:              sessionRegistry,         // ToolExecutor (per-session policy view)
@@ -808,6 +829,11 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.mu.Lock()
 	b.llmRouter = llmRouter
 	b.modelRegistry = modelReg
+	// Re-resolve the builder-level service-model pins against the NEW router:
+	// a provider the rebuild dropped must fall back to the session model
+	// (fail-soft at resolution, with its aggregated warn), not pin a call to
+	// a provider that is no longer configured.
+	b.serviceModels = resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, b.log())
 	b.initErr = nil
 	b.mu.Unlock()
 	return nil
@@ -955,6 +981,9 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 
 	b.mu.RLock()
 	llmRouter := b.llmRouter
+	// The set-taking seam applies the title pin inside (resolution precedes the
+	// request build, so the reasoning tier resolves from the pin).
+	serviceModels := b.serviceModels
 	b.mu.RUnlock()
 
 	if llmRouter == nil {
@@ -966,12 +995,14 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
 		caller = agent.NewDumpCaller(caller, dw, b.logger)
 	}
-	return generateTitleWithCaller(ctx, caller, b.serviceMetrics, bareActiveModel(llmRouter), b.log(), userMessage, activeSkills)
+	return generateTitleWithCaller(ctx, caller, b.serviceMetrics, bareActiveModel(llmRouter), serviceModels, b.log(), userMessage, activeSkills)
 }
 
 // generateTitleWithCaller issues the title one-shot. It is a separate function so tests
-// can inject a mock caller and verify the request shape deterministically.
-func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, metrics *ServiceMetrics, model string, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
+// can inject a mock caller and verify the request shape deterministically; set carries
+// the per-build llm.service_models resolution (nil = unconfigured — the session model).
+func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, metrics *ServiceMetrics, model string, set *ServiceModelOverrides, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
+	model, caller = applyServiceModelOverride(set, ServiceKindTitle, model, caller)
 	systemPrompt := "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."
 	if len(activeSkills) > 0 {
 		systemPrompt += "\n\nThe user has explicitly activated the following skills: " + strings.Join(activeSkills, ", ") + ". Consider these when determining the topic."
@@ -1137,7 +1168,8 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 
 // generateCommitMessageWithCaller runs the commit-message one-shot. It is a separate
 // method so tests can inject a mock caller and verify the client-owned retry behavior
-// deterministically.
+// deterministically. The commit_message service-model pin (if resolved) is applied here
+// — before the request is built, so the reasoning tier resolves from the pin.
 func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 	ctx context.Context,
 	caller oneshot.Caller,
@@ -1145,6 +1177,7 @@ func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 	model string,
 	diff string,
 ) (string, error) {
+	model, caller = b.applyServiceModelOverride(ServiceKindCommitMessage, model, caller)
 	req := buildCommitMessageRequest(diff, serviceReasoningEffort(model, oneshotTierCommit))
 
 	message, err := serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindCommitMessage, model, caller, req, b.commitMessageParse(providerName, diff), oneshot.Options[string]{
@@ -2387,13 +2420,19 @@ func hostOf(rawURL string) string {
 	return llmtls.TargetHost(rawURL)
 }
 
-// buildCoreAgents creates the core Router and Reflector.
+// buildCoreAgents creates the core Router and Reflector. The per-build
+// service-model overrides (llm.service_models, resolved against the session
+// router) pin routing and reflection calls onto their configured
+// provider/model per consumer; an unconfigured key keeps the shared logged
+// caller unwrapped, so behavior is byte-identical to the pre-override wiring
+// (specs/domains/llm-providers.md).
 func (b *OrchestratorBuilder) buildCoreAgents(
 	caller agent.LLMCaller,
 	cfg *BuilderConfig,
 	emitter Emitter,
 	logger *slog.Logger,
 	dumpWriter io.Writer,
+	serviceModels *ServiceModelOverrides,
 ) (*router.Router, *reflector.Reflector, error) {
 	if caller == nil {
 		return nil, nil, nil
@@ -2401,8 +2440,8 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	providerName := cfg.LLM.DefaultProviderName()
 	loggedCaller := agent.NewLoggingLLMCaller(caller, providerName, logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
-	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
-	coreReflector := newCoreReflector(loggedCaller)
+	coreRouter := newCoreRouter(overrideWrap(loggedCaller, serviceModels, serviceModelKeyRouter), cfg.Router.HistoryWindow)
+	coreReflector := newCoreReflector(overrideWrap(loggedCaller, serviceModels, serviceModelKeyReflector))
 
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)
@@ -2455,23 +2494,14 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 				if summarizeCaller == nil {
 					return "", errors.New("compaction summarize: LLM caller not available")
 				}
-				req := llm.ChatRequest{
-					Messages: []llm.Message{
-						{Role: "system", Content: coreprompts.CompactionSummarize},
-						{Role: "user", Content: blockText},
-					},
-					// Oneshot service policy: reasoning tier minimal, resolved per call from
-					// the session router's ACTIVE model (model switches ride along) — the
-					// Model Profiles seed does not reach service calls; temperature pinned
-					// to the family-safe floor (deterministic summaries).
-					ReasoningEffort: serviceReasoningEffort(bareActiveModel(llmRouter), oneshotTierCompaction),
-					CallPurpose:     llm.CallPurposeCompaction,
-				}
-				summary, err := serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindCompactionSummary, bareActiveModel(llmRouter), summarizeCaller, req, compactionSummarizeContent, oneshot.Options[string]{})
-				if err != nil {
-					return "", fmt.Errorf("compaction summarize: %w", err)
-				}
-				return summary, nil
+				// The compaction_summarize service-model pin rides the shared
+				// seam (applied before the request is built, so the reasoning
+				// tier resolves from the pin); the session set is read at call
+				// time — RebuildRouter may have re-resolved it mid-session.
+				b.mu.RLock()
+				serviceModels := b.serviceModels
+				b.mu.RUnlock()
+				return compactionSummarizeWithCaller(ctx, serviceModels, summarizeCaller, b.serviceMetrics, b.log(), bareActiveModel(llmRouter), blockText)
 			},
 		})
 
@@ -2520,18 +2550,28 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 
 // newJudgeForRouter builds a ToolJudge riding the given router as a plain llm.Caller
 // with NO model pinned — every call resolves to the ACTIVE provider/model, so model
-// switches need no re-binding (specs/decisions/028-session-pinned-judge.md).
+// switches need no re-binding (specs/decisions/028-session-pinned-judge.md) — unless
+// overrides resolves a "judge" pin for THIS router (llm.service_models.judge, checked
+// by resolveServiceModelOverrides against llmRouter): the judge's caller is then
+// wrapped in pinnedModelCaller, so every judge call rides the pinned provider/model
+// and the judge's ActiveModel probe (reasoning spelling + advisory cache-key model)
+// resolves from the constant pin instead of the session's switchable active model.
 // usageTracker routes judge tokens into session accounting; nil router → nil
 // ("keep the previous judge").
-func (b *OrchestratorBuilder) newJudgeForRouter(cfg *BuilderConfig, llmRouter *llm.Router, usageTracker *llm.UsageTracker) *sdktools.ToolJudge {
+func (b *OrchestratorBuilder) newJudgeForRouter(cfg *BuilderConfig, llmRouter *llm.Router, overrides *ServiceModelOverrides, usageTracker *llm.UsageTracker) *sdktools.ToolJudge {
 	if llmRouter == nil {
 		return nil
 	}
 
 	debugEnabled := b.logger != nil && b.logger.Enabled(context.Background(), slog.LevelDebug)
 
+	var caller llm.Caller = newJudgeDumpCaller(llmRouter, b.logger, debugEnabled)
+	if override, ok := overrides.Lookup(serviceModelJudgeKey); ok {
+		caller = newPinnedModelCaller(caller, override.Provider, override.Model)
+	}
+
 	return sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
-		Caller:       newJudgeDumpCaller(llmRouter, b.logger, debugEnabled),
+		Caller:       caller,
 		UsageTracker: usageTracker,
 		MaxCacheSize: cfg.Orchestration.MaxJudgeCacheSize,
 	}, b.logger)
@@ -2555,7 +2595,10 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 		}
 	}
 
-	judge := b.newJudgeForRouter(cfg, llmRouter, nil)
+	// The shared fallback resolves its OWN llm.service_models view against the
+	// router it hands the judge — the builder-level router (or the freshly
+	// built one), never a session's.
+	judge := b.newJudgeForRouter(cfg, llmRouter, resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, b.logger), nil)
 
 	if judge != nil {
 		b.registry.SetJudge(judge)
@@ -2570,10 +2613,13 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 // bindSessionJudge binds the SESSION registry's judge to the session's OWN router,
 // replacing the clone-inherited shared fallback — the session's model switches are
 // followed with no re-binding, while a global default-model change rebuilds only the
-// shared fallback (specs/decisions/028-session-pinned-judge.md). A nil judge keeps the
-// previous binding (a session never loses a judge it had).
-func (b *OrchestratorBuilder) bindSessionJudge(cfg *BuilderConfig, llmRouter *llm.Router, sessionRegistry *tools.ToolRegistry, usageTracker *llm.UsageTracker) {
-	judge := b.newJudgeForRouter(cfg, llmRouter, usageTracker)
+// shared fallback (specs/decisions/028-session-pinned-judge.md). overrides is the
+// llm.service_models resolution for THIS session's router (resolved once by Build
+// against the same llmRouter); a resolved "judge" pin fixes the session judge's
+// provider/model for the session's lifetime. A nil judge keeps the previous
+// binding (a session never loses a judge it had).
+func (b *OrchestratorBuilder) bindSessionJudge(cfg *BuilderConfig, llmRouter *llm.Router, overrides *ServiceModelOverrides, sessionRegistry *tools.ToolRegistry, usageTracker *llm.UsageTracker) {
+	judge := b.newJudgeForRouter(cfg, llmRouter, overrides, usageTracker)
 	if judge == nil {
 		return
 	}
