@@ -105,6 +105,8 @@ func (f *FrontendAPI) GetChatGPTModelPreset() ChatGPTModelPresetResponse {
 }
 
 var chatGPTModelPreset = []string{
+	"gpt-6.2-sol",
+	"gpt-6.2-astra",
 	"gpt-5.5",
 	"gpt-5.4",
 	"gpt-5.4-mini",

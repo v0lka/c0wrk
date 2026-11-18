@@ -131,7 +131,7 @@ describe('ProviderAccordion oauth checklist', () => {
     renderOAuthAccordion(['gpt-5.4-mini'])
 
     const rows = modelRows()
-    // Preset order (most capable first) is preserved, NOT alphabetized.
+    // Preset order (subscription-catalog priority) is preserved, NOT alphabetized.
     expect(rows.map((r) => r.name)).toEqual(['gpt-5.5', 'gpt-5.4-mini', 'codex-mini-latest'])
     expect(rows.find((r) => r.name === 'gpt-5.4-mini')?.checked).toBe(true)
     expect(rows.find((r) => r.name === 'gpt-5.5')?.checked).toBe(false)

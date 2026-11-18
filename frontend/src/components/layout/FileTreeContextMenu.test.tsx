@@ -302,6 +302,23 @@ describe('FileTreeContextMenu — View History', () => {
     expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledWith('src/foo.ts')
   })
 
+  it('escapes glob metacharacters in the history filter (repo paths are literal)', async () => {
+    // A workspace path is repo data — a cloned repository or an agent-written
+    // file controls its bytes. Raw metachars would be parsed as glob syntax
+    // (wrong matches; and the `+(*)` extglob family is picomatch's
+    // parse-time ReDoS), so the queued filter must carry the escaped form.
+    const evilEntry: FileEntry = { name: 'a+(*)[b].ts', path: '/ws/src/a+(*)[b].ts', is_dir: false }
+    renderMenu(evilEntry, '/ws')
+
+    await act(async () => {
+      menuItem('View History').click()
+      await Promise.resolve()
+    })
+
+    expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledTimes(1)
+    expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledWith('src/a\\+\\(\\*\\)\\[b\\].ts')
+  })
+
   it('switches the workspace to the Git panel on the history action', async () => {
     renderMenu(fileEntry, '/ws')
 

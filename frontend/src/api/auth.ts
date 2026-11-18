@@ -154,7 +154,7 @@ export async function signOutChatGPT(): Promise<void> {
 /**
  * The curated ChatGPT (Codex) model preset offered in oauth mode
  * (GetChatGPTModelPreset): the offline FALLBACK list — registry-known models
- * the subscription serves, ordered most capable first. The authoritative
+ * the subscription serves, in subscription-catalog priority order. The authoritative
  * per-subscription list comes from fetchChatGPTModels. A read-only getter
  * that never fails; per-entry metadata is fail-soft (zeros before the async
  * model registry is wired — the name is then the whole entry).

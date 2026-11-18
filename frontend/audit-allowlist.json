@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "module": "picomatch",
+      "reason": "ReDoS via single-branch repeated extglobs (CVE-2026-112366, CVSS 7.5). No upstream fix exists: every published picomatch release through 4.0.7 is vulnerable (latest = 4.0.7, verified 2026-11-18) and the advisory's first_patched_version is null (fix PR micromatch/picomatch#235 unmerged), so a version bump cannot clear it and an override to an unofficial fork would break the supply-chain posture. GitHub WITHREW this advisory on 2026-11-18T15:38Z (rationale comment micromatch/picomatch#235 not fetchable), but the underlying behavior is empirically confirmed on 4.0.4: the 100-byte pattern '+(*)'.repeat(20)+'b' (fits in a single 255-byte POSIX filename) blocked the main thread for 63s+ against a 30-char subject, and npm audit still reports the advisory. Exploitability audit of every pattern reaching picomatch (the sole runtime import is frontend/src/lib/pathFilter.ts; all other lockfile references are dev-chain vite/vitest/eslint, build-time only, trusted input): (1) file-tree search and git-history FilterBar are operator keyboard input - self-inflicted latency at worst; (2) the one attacker-influenceable inflow, FileTreeContextMenu 'View History' feeding a repo-derived path as the pattern, was NEUTRALIZED on 2026-11-18 by escapeGlobLiteral (frontend/src/lib/pathFilter.ts): the path enters the matcher with all extglob metachars escaped so the parser never reaches the vulnerable machinery, and the inserted backslashes keep it literal if the operator flips to regex mode - regression-guarded in pathFilter.test.ts and FileTreeContextMenu.test.tsx. Residual exposure is operator-typed text only. When npm audit stops surfacing the withdrawn advisory, this stale entry will fail the wrapper - delete it then; if a fixed release ships first, bump and delete.",
+      "review_by": "2027-02-17"
+    }
+  ]
+}
