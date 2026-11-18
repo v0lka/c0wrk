@@ -240,7 +240,8 @@ type ChatGPTAuthStatusResponse struct {
 }
 
 // ChatGPTModelPresetResponse is the curated ChatGPT (Codex) preset — the
-// models c0wrk's registry knows, most capable first (ADR-074).
+// models c0wrk's registry knows, in subscription-catalog priority order
+// (the order the live FetchChatGPTModels ranking renders; ADR-074).
 type ChatGPTModelPresetResponse struct {
 	Models []ChatGPTModelPresetEntry `json:"models"`
 }

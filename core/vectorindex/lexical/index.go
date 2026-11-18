@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"os"
+	"sync"
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/analysis/analyzer/custom"
 	"github.com/blevesearch/bleve/v2/analysis/lang/en"
 	"github.com/blevesearch/bleve/v2/analysis/token/lowercase"
 	"github.com/blevesearch/bleve/v2/analysis/tokenizer/unicode"
+	"github.com/blevesearch/bleve/v2/index/scorch"
+	"github.com/blevesearch/bleve/v2/index/upsidedown/store/boltdb"
 	"github.com/blevesearch/bleve/v2/mapping"
 )
 
@@ -50,6 +55,69 @@ type Index interface {
 	Close() error
 }
 
+// scorchAsyncErrorCallbackName keys this package's entry in scorch's
+// process-global async-error callback registry; every writer open below
+// passes it so scorch routes background errors to reportScorchAsyncError.
+const scorchAsyncErrorCallbackName = "c0wrk-lexical"
+
+// init registers the async-error sink before any open: scorch's registry
+// contract requires init-time registration (the name lookup at construction
+// silently yields nil otherwise).
+func init() {
+	scorch.RegistryAsyncErrorCallbacks[scorchAsyncErrorCallbackName] = reportScorchAsyncError
+}
+
+// asyncErrMu guards asyncErrSink: scorch fires the callback from its own
+// background goroutines, so the test-installed swap must synchronize with
+// them. A nil sink means the default slog reporting.
+var (
+	asyncErrMu   sync.RWMutex
+	asyncErrSink func(err error, path string)
+)
+
+// reportScorchAsyncError is the sink scorch background loops report through:
+// without a registered callback their panics and persistent errors vanish
+// into stats counters, and a dead background loop is undiagnosable from a
+// dump alone (specs/decisions/130-lexical-scorch-persister-deadlock.md).
+func reportScorchAsyncError(err error, path string) {
+	asyncErrMu.RLock()
+	sink := asyncErrSink
+	asyncErrMu.RUnlock()
+	if sink != nil {
+		sink(err, path)
+		return
+	}
+	logScorchAsyncError(slog.Default(), err, path)
+}
+
+// logScorchAsyncError is the default reporting: a background-loop panic kills
+// its goroutine outright, so it logs at Error; other background errors
+// (persist retries, cleanup failures) log at Warn.
+func logScorchAsyncError(log *slog.Logger, err error, path string) {
+	level := slog.LevelWarn
+	if errors.Is(err, scorch.ErrAsyncPanic) {
+		level = slog.LevelError
+	}
+	log.Log(context.Background(), level, "scorch background error",
+		"path", path, "error", err)
+}
+
+// scorchOptions returns the runtime options every writer open carries. The
+// persister options disable scorch's merger-catch-up pause entirely — the
+// pause is the one wait in scorch with no termination guarantee, and a dead
+// mergerLoop goroutine turns it into a permanent write hang
+// (specs/decisions/130-lexical-scorch-persister-deadlock.md). Keys must match
+// scorch's persisterOptions field names: bleve JSON-round-trips the value.
+func scorchOptions() map[string]interface{} {
+	return map[string]interface{}{
+		"scorchPersisterOptions": map[string]interface{}{
+			"PersisterNapTimeMSec":      0,
+			"PersisterNapUnderNumFiles": math.MaxInt,
+		},
+		"asyncErrorCallbackName": scorchAsyncErrorCallbackName,
+	}
+}
+
 // Open returns an Index backed by bleve at the given directory. The directory
 // is created (with the index) if it does not already exist. The open runs
 // under the directory's lock gate (exclusive): a busy gate — another live
@@ -65,7 +133,7 @@ func Open(dir string) (Index, error) {
 		if gateErr != nil {
 			return nil, fmt.Errorf("opening lexical index at %s: %w", dir, gateErr)
 		}
-		idx, err := bleve.Open(dir)
+		idx, err := bleve.OpenUsing(dir, scorchOptions())
 		if err != nil {
 			_ = gate.release()
 			return nil, fmt.Errorf("opening lexical index at %s: %w", dir, err)
@@ -89,7 +157,13 @@ func Open(dir string) (Index, error) {
 		_ = gate.release()
 		return nil, fmt.Errorf("building bleve mapping: %w", err)
 	}
-	idx, err := bleve.New(dir, idxMapping)
+	// kvstore is scorch-ignored bookkeeping, but it lands in the persisted
+	// index meta — keep boltdb.Name so the meta stays identical to what
+	// bleve.New wrote for every pre-existing index. The meta carries NO
+	// persister options: every open re-reads them through a float64
+	// round-trip that cannot carry math.MaxInt, so scorchOptions() is
+	// applied per writer open instead (the runtime merge always wins).
+	idx, err := bleve.NewUsing(dir, idxMapping, scorch.Name, boltdb.Name, nil)
 	if err != nil {
 		_ = gate.release()
 		return nil, fmt.Errorf("creating lexical index at %s: %w", dir, err)

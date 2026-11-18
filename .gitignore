@@ -179,6 +179,18 @@ dist/
 # changes when the `desktop.App` API changes.
 /frontend/wailsjs/runtime/
 
+# Wails `npm install` skip-fingerprint: the CLI stores md5(package.json) here on
+# every `wails build`/`wails dev` and triggers a reinstall when it drifts. Pure
+# local cache -- deleting it only costs one redundant `npm install`.
+/frontend/package.json.md5
+
+# Windows-only build generat: `wails build -pack` on windows compiles a resource
+# object at <wails.json name>-res.syso into the REPO ROOT and deletes it after
+# compilation (wails v2 build.go defers the removal). A hard interrupt during the
+# build leaves it behind, where the Go toolchain auto-links any *.syso in the
+# package directory into later builds and a stray `git add .` would commit it.
+*-res.syso
+
 # Vite
 .vite/
 *.tsbuildinfo

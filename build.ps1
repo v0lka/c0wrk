@@ -71,10 +71,14 @@ $ErrorActionPreference = "Stop"
 # govulncheck version pinned for reproducible vulnerability scans.
 $GOVULNCHECK_VERSION = "v1.7.0"
 
-# ONNX Runtime version.
+# ONNX Runtime version (npmmirror binary mirror of the onnxruntime release
+# archives — the original microsoft/onnxruntime GitHub release channel was
+# removed on 2026-11-17, and the mirror serves the same archives
+# byte-identically).
 $ONNX_VERSION = "1.28.1"
 
-# Windows ONNX digests (Makefile ONNX_SHA256 / ONNX_LIB_SHA256). Recompute both
+# Windows ONNX digests (Makefile ONNX_SHA256 / ONNX_LIB_SHA256): the release
+# archive (.zip) and the onnxruntime.dll extracted from it. Recompute both
 # whenever $ONNX_VERSION is bumped.
 $ONNX_SHA256     = "e46ac7652def5da0e5223372be21185ffff553e0419459f66e0114d460c38162"
 $ONNX_LIB_SHA256 = "ab48e807eb96ad3d399c72e5f67dd93fe9c8b452e051fbf27f72d546e1882f4a"

@@ -51,10 +51,16 @@ jobs:
         run: cd frontend && npm ci
 
       # npm audit is arch- and OS-independent: run the production-dependency
-      # vulnerability gate on the amd64 leg only.
+      # vulnerability gate on the amd64 leg only. The gate routes through
+      # scripts/audit-allowlist.mjs: npm audit has no ignore flag, so the
+      # wrapper re-runs it in JSON mode and applies the reviewed, dated
+      # frontend/audit-allowlist.json (the same contract as
+      # internal/vulncheck's allowlist on the Go side) — an entry whose
+      # advisory gains an upstream fix, an entry the report no longer lists,
+      # an overdue review and any unwaived finding all still fail the build.
       - name: Audit frontend production dependencies
         if: matrix.arch == 'amd64'
-        run: cd frontend && npm audit --omit=dev --audit-level=low
+        run: cd frontend && npm run audit:prod
 
       - name: Build frontend assets
         run: cd frontend && npm run build
