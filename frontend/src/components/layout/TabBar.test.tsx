@@ -12,7 +12,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { TabBar } from './TabBar'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import { createTab, useTabStore } from '@/stores/tabStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -518,8 +517,7 @@ describe('TabBar strip overflow layout', () => {
   let scrollToSpy: Mock
   let scroller: HTMLDivElement
 
-  /** Render the bar under the app-root TooltipProvider (the chevron hints'
-      Radix channel) with five fixed-width tabs, then stub the strip geometry:
+  /** Render the bar with five fixed-width tabs, then stub the strip geometry:
       row i occupies [i·TAB_WIDTH, (i+1)·TAB_WIDTH). Re-measures once through
       the hook's scroll listener so the stubbed geometry is what renders. */
   function renderStrip(viewport: number): string[] {
@@ -529,11 +527,7 @@ describe('TabBar strip overflow layout', () => {
     document.body.appendChild(container)
     root = createRoot(container)
     act(() => {
-      root.render(
-        <TooltipProvider>
-          <TabBar controller={fakeController()} />
-        </TooltipProvider>,
-      )
+      root.render(<TabBar controller={fakeController()} />)
     })
     metrics = { scrollLeft: 0, clientWidth: viewport, scrollWidth: tabs.length * TAB_WIDTH }
     scroller = container.querySelector<HTMLDivElement>('.no-scrollbar')!
@@ -596,6 +590,18 @@ describe('TabBar strip overflow layout', () => {
     expect(plus.previousElementSibling).toBe(buttonByLabel('Scroll tabs right'))
     expect(scroller.children).toHaveLength(1)
     expect(scroller.firstElementChild?.getAttribute('role')).toBe('tablist')
+  })
+
+  it('chevron hints are native titles with no Radix trigger ancestor', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    for (const label of ['Scroll tabs left', 'Scroll tabs right']) {
+      const chevron = buttonByLabel(label)
+      // The native-title channel (same as «+»): the icon-only button names its
+      // action through `title`; a TooltipTrigger ancestor would stack the
+      // Radix popup on top of it (button-tooltips.md R4).
+      expect(chevron.getAttribute('title')).toBe(label)
+      expect(chevron.closest('[data-slot="tooltip-trigger"]')).toBeNull()
+    }
   })
 
   it('«>» scrolls to fully reveal the tab clipped past the right edge', () => {
