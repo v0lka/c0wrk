@@ -17,17 +17,20 @@ vi.mock('@/components/ui/ModelPickerMenu', () => ({
     ariaLabel,
     value,
     onSelect,
+    unsetLabel,
   }: {
     ariaLabel: string
     value: string | null
     onSelect: (id: string | null) => void
+    unsetLabel?: string
   }) => (
     <button
       type="button"
       data-testid={`picker-${ariaLabel}`}
+      data-unset-label={unsetLabel ?? ''}
       onClick={() => onSelect(value === null ? 'lmstudio/glm-5.3' : null)}
     >
-      {value === null ? 'default' : value}
+      {value === null ? (unsetLabel ?? 'default') : value}
     </button>
   ),
 }))
@@ -133,13 +136,31 @@ describe('ServiceModelsSettings', () => {
     expect(onChange).toHaveBeenCalledTimes(2)
   })
 
-  it('shows the current pin in its row picker and "default" for unpinned rows', () => {
+  it('labels unset rows by their fallback class: session-model vs global-default consumers', () => {
     renderBlock({ judge: 'lmstudio/glm-5.3' }, () => {})
     toggle()
 
+    // Session-class consumer (runs inside a session): "same as session".
     const judge = container.querySelector<HTMLButtonElement>('[data-testid="picker-Tool-call judge model"]')
     expect(judge!.textContent).toBe('lmstudio/glm-5.3')
+    expect(judge!.dataset.unsetLabel).toBe('Not set (same as session)')
+
+    // Default-class consumers (run outside any session on the app-level
+    // builder): "same as default". The pinned judge row carries its class's
+    // wording too — the unset label rides every row via unsetLabel, never the
+    // misleading "Default: <model>" global-default label.
     const title = container.querySelector<HTMLButtonElement>('[data-testid="picker-Session titles model"]')
-    expect(title!.textContent).toBe('default')
+    expect(title!.textContent).toBe('Not set (same as default)')
+    expect(title!.dataset.unsetLabel).toBe('Not set (same as default)')
+    const commit = container.querySelector<HTMLButtonElement>('[data-testid="picker-Commit messages model"]')
+    expect(commit!.textContent).toBe('Not set (same as default)')
+    expect(commit!.dataset.unsetLabel).toBe('Not set (same as default)')
+
+    // The remaining session-class rows keep the session wording.
+    const compaction = container.querySelector<HTMLButtonElement>('[data-testid="picker-Compaction summarizer model"]')
+    expect(compaction!.dataset.unsetLabel).toBe('Not set (same as session)')
+    // …and the remaining default-class rows keep the default wording.
+    const suggest = container.querySelector<HTMLButtonElement>('[data-testid="picker-Follow-up suggestions model"]')
+    expect(suggest!.dataset.unsetLabel).toBe('Not set (same as default)')
   })
 })
