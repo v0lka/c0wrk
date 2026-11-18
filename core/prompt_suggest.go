@@ -338,7 +338,9 @@ const promptSuggestRetryHint = "Reply with AT MOST 3 plain lines — one suggest
 // followed by one one-shot service call (ServiceKindPromptSuggest). Errors
 // are returned to the caller, which fails open (D9 — the feature can never
 // delay, block, or break a task finish). set carries the per-build
-// llm.service_models resolution (nil = unconfigured — the session model); the
+// llm.service_models resolution (nil = unconfigured — the builder router's
+// active model; production invokes this on the app-level builder, so the
+// fallback is the global default, not any session's model); the
 // prompt_suggest pin is applied before the request is built, so the reasoning
 // tier resolves from the pin.
 func suggestPromptsWithCaller(

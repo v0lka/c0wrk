@@ -525,8 +525,10 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// llm.service_models: resolve the configured service keys against THIS
-	// session's router once per build. Unknown providers warn once (aggregated)
-	// and those keys fall back to the session model — never a build failure.
+	// builder's router once per build. Unknown providers warn once (aggregated)
+	// and those keys fall back to that router's active model — the session's
+	// current model on session builders, the global default on the app-level
+	// builder — never a build failure.
 	serviceModels := resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, logger)
 	// The builder-level service calls (GenerateTitle, GenerateCommitMessage,
 	// OptimizePrompt, GeneratePromptSuggestions, the compaction summarize
@@ -830,9 +832,9 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.llmRouter = llmRouter
 	b.modelRegistry = modelReg
 	// Re-resolve the builder-level service-model pins against the NEW router:
-	// a provider the rebuild dropped must fall back to the session model
-	// (fail-soft at resolution, with its aggregated warn), not pin a call to
-	// a provider that is no longer configured.
+	// a provider the rebuild dropped must fall back to that router's active
+	// model (fail-soft at resolution, with its aggregated warn), not pin a
+	// call to a provider that is no longer configured.
 	b.serviceModels = resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, b.log())
 	b.initErr = nil
 	b.mu.Unlock()
@@ -1000,7 +1002,9 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 
 // generateTitleWithCaller issues the title one-shot. It is a separate function so tests
 // can inject a mock caller and verify the request shape deterministically; set carries
-// the per-build llm.service_models resolution (nil = unconfigured — the session model).
+// the per-build llm.service_models resolution (nil = unconfigured — the builder
+// router's active model; production invokes this on the app-level builder, so the
+// fallback is the global default, not any session's model).
 func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, metrics *ServiceMetrics, model string, set *ServiceModelOverrides, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
 	model, caller = applyServiceModelOverride(set, ServiceKindTitle, model, caller)
 	systemPrompt := "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."

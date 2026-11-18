@@ -101,6 +101,26 @@ describe('ModelPickerMenu (Radix dropdown-menu)', () => {
     expect(trigger().textContent).toContain('Default: claude-sonnet')
   })
 
+  it('replaces the default wording with unsetLabel on the trigger and the unset entry', async () => {
+    renderMenu({ unsetLabel: 'Not set (same as session)' })
+
+    // Trigger: no "Default: <model>" — an unset pin is NOT the global default.
+    expect(trigger().textContent).toContain('Not set (same as session)')
+    expect(trigger().textContent).not.toContain('Default:')
+
+    await openMenu()
+    const entries = items()
+    // The unset entry carries the same wording; the provider entries stay.
+    expect(entries[0]!.textContent).toContain('Not set (same as session)')
+    expect(entries[0]!.textContent).not.toContain('claude-sonnet')
+    expect(entries).toHaveLength(3)
+    expect(menu().textContent).toContain('claude-sonnet')
+
+    // Picking the unset entry still fires onSelect(null).
+    clickItem(entries[0]!)
+    expect(onSelect).toHaveBeenCalledWith(null)
+  })
+
   it('does not advertise a stale global default that is no longer selectable', () => {
     renderMenu({ models: [{ name: 'other', provider: 'p' }], defaultModel: 'p/gone' })
     expect(trigger().textContent).toContain('Select model…')

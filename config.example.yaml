@@ -49,7 +49,11 @@ llm:
   # a stale override never blocks startup. Format problems (an unknown key,
   # an empty/bare/"provider/"-only value) are dropped with a load warning
   # and rewritten away at the next save. Omit the whole section for the
-  # default behavior — every service call on the session's default model.
+  # default behavior — in-session consumers (judge, router, reflector,
+  # compaction_summarize, goal_suggest) ride the session's current model,
+  # while the app-level services (title, commit_message, optimize_extract,
+  # optimize_rewrite, prompt_suggest) run outside any session and follow
+  # the global default model (llm.default_model).
   # EXPERIMENTAL: the section is effective only while experimental.enabled
   # (see the experimental section below) is on; while the gate is off it
   # stays persisted but inert. Settings → LLM exposes a "Service models"

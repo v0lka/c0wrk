@@ -27,8 +27,10 @@ import (
 // Router.ProviderForModel — the same predicate modelOverrideValidator applies
 // to composites; the bare model need not appear in the provider's list. A key
 // that fails either check is absent from the resolved set, so its consumer
-// falls back to the session model; unknown providers produce ONE aggregated
-// Warn naming every dropped key, its provider, and the known providers.
+// falls back to that router's active model (the session's current model on
+// session builders, the global default on the app-level builder); unknown
+// providers produce ONE aggregated Warn naming every dropped key, its
+// provider, and the known providers.
 
 // serviceModelJudgeKey is core's local spelling of the "judge" service-model
 // key (backend/config.ServiceModelJudge — core cannot import backend/config,
@@ -83,7 +85,7 @@ func resolveServiceModelOverrides(llmRouter *llm.Router, configured map[string]s
 		provider, model, composite := llm.ParseCompositeModelID(value)
 		if !composite || provider == "" || model == "" {
 			if logger != nil {
-				logger.Warn("service model override is not a \"provider/model\" composite — key falls back to the session model",
+				logger.Warn("service model override is not a \"provider/model\" composite — key falls back to the router's active model",
 					"key", key, "value", configured[key])
 			}
 			continue
