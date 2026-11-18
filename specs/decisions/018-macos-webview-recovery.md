@@ -81,6 +81,35 @@ a compile-time Objective-C category.
   defers to Wails's own implementation if a future Wails version implements
   the selector natively (returns status 2; status 1 = class not found, hook
   skipped with the wake path as fallback; status 0 = installed).
+- **Main-thread installation — `c0wrkInstallRecoveryOnMain`.** The
+  `class_addMethod` mutation must run on the MAIN thread. Wails v2.16.0
+  invokes the Go `OnStartup` callback — the install's only caller chain — on
+  a background goroutine (`internal/frontend/desktop/darwin/frontend.go`,
+  `Run`: `go func() { OnStartup(ctx) }()`), while WebKit dispatches
+  `WailsContext`'s script-message-handler and delegate methods on the main
+  thread in a tight loop (`WailsContext` IS the `WKScriptMessageHandler` and
+  the `WKWebView`'s `UIDelegate`/navigation delegate). `objc_msgSend`'s fast
+  path reads the class's method cache without a lock, and `class_addMethod`
+  mutates the method table and flushes that cache; mutating it from a
+  non-main thread while the main thread is mid-dispatch on the same class
+  loses the runtime's deferred cache-reclamation race under heavy dispatch
+  traffic and the process dies with SIGSEGV (SEGV_ACCERR at a cache-bucket
+  address, PC in the shared cache). This was not theoretical: the
+  2026-11-18 07:21 launch (pid 33443, commit `86074faa`) crashed exactly this
+  way ~12 s after launch — right after the background install — on a build
+  that had started cleanly 8 consecutive times. `registerPowerWakeObserver`
+  therefore calls `c0wrkInstallRecoveryOnMain`, which schedules the mutation
+  on the main queue (inline when already main), serializing it with every
+  WebKit dispatch of the class; the status is reported back to Go through
+  the `c0wrkRecoveryHookInstalled` export (the install is asynchronous now,
+  so the status cannot be returned to the caller). The NSWorkspace observer
+  registration stays on the calling goroutine — `addObserverForName:` is
+  documented thread-safe and independent of the method-table mutation.
+  Operational note: under plain `go test` the main queue never drains, so
+  the install block (and its log line) does not run in unit tests; nothing
+  depends on it there — the severity mapping of the status lives in the
+  plain-Go `logRecoveryHookInstalled`, which the darwin tests exercise
+  directly.
 - **Why runtime injection, not a compile-time category.** A compile-time
   `@implementation WailsContext (Category)` emits a reference to the
   `_OBJC_CLASS_$_WailsContext` link symbol. That class is implemented in
