@@ -1767,8 +1767,14 @@ func (f *FrontendAPI) syncEmbeddedBuilderSeam() {
 // shortens the request it precedes (ADR-066 D13). The load runs on the app
 // context, bounded by the supervisor's wait budget (a walking-away caller must
 // not cancel it); concurrent callers coalesce on the single-instance gate.
-func (f *FrontendAPI) ensureEmbeddedReadyForLLMRequest(ctx context.Context) error {
-	if !f.activeModelIsEmbedded() {
+//
+// The kinds arguments make the readiness advisory to the EFFECTIVE call target:
+// a caller that knows which llm.service_models keys its imminent requests
+// resolve passes them, and no warm happens when every one of them rides the
+// pin to another provider (the local model would load gigabytes for nothing).
+// Without kinds the legacy default-model predicate applies.
+func (f *FrontendAPI) ensureEmbeddedReadyForLLMRequest(ctx context.Context, kinds ...string) error {
+	if !f.anyEmbeddedTargetFor(kinds) {
 		return nil
 	}
 	if ctx == nil {
@@ -1801,17 +1807,21 @@ const (
 // cache — the server runs -np 1, so a different prompt would evict the running
 // task's next step and cost it a multi-minute prefill; the request DEFERS
 // within the caller's budget instead. Readiness is
-// ensureEmbeddedReadyForLLMRequest (gate before arming, ADR-066 D13).
-func (f *FrontendAPI) serviceEmbeddedGate(ctx context.Context, waitBudget time.Duration) error {
-	if !f.activeModelIsEmbedded() {
-		// Not the default model: the service request never reaches the local
-		// server, so no cache can be disturbed.
+// ensureEmbeddedReadyForLLMRequest (gate before arming, ADR-066 D13), advised
+// by the kinds' effective targets: with kinds naming the imminent requests'
+// service-model keys, the whole gate (idle wait included) is inert when every
+// one of them is pinned away from the embedded provider.
+func (f *FrontendAPI) serviceEmbeddedGate(ctx context.Context, waitBudget time.Duration, kinds ...string) error {
+	if !f.anyEmbeddedTargetFor(kinds) {
+		// Not the effective target of any imminent request: the service call
+		// never reaches the local server, so no cache can be disturbed and no
+		// weights need loading.
 		return nil
 	}
 	if err := f.waitForEmbeddedAgentIdle(ctx, waitBudget); err != nil {
 		return err
 	}
-	return f.ensureEmbeddedReadyForLLMRequest(ctx)
+	return f.ensureEmbeddedReadyForLLMRequest(ctx, kinds...)
 }
 
 // waitForEmbeddedAgentIdle blocks until no session carries live background
@@ -1855,26 +1865,37 @@ func (f *FrontendAPI) waitForEmbeddedAgentIdle(ctx context.Context, waitBudget t
 
 // serviceEmbeddedGateInteractive is serviceEmbeddedGate for the RPC-backed
 // callers (GenerateCommitMessage, OptimizePrompt): a short, visible wait, then
-// an actionable refusal.
-func (f *FrontendAPI) serviceEmbeddedGateInteractive(ctx context.Context) error {
-	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitInteractive)
+// an actionable refusal. kinds names the service-model keys the imminent
+// requests resolve — the advisory that keeps the gate inert when the pins
+// route them to another provider.
+func (f *FrontendAPI) serviceEmbeddedGateInteractive(ctx context.Context, kinds ...string) error {
+	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitInteractive, kinds...)
 }
 
 // serviceEmbeddedGateBackground is serviceEmbeddedGate for the session
-// manager's title generation: a long invisible wait; the caller skips the
-// rename when the gate fails.
+// manager's one-shot background services — title generation AND follow-up
+// prompt suggestions ride this one gate (Manager.SetServiceLLMGate): a long
+// invisible wait; the caller skips the request when the gate fails. Its kind
+// set is therefore the UNION of both callers' keys — warm iff at least one of
+// them still resolves to the embedded provider.
 func (f *FrontendAPI) serviceEmbeddedGateBackground(ctx context.Context) error {
-	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitBackground)
+	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitBackground,
+		config.ServiceModelTitle, config.ServiceModelPromptSuggest)
 }
 
-// activeModelIsEmbedded reports whether the model a one-shot service request
-// resolves to is the backend-owned embedded entry. Service calls run on the
-// cached router, whose active model is the configured default — resolving the
-// default here answers the same question the router will. The install gate
-// comes first: a user's own provider named "embedded" is not the local model.
+// activeModelIsEmbedded reports whether the DEFAULT model resolves to the
+// backend-owned embedded entry — the legacy default-based answer to "will a
+// service request be served by the local model". The install gate comes
+// first: a user's own provider named "embedded" is not the local model.
 func (f *FrontendAPI) activeModelIsEmbedded() bool {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
+	return f.defaultModelIsEmbeddedLocked()
+}
+
+// defaultModelIsEmbeddedLocked is activeModelIsEmbedded for callers already
+// holding configMu (read or write).
+func (f *FrontendAPI) defaultModelIsEmbeddedLocked() bool {
 	if f.config == nil || !f.config.EmbeddedLLM.Installed {
 		return false
 	}
@@ -1883,6 +1904,46 @@ func (f *FrontendAPI) activeModelIsEmbedded() bool {
 		return false
 	}
 	return provider.Name == config.EmbeddedLLMProviderName
+}
+
+// serviceTargetIsEmbedded reports whether the one-shot service call `kind`
+// resolves to the backend-owned embedded provider — its EFFECTIVE target, not
+// merely the default. The llm.service_models pin resolves through the real
+// builder's ServiceModelPin: the same cached-router resolution (and the same
+// fail-soft fallback) the call itself performs, so the answer cannot diverge
+// from where the request actually goes. An unconfigured or dropped pin falls
+// back to the default-model predicate; anything installed-unrelated is false.
+func (f *FrontendAPI) serviceTargetIsEmbedded(kind string) bool {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+	if f.config == nil || !f.config.EmbeddedLLM.Installed {
+		return false
+	}
+	// f.builder() is safe under configMu (it seedAcquires instead of appCell).
+	// A mock/test builder without a router answers ok=false — the default
+	// fallback below, exactly like a real builder with no resolved pin.
+	if b := f.builder(); b != nil {
+		if pin, ok := b.ServiceModelPin(kind); ok {
+			return pin.Provider == config.EmbeddedLLMProviderName
+		}
+	}
+	return f.defaultModelIsEmbeddedLocked()
+}
+
+// anyEmbeddedTargetFor is the gate predicate over a request batch's service
+// keys: warm iff ANY of the imminent requests resolves to the embedded
+// provider. An empty set has no effective-target knowledge and keeps the
+// legacy default-model answer.
+func (f *FrontendAPI) anyEmbeddedTargetFor(kinds []string) bool {
+	if len(kinds) == 0 {
+		return f.activeModelIsEmbedded()
+	}
+	for _, kind := range kinds {
+		if f.serviceTargetIsEmbedded(kind) {
+			return true
+		}
+	}
+	return false
 }
 
 // toBuilderConfigLocked converts the live config and attaches the embedded

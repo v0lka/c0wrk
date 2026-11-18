@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -400,6 +401,225 @@ func TestServiceEmbeddedGateWaitsForAgentIdle(t *testing.T) {
 
 		if err := f.serviceEmbeddedGate(t.Context(), 50*time.Millisecond); err != nil {
 			t.Fatalf("serviceEmbeddedGate must be inert while another model is the default: %v", err)
+		}
+	})
+}
+
+// --- Effective-target advisory (llm.service_models pins) --------------------
+//
+// A service pin re-routes ONE one-shot call to a dedicated provider/model
+// (core applies it per call, before the request is built). The gates above are
+// therefore advisory to the EFFECTIVE target of the imminent requests: when
+// every service-model key a caller names is pinned away from the embedded
+// provider, no idle wait defers the call and no weights load — the pre-pin
+// behavior warmed a multi-gigabyte local model for a request that never
+// reaches it.
+
+// mockServicePin builds a one-key mock-builder pin resolution for the gate
+// tests (the same shape the real builder's ServiceModelPin returns).
+func mockServicePin(kind, provider, model string) map[string]core.ServiceModelOverride {
+	return map[string]core.ServiceModelOverride{
+		kind: {Provider: provider, Model: model, Composite: provider + "/" + model},
+	}
+}
+
+// fakeEmbeddedSpawn replaces the spawn seam with an instant fake server, so an
+// ENGAGING gate can be observed by the model actually becoming resident.
+func fakeEmbeddedSpawn(t *testing.T, f *FrontendAPI) {
+	t.Helper()
+	stubFreePortProbe(t, f)
+	f.embedded.spawnFn = func(context.Context, embeddedllm.LaunchCommand) (embeddedllm.Process, error) {
+		return newFakeEmbeddedProcess(4242), nil
+	}
+	tightenEmbeddedBudgets(t, f)
+}
+
+// TestServiceTargetIsEmbedded pins the effective-target predicate: a resolved
+// pin answers for itself, a dropped/unconfigured pin falls back to the
+// default-model answer, and without an install nothing resolves to the local
+// model — not even a pin naming "embedded".
+func TestServiceTargetIsEmbedded(t *testing.T) {
+	t.Run("a pin to another provider is false even while it is the default", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		mock.mu.Lock()
+		mock.serviceModelPins = mockServicePin(config.ServiceModelCommitMessage, "openai", "gpt-4o")
+		mock.mu.Unlock()
+
+		if f.serviceTargetIsEmbedded(config.ServiceModelCommitMessage) {
+			t.Error("commit_message pinned to openai must not resolve to the embedded provider")
+		}
+	})
+
+	t.Run("an explicit pin to the embedded provider is true", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		mock.mu.Lock()
+		mock.serviceModelPins = mockServicePin(config.ServiceModelTitle,
+			config.EmbeddedLLMProviderName, config.EmbeddedLLMModelName)
+		mock.mu.Unlock()
+
+		if !f.serviceTargetIsEmbedded(config.ServiceModelTitle) {
+			t.Error("a pin naming the embedded provider must resolve to it")
+		}
+	})
+
+	t.Run("no resolved pin falls back to the default-model answer", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		if !f.serviceTargetIsEmbedded(config.ServiceModelCommitMessage) {
+			t.Error("without a pin the effective target is the default — embedded here")
+		}
+
+		f.configMu.Lock()
+		f.config.LLM.DefaultModel = "anthropic/claude-3-opus"
+		f.configMu.Unlock()
+		if f.serviceTargetIsEmbedded(config.ServiceModelCommitMessage) {
+			t.Error("without a pin the effective target is the default — not embedded here")
+		}
+	})
+
+	t.Run("nothing installed is false for every target", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		mock.mu.Lock()
+		mock.serviceModelPins = mockServicePin(config.ServiceModelCommitMessage,
+			config.EmbeddedLLMProviderName, config.EmbeddedLLMModelName)
+		mock.mu.Unlock()
+
+		if f.serviceTargetIsEmbedded(config.ServiceModelCommitMessage) {
+			t.Error("a pin naming 'embedded' must not resolve without an install")
+		}
+	})
+}
+
+// TestServiceEmbeddedGateAdvisesTheEffectiveTarget is the gate-level proof:
+// pinned-away calls stay fully inert (idle wait included), a call whose
+// effective target is embedded still warms, and a batch warms when ANY of its
+// kinds resolves to the embedded provider.
+func TestServiceEmbeddedGateAdvisesTheEffectiveTarget(t *testing.T) {
+	t.Run("a pin away keeps the gate fully inert", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		forbidEmbeddedSideEffects(t, f)
+		// A live task would normally defer the call — the pinned-away gate
+		// must not even reach the idle wait.
+		f.activeSessionCount = func() int { return 1 }
+		mock.mu.Lock()
+		mock.serviceModelPins = mockServicePin(config.ServiceModelCommitMessage, "openai", "gpt-4o")
+		mock.mu.Unlock()
+
+		if err := f.serviceEmbeddedGate(t.Context(), 20*time.Millisecond, config.ServiceModelCommitMessage); err != nil {
+			t.Fatalf("the gate must be inert for a pinned-away call: %v", err)
+		}
+	})
+
+	t.Run("the effective target embedded: the gate warms the model", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		fakeEmbeddedSpawn(t, f)
+		mock.mu.Lock()
+		mock.serviceModelPins = mockServicePin(config.ServiceModelCommitMessage,
+			config.EmbeddedLLMProviderName, config.EmbeddedLLMModelName)
+		mock.mu.Unlock()
+
+		if err := f.serviceEmbeddedGate(t.Context(), 50*time.Millisecond, config.ServiceModelCommitMessage); err != nil {
+			t.Fatalf("the gate: %v", err)
+		}
+		if status := f.GetEmbeddedLLMStatus(); !status.Loaded {
+			t.Errorf("status = %+v, want loaded — an embedded-target call must warm the model", status)
+		}
+	})
+
+	t.Run("union: one kind pinned away, another riding the default still warms", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		fakeEmbeddedSpawn(t, f)
+		mock.mu.Lock()
+		mock.serviceModelPins = mockServicePin(config.ServiceModelOptimizeExtract, "openai", "gpt-4o")
+		mock.mu.Unlock()
+
+		if err := f.serviceEmbeddedGateInteractive(t.Context(),
+			config.ServiceModelOptimizeExtract, config.ServiceModelOptimizeRewrite); err != nil {
+			t.Fatalf("the gate: %v", err)
+		}
+		if status := f.GetEmbeddedLLMStatus(); !status.Loaded {
+			t.Errorf("status = %+v, want loaded — the unpinned rewrite call rides the embedded default", status)
+		}
+	})
+
+	t.Run("the background gate covers its two callers' union", func(t *testing.T) {
+		f, _, mock := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		forbidEmbeddedSideEffects(t, f)
+		mock.mu.Lock()
+		mock.serviceModelPins = map[string]core.ServiceModelOverride{
+			config.ServiceModelTitle:         {Provider: "openai", Model: "gpt-4o", Composite: "openai/gpt-4o"},
+			config.ServiceModelPromptSuggest: {Provider: "openai", Model: "gpt-4o", Composite: "openai/gpt-4o"},
+		}
+		mock.mu.Unlock()
+
+		if err := f.serviceEmbeddedGateBackground(t.Context()); err != nil {
+			t.Fatalf("both background services pinned away: the gate must be inert: %v", err)
+		}
+	})
+}
+
+// TestOptimizePromptGateFollowsThePins threads the kinds end to end: the RPC
+// must name optimize_extract + optimize_rewrite at the gate, so pins routing
+// both calls away keep the RPC load-free even though the local model is the
+// default (forbidden side effects fail the test on any spawn attempt).
+func TestOptimizePromptGateFollowsThePins(t *testing.T) {
+	f, _, mock := newEmbeddedTestAPI(t)
+	installEmbeddedAsDefault(t, f)
+	forbidEmbeddedSideEffects(t, f)
+	mock.optimizePromptRes = &core.OptimizePromptResult{OptimizedPrompt: "better"}
+	mock.mu.Lock()
+	mock.serviceModelPins = map[string]core.ServiceModelOverride{
+		config.ServiceModelOptimizeExtract: {Provider: "openai", Model: "gpt-4o", Composite: "openai/gpt-4o"},
+		config.ServiceModelOptimizeRewrite: {Provider: "openai", Model: "gpt-4o", Composite: "openai/gpt-4o"},
+	}
+	mock.mu.Unlock()
+
+	if _, err := f.OptimizePrompt("make this better"); err != nil {
+		t.Fatalf("OptimizePrompt: %v", err)
+	}
+	if mock.optimizePromptCalls != 1 {
+		t.Errorf("builder calls = %d, want 1", mock.optimizePromptCalls)
+	}
+}
+
+// TestGenerateCommitMessageGateFollowsThePin is the commit-message twin: with
+// the local model as the default, a commit_message pin to another provider
+// must reach the builder without spawning anything.
+func TestGenerateCommitMessageGateFollowsThePin(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Stage a change so generation reaches the builder (same shape as
+		// TestGenerateCommitMessage_Delegates).
+		if err := os.WriteFile(filepath.Join(dir, "newfile.txt"), []byte("hello\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		runGit(t, dir, "add", "newfile.txt")
+
+		f.configMu.Lock()
+		if f.config == nil {
+			f.config = &config.Config{}
+			config.ApplyDefaults(f.config)
+		}
+		f.configMu.Unlock()
+		installEmbeddedAsDefault(t, f)
+		forbidEmbeddedSideEffects(t, f)
+
+		mock := &mockBuilder{
+			generateCommitMsgRes: "feat: add new thing",
+			serviceModelPins:     mockServicePin(config.ServiceModelCommitMessage, "openai", "gpt-4o"),
+		}
+		f.builderOverride = mock
+
+		if _, err := f.GenerateCommitMessage(); err != nil {
+			t.Fatalf("GenerateCommitMessage: %v", err)
+		}
+		if mock.generateCommitMsgCalls != 1 {
+			t.Errorf("builder calls = %d, want 1", mock.generateCommitMsgCalls)
 		}
 	})
 }

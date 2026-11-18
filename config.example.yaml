@@ -37,6 +37,35 @@ llm:
   # their cure is the budget escalation, not a task restart.
   network_auto_retry_seconds: 90
 
+  # Per-service model overrides: re-route the one-shot service LLM calls
+  # (everything OUTSIDE the agent execution loop — tool-call judging, task
+  # routing, reflection, session titles, commit messages, prompt
+  # optimization, context-compaction summaries, goal/prompt suggestions)
+  # onto dedicated models instead of the session default. Each key names one
+  # fixed service call, each value is a full composite "provider/model" id
+  # (split on the FIRST "/" only) that must point at an ENABLED model of a
+  # CONFIGURED provider — the provider/model pair is resolved when a session
+  # builds and fails SOFT to the session default when it doesn't resolve, so
+  # a stale override never blocks startup. Format problems (an unknown key,
+  # an empty/bare/"provider/"-only value) are dropped with a load warning
+  # and rewritten away at the next save. Omit the whole section for the
+  # default behavior — every service call on the session's default model.
+  # The full key set:
+  #   judge                  — tool-call confirmation judge
+  #   router                 — CHAT/CODE task router
+  #   reflector              — step reflection
+  #   title                  — session title generation
+  #   commit_message         — git commit message generation
+  #   optimize_extract       — prompt optimization, extract pass
+  #   optimize_rewrite       — prompt optimization, rewrite pass
+  #   compaction_summarize   — context-compaction summarizer
+  #   goal_suggest           — goal suggestion
+  #   prompt_suggest         — follow-up prompt suggestions
+  # service_models:
+  #   judge: "anthropic/claude-haiku-4-5"
+  #   title: "lmstudio/gpt-4"
+  #   compaction_summarize: "lmstudio/deepseek-chat"
+
   anthropic:
     # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
     # 0 / omitted = off; engine in-flight retry remains separate (ADR-127).
