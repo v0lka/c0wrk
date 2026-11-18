@@ -79,9 +79,11 @@ func ValidServiceModelKeys() []string {
 // composite "provider/model" id (split on the FIRST "/" only — the model
 // name may itself contain "/"; both parts non-empty). The provider/model
 // pair is deliberately NOT resolved here — that is the session-build runtime
-// check, which fails soft to the session default (an override pointing at a
-// missing provider or disabled model degrades to the default instead of
-// blocking the load). An absent/empty section is the no-override behavior
+// check, which fails soft to the session default (an override naming a
+// provider that is not configured degrades to the default instead of
+// blocking the load; the model part is passed to the provider verbatim —
+// it is not checked against the provider's enabled models). An absent/empty
+// section is the no-override behavior
 // and warns about nothing. Runs after ApplyDefaults and before validate,
 // mirroring normalizeSessionArtifacts; entries are visited in sorted order
 // so the warning order — surfaced verbatim in the UI — is deterministic.

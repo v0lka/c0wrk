@@ -81,8 +81,16 @@ type OrchestratorBuilder struct {
 	// prompt_suggest). Immutable once resolved; re-resolved against the current
 	// router by Build and RebuildRouter (unknown providers fail soft at resolution,
 	// never here). Guarded by b.mu.
-	serviceModels    *ServiceModelOverrides
-	vectorSearchFunc builtins.VectorSearchFunc
+	serviceModels *ServiceModelOverrides
+	// serviceModelsWarnFingerprint fingerprints the last service-model resolution
+	// whose diagnostics were logged (resolveServiceModels): the rebuild paths
+	// re-resolve an unchanged section on every provider/model reconfiguration,
+	// and an unchanged aggregated Warn is pure noise. Guarded by
+	// serviceModelsWarnMu — a leaf lock, never held while taking b.mu (the
+	// RebuildRouter resolution runs under b.mu).
+	serviceModelsWarnMu          sync.Mutex
+	serviceModelsWarnFingerprint string
+	vectorSearchFunc             builtins.VectorSearchFunc
 	// vectorSearchWaitFunc is the bounded readiness waiter paired with vectorSearchFunc:
 	// the RAG-hint path waits under the same deadline as the search. Guarded by b.mu.
 	vectorSearchWaitFunc builtins.VectorSearchWaitFunc
@@ -525,11 +533,12 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// llm.service_models: resolve the configured service keys against THIS
-	// builder's router once per build. Unknown providers warn once (aggregated)
-	// and those keys fall back to that router's active model — the session's
-	// current model on session builders, the global default on the app-level
-	// builder — never a build failure.
-	serviceModels := resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, logger)
+	// builder's router once per build. Unknown providers warn (aggregated, once
+	// per unchanged resolution — resolveServiceModels dedups the repeat across
+	// rebuilds) and those keys fall back to that router's active model — the
+	// session's current model on session builders, the global default on the
+	// app-level builder — never a build failure.
+	serviceModels := b.resolveServiceModels(llmRouter, cfg.LLM.ServiceModels, logger)
 	// The builder-level service calls (GenerateTitle, GenerateCommitMessage,
 	// OptimizePrompt, GeneratePromptSuggestions, the compaction summarize
 	// closure) resolve their pins through the same set.
@@ -833,9 +842,10 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.modelRegistry = modelReg
 	// Re-resolve the builder-level service-model pins against the NEW router:
 	// a provider the rebuild dropped must fall back to that router's active
-	// model (fail-soft at resolution, with its aggregated warn), not pin a
-	// call to a provider that is no longer configured.
-	b.serviceModels = resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, b.log())
+	// model (fail-soft at resolution, with its aggregated warn — deduped while
+	// the resolution outcome stays unchanged), not pin a call to a provider
+	// that is no longer configured.
+	b.serviceModels = b.resolveServiceModels(llmRouter, cfg.LLM.ServiceModels, b.log())
 	b.initErr = nil
 	b.mu.Unlock()
 	return nil
@@ -2605,7 +2615,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 	// The shared fallback resolves its OWN llm.service_models view against the
 	// router it hands the judge — the builder-level router (or the freshly
 	// built one), never a session's.
-	judge := b.newJudgeForRouter(cfg, llmRouter, resolveServiceModelOverrides(llmRouter, cfg.LLM.ServiceModels, b.logger), nil)
+	judge := b.newJudgeForRouter(cfg, llmRouter, b.resolveServiceModels(llmRouter, cfg.LLM.ServiceModels, b.logger), nil)
 
 	if judge != nil {
 		b.registry.SetJudge(judge)

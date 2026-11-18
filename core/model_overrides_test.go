@@ -170,6 +170,84 @@ func TestResolveServiceModelOverrides_UnknownProviderWarnsOnceAndDrops(t *testin
 	}
 }
 
+// TestResolveServiceModels_DedupesUnchangedResolutionWarn verifies the
+// builder-level Warn dedup (resolveServiceModels): the first resolution of a
+// given (section, router) outcome logs the aggregated unknown-provider Warn,
+// an identical re-resolution — the RebuildRouter / shared-fallback-judge
+// rebuild path — stays silent, and any change to the section warns again
+// (once). A nil-logger resolution records no fingerprint, so a builder whose
+// first resolution went through nil still warns on its first logged one.
+func TestResolveServiceModels_DedupesUnchangedResolutionWarn(t *testing.T) {
+	b := &OrchestratorBuilder{}
+	router := modelOverrideValidatorTestRouter(t)
+	capture := &recordCapture{}
+	logger := slog.New(capture)
+	unknownWarns := func(c *recordCapture) int {
+		n := 0
+		for _, r := range warnRecords(c) {
+			if containsAll(r.Message, "unknown provider") {
+				n++
+			}
+		}
+		return n
+	}
+
+	cfg := map[string]string{
+		"commit_message": "phantom-ai/qwen3:8b",
+		"title":          "ghost-llm/gpt-4o",
+	}
+
+	// First resolution: exactly one aggregated warn.
+	if set := b.resolveServiceModels(router, cfg, logger); set != nil {
+		t.Fatalf("all-unknown section must resolve to nil, got %v", set)
+	}
+	if got := unknownWarns(capture); got != 1 {
+		t.Fatalf("first resolution warns = %d, want 1", got)
+	}
+
+	// Unchanged re-resolutions (the rebuild paths): silent.
+	for range 2 {
+		if set := b.resolveServiceModels(router, cfg, logger); set != nil {
+			t.Fatalf("unchanged re-resolution must stay nil, got %v", set)
+		}
+	}
+	if got := unknownWarns(capture); got != 1 {
+		t.Fatalf("unchanged re-resolutions must not warn: warns = %d, want 1", got)
+	}
+
+	// A changed section warns again — once.
+	cfg["judge"] = "openai/gpt-4o"
+	set := b.resolveServiceModels(router, cfg, logger)
+	if set == nil {
+		t.Fatal("section with a resolvable key must resolve")
+	}
+	if _, ok := set.Lookup("judge"); !ok {
+		t.Error("the resolvable key must survive")
+	}
+	if got := unknownWarns(capture); got != 2 {
+		t.Fatalf("changed resolution must warn again: warns = %d, want 2", got)
+	}
+
+	// …and the post-change outcome is silent on repeat too.
+	if set := b.resolveServiceModels(router, cfg, logger); set == nil {
+		t.Fatal("unchanged re-resolution must keep resolving")
+	}
+	if got := unknownWarns(capture); got != 2 {
+		t.Fatalf("post-change unchanged re-resolution must stay silent: warns = %d, want 2", got)
+	}
+
+	// A nil-logger resolution (the direct-resolver test path) records no
+	// fingerprint: the next LOGGED resolution of an unchanged section still
+	// warns as the builder's first.
+	other := &OrchestratorBuilder{}
+	_ = other.resolveServiceModels(router, cfg, nil)
+	otherCapture := &recordCapture{}
+	_ = other.resolveServiceModels(router, cfg, slog.New(otherCapture))
+	if got := unknownWarns(otherCapture); got != 1 {
+		t.Fatalf("first logged resolution after nil-logger resolutions warns = %d, want 1", got)
+	}
+}
+
 // TestResolveServiceModelOverrides_MalformedValueDropped verifies the
 // defensive load-bypass path: a value that is not a full composite (bare name
 // or "provider/") is dropped with its own warn while valid siblings survive.

@@ -43,10 +43,12 @@ llm:
   # optimization, context-compaction summaries, goal/prompt suggestions)
   # onto dedicated models instead of the session default. Each key names one
   # fixed service call, each value is a full composite "provider/model" id
-  # (split on the FIRST "/" only) that must point at an ENABLED model of a
-  # CONFIGURED provider — the provider/model pair is resolved when a session
-  # builds and fails SOFT to the session default when it doesn't resolve, so
-  # a stale override never blocks startup. Format problems (an unknown key,
+  # (split on the FIRST "/" only). Validation is provider-NAME-only: the
+  # provider must be one that is CONFIGURED, checked when a session builds —
+  # a pin naming an unconfigured provider fails SOFT to the session default
+  # (with a warning), so a stale override never blocks startup; the model
+  # part is passed to that provider verbatim and is NOT checked against its
+  # enabled models. Format problems (an unknown key,
   # an empty/bare/"provider/"-only value) are dropped with a load warning
   # and rewritten away at the next save. Omit the whole section for the
   # default behavior — in-session consumers (judge, router, reflector,
