@@ -225,7 +225,8 @@ type BuilderLLMConfig struct {
 	// ServiceModels maps a fixed service-model key (canonical set in
 	// backend/config) to a composite "provider/model" id. Resolved once per
 	// Build against the session router (resolveServiceModelOverrides); keys
-	// naming an unknown provider fall back to the session model.
+	// naming an unknown provider fall back to the session model, with an
+	// aggregated Warn deduped while the resolution outcome stays unchanged.
 	ServiceModels map[string]string
 
 	Retry BuilderRetryConfig

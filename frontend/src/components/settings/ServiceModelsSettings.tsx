@@ -41,6 +41,14 @@ import type { ModelRef } from '@/lib/modelId'
  * The set is closed on the Go side — an unknown key cannot reach this list
  * because it is dropped at load/save with a warning — so a new backend key
  * must be added here in the same change that extends the backend.
+ *
+ * The judge/router/reflector hints also state the pinned-reasoning semantics
+ * (ADR-131): a router/reflector pin re-stamps the pin's own tier-Off spelling
+ * onto every call (overrideWrap in core/model_overrides.go), so the session's
+ * reasoning-effort setting is inert on the wire for those two; the judge's
+ * reasoning-off is its fixed verdict policy with or without a pin (sp4rk
+ * tools/judge.go judgeReasoningEffort), so its pin changes the model, not the
+ * policy. Keep the wording in lockstep with those sources.
  */
 const SERVICE_MODEL_ROWS: ReadonlyArray<{
   key: string
@@ -55,19 +63,19 @@ const SERVICE_MODEL_ROWS: ReadonlyArray<{
   {
     key: 'judge',
     label: 'Tool-call judge',
-    hint: 'Strict verdicts for assisted/silent tool confirmations.',
+    hint: 'Strict verdicts for assisted/silent tool confirmations. Verdicts always run with reasoning off for whichever model serves them — a pin changes that model, not the reasoning policy.',
     fallback: 'session',
   },
   {
     key: 'router',
     label: 'Routing classifier',
-    hint: 'Message classification on every send.',
+    hint: 'Message classification on every send. A pinned model always runs with reasoning off for its own family — the session\'s reasoning-effort setting does not apply.',
     fallback: 'session',
   },
   {
     key: 'reflector',
     label: 'Reflector',
-    hint: 'Between-steps reflection of the ReAct loop.',
+    hint: 'Between-steps reflection of the ReAct loop. A pinned model always runs with reasoning off for its own family — the session\'s reasoning-effort setting does not apply.',
     fallback: 'session',
   },
   {
@@ -171,8 +179,11 @@ export function ServiceModelsSettings({
             suggestions) use that session's current model, while the calls made
             outside any session — titles, commit messages, prompt optimization,
             follow-up suggestions — use the global default model. Applied when
-            this dialog saves and in every new session; a pin pointing at a
-            removed provider or disabled model quietly falls back the same way.
+            this dialog saves and in every new session. A pin is validated
+            against the provider NAME only: a pin naming a provider that is
+            no longer configured falls back the same way (a warning is
+            logged), while the model part is passed to that provider as-is —
+            it is not checked against the provider's enabled models.
           </p>
 
           {SERVICE_MODEL_ROWS.map(({ key, label, hint, fallback }) => (

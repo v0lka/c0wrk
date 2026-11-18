@@ -129,6 +129,44 @@ func resolveServiceModelOverrides(llmRouter *llm.Router, configured map[string]s
 	return &ServiceModelOverrides{entries: entries}
 }
 
+// serviceModelResolutionFingerprint fingerprints the OUTCOME of resolving
+// configured against llmRouter: per sorted key, either the resolved composite
+// id or the drop class (a malformed value / an unknown provider), plus the
+// router's provider universe (the aggregated Warn's known_providers list).
+// Two resolutions with the same fingerprint produce identical sets AND
+// identical diagnostics, so the builder-level Warn dedup
+// (OrchestratorBuilder.resolveServiceModels) can suppress the repeat — the
+// rebuild paths re-resolve an unchanged section on every provider/model
+// reconfiguration.
+func serviceModelResolutionFingerprint(llmRouter *llm.Router, configured map[string]string) string {
+	if llmRouter == nil || len(configured) == 0 {
+		return ""
+	}
+	var fp strings.Builder
+	for _, key := range slices.Sorted(maps.Keys(configured)) {
+		value := strings.TrimSpace(configured[key])
+		provider, model, composite := llm.ParseCompositeModelID(value)
+		if !composite || provider == "" || model == "" {
+			fp.WriteString(key)
+			fp.WriteString("=malformed; ")
+			continue
+		}
+		if _, ok := llmRouter.ProviderForModel(value); !ok {
+			fp.WriteString(key)
+			fp.WriteString("=unknown:")
+			fp.WriteString(provider)
+		} else {
+			fp.WriteString(key)
+			fp.WriteString("=")
+			fp.WriteString(llm.CompositeModelID(provider, model))
+		}
+		fp.WriteString("; ")
+	}
+	fp.WriteString("providers=")
+	fp.WriteString(strings.Join(llmRouter.KnownProviders(), ","))
+	return fp.String()
+}
+
 // pinnedModelCaller wraps an agent.LLMCaller so every Call pins the resolved
 // provider+model while exposing the pin as the caller's active model. The
 // pinning itself is sp4rk's modelProviderOverrideCaller contract (ADR-012
@@ -238,6 +276,34 @@ func (b *OrchestratorBuilder) ServiceModelPin(kind string) (ServiceModelOverride
 	set := b.serviceModels
 	b.mu.RUnlock()
 	return set.Lookup(kind)
+}
+
+// resolveServiceModels resolves cfg's llm.service_models section against
+// llmRouter with builder-level Warn dedup: a resolution whose fingerprint
+// (serviceModelResolutionFingerprint) matches the last LOGGED one resolves
+// silently. The rebuild paths (RebuildRouter, the shared-fallback judge
+// rebuilds) re-resolve the same section on every provider/model
+// reconfiguration, and repeating an unchanged aggregated Warn per rebuild
+// would drown the signal — the first resolution of a given outcome warns once
+// per builder; any change to the pins, their drop outcomes, or the provider
+// universe warns again. The per-key malformed-value Warn is deduped by the
+// same fingerprint (backend/config already rejects those at load, so a repeat
+// one is pure noise). A nil logger resolves without touching the fingerprint
+// state — direct resolver tests keep their per-call Warn behavior.
+func (b *OrchestratorBuilder) resolveServiceModels(llmRouter *llm.Router, configured map[string]string, logger *slog.Logger) *ServiceModelOverrides {
+	fingerprint := serviceModelResolutionFingerprint(llmRouter, configured)
+	if logger != nil {
+		b.serviceModelsWarnMu.Lock()
+		unchanged := fingerprint == b.serviceModelsWarnFingerprint
+		if !unchanged {
+			b.serviceModelsWarnFingerprint = fingerprint
+		}
+		b.serviceModelsWarnMu.Unlock()
+		if unchanged {
+			logger = nil
+		}
+	}
+	return resolveServiceModelOverrides(llmRouter, configured, logger)
 }
 
 // overrideWrap pins the resolved service-model override for key onto caller;
