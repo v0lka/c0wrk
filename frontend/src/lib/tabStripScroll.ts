@@ -21,9 +21,9 @@ export interface TabSpan {
   end: number
 }
 
-/** True when hidden content extends meaningfully (beyond {@link EDGE_EPSILON}) past the visible width. */
-export function isOverflowing(m: StripMetrics): boolean {
-  return m.scrollWidth > m.clientWidth + EDGE_EPSILON
+/** True when the strip's content is meaningfully (beyond {@link EDGE_EPSILON}) wider than its viewport. */
+export function isOverflowing(contentWidth: number, viewportWidth: number): boolean {
+  return contentWidth > viewportWidth + EDGE_EPSILON
 }
 
 /** True when hidden content remains to the left of the viewport. */

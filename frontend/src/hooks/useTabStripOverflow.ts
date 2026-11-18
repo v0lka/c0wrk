@@ -57,20 +57,37 @@ function readMetrics(scroller: HTMLElement): StripMetrics {
   }
 }
 
-/** Tab extents in the scroller's scroll coordinate space, in DOM order. */
+/**
+ * Tab extents in the scroller's scroll coordinate space, in DOM order.
+ * Derived from getBoundingClientRect (viewport coords → scroll coords via the
+ * scroller's own rect + scrollLeft), NOT offsetLeft: offsetLeft is
+ * offsetParent-relative and the strip has no positioned ancestor between a
+ * row and BODY, so it lands in the wrong coordinate system by the width of
+ * the bar's chrome (padding + chevrons) and skews every scroll target.
+ */
 function readTabSpans(scroller: HTMLElement): TabSpan[] {
   const rows = scroller.querySelectorAll<HTMLElement>('[role="tab"]')
+  const scrollerLeft = scroller.getBoundingClientRect().left
   const spans: TabSpan[] = []
   for (const row of rows) {
-    spans.push({ start: row.offsetLeft, end: row.offsetLeft + row.offsetWidth })
+    const rect = row.getBoundingClientRect()
+    const start = rect.left - scrollerLeft + scroller.scrollLeft
+    spans.push({ start, end: start + rect.width })
   }
   return spans
 }
 
 function edgesOf(scroller: HTMLElement): StripEdges {
   const metrics = readMetrics(scroller)
+  // Overflow is judged from the tablist's content width, not the scroller's
+  // scrollWidth: the fitting layout renders «+» INSIDE the scroller, so
+  // scrollWidth transiently includes it and would flip the flag across a
+  // ~36px band where the tabs still fit once «+» moves out — sticky dead
+  // chevrons with no later re-measure to clear them. The tablist (shrink-0)
+  // is invariant to that layout flip.
+  const tablist = scroller.querySelector<HTMLElement>('[role="tablist"]')
   return {
-    overflowing: isOverflowing(metrics),
+    overflowing: isOverflowing(tablist?.offsetWidth ?? metrics.scrollWidth, metrics.clientWidth),
     canScrollLeft: canScrollLeftOf(metrics),
     canScrollRight: canScrollRightOf(metrics),
   }

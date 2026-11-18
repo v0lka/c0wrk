@@ -3,8 +3,10 @@
 // useTabStripOverflow — the tab-strip measurement seam.
 //
 // jsdom lays out nothing: every geometry number is stubbed per element with
-// Object.defineProperty (clientWidth/scrollWidth/scrollLeft on the scroller,
-// offsetLeft/offsetWidth plus a scrollIntoView spy on each [role="tab"] row).
+// Object.defineProperty (clientWidth/scrollWidth/scrollLeft plus a page-left
+// getBoundingClientRect on the scroller, tablist offsetWidth, and per-tab
+// visual getBoundingClientRect + a deliberately BODY-relative offsetLeft +
+// a scrollIntoView spy on each [role="tab"] row).
 // The scroller and row stubs are applied from ref callbacks, so they are in
 // place BEFORE the mount effect measures. All synchronisation is synchronous —
 // prop changes through rerender, "scrolling" through a dispatched scroll
@@ -48,6 +50,8 @@ const TAB_WIDTH = 150
 
 interface StripGeometry {
   metrics: { scrollLeft: number; clientWidth: number; scrollWidth: number }
+  /** The tablist's content width (the overflow flag's source, not scrollWidth). */
+  tablistWidth: number
   spans: Record<string, [number, number]>
 }
 
@@ -57,13 +61,20 @@ function overflowingGeometry(ids: readonly string[], scrollLeft = 0): StripGeome
   ids.forEach((id, index) => {
     spans[id] = [index * TAB_WIDTH, TAB_WIDTH]
   })
-  return { metrics: { scrollLeft, clientWidth: 400, scrollWidth: ids.length * TAB_WIDTH }, spans }
+  return {
+    metrics: { scrollLeft, clientWidth: 400, scrollWidth: ids.length * TAB_WIDTH },
+    tablistWidth: ids.length * TAB_WIDTH,
+    spans,
+  }
 }
 
 /** Same tabs, but the viewport fits them all (scrollWidth clamps to clientWidth). */
 function fittingGeometry(ids: readonly string[]): StripGeometry {
-  return { ...overflowingGeometry(ids), metrics: { scrollLeft: 0, clientWidth: 400, scrollWidth: 400 } }
+  return { ...overflowingGeometry(ids), metrics: { scrollLeft: 0, clientWidth: 400, scrollWidth: 400 }, tablistWidth: 400 }
 }
+
+/** The scroller's page-left: its content is visually offset from the viewport origin. */
+const SCROLLER_PAGE_LEFT = 8
 
 let geometry: StripGeometry
 let scrollToSpy: Mock
@@ -75,13 +86,29 @@ function stubScroller(el: HTMLDivElement): void {
   Object.defineProperty(el, 'scrollLeft', { configurable: true, get: () => metrics.scrollLeft })
   Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => metrics.clientWidth })
   Object.defineProperty(el, 'scrollWidth', { configurable: true, get: () => metrics.scrollWidth })
+  Object.defineProperty(el, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({ left: SCROLLER_PAGE_LEFT }),
+  })
   scrollToSpy = vi.fn()
   Object.defineProperty(el, 'scrollTo', { configurable: true, value: scrollToSpy })
 }
 
 function stubRow(el: Element, span: [number, number]): void {
-  Object.defineProperty(el, 'offsetLeft', { configurable: true, value: span[0] })
-  Object.defineProperty(el, 'offsetWidth', { configurable: true, value: span[1] })
+  const metrics = geometry.metrics
+  // Visual viewport coords: the scroller's page-left plus the span shifted by
+  // the current scroll — a rect→scroll-space conversion must cancel both.
+  Object.defineProperty(el, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({ left: SCROLLER_PAGE_LEFT + span[0] - metrics.scrollLeft, width: span[1] }),
+  })
+  // The real DOM's offsetLeft is BODY-relative (no positioned ancestor exists
+  // between a row and BODY) — deliberately wrong for scroll space; a span
+  // reader that uses offsetLeft fails the scroll-step tests.
+  Object.defineProperty(el, 'offsetLeft', {
+    configurable: true,
+    get: () => SCROLLER_PAGE_LEFT + span[0] - metrics.scrollLeft,
+  })
   Object.defineProperty(el, 'scrollIntoView', { configurable: true, value: vi.fn() })
 }
 
@@ -100,7 +127,14 @@ function Harness({ tabIds, activeTabId }: { tabIds: string[]; activeTabId?: stri
         if (el) stubScroller(el)
       }}
     >
-      <div role="tablist">
+      <div
+        role="tablist"
+        ref={(el) => {
+          if (el) {
+            Object.defineProperty(el, 'offsetWidth', { configurable: true, get: () => geometry.tablistWidth })
+          }
+        }}
+      >
         {tabIds.map((id) => (
           <div
             key={id}
@@ -185,6 +219,7 @@ describe('useTabStripOverflow — measurement triggers', () => {
     expect(exposed.canScrollRight).toBe(false)
 
     geometry.metrics.scrollWidth = TAB_IDS.length * TAB_WIDTH
+    geometry.tablistWidth = TAB_IDS.length * TAB_WIDTH
     fireScroll()
     expect(exposed.overflowing).toBe(true)
     expect(exposed.canScrollLeft).toBe(false)
@@ -231,8 +266,18 @@ describe('useTabStripOverflow — measurement triggers', () => {
     expect(exposed.overflowing).toBe(false)
 
     geometry.metrics.scrollWidth = TAB_IDS.length * TAB_WIDTH
+    geometry.tablistWidth = TAB_IDS.length * TAB_WIDTH
     rerenderStrip({ tabIds: [...TAB_IDS], activeTabId: 't2' })
     expect(exposed.overflowing).toBe(true)
+  })
+
+  it('stays fitting when only the scroller scrollWidth is inflated by the in-flow «+»', () => {
+    // Fitting layout: the tablist (390) fits the 400 viewport, but the in-flow
+    // «+» pads the scroller's scrollWidth past it — the flag must ignore that.
+    geometry = { ...fittingGeometry(TAB_IDS), tablistWidth: 390 }
+    geometry.metrics.scrollWidth = 430
+    renderStrip()
+    expect(exposed.overflowing).toBe(false)
   })
 })
 

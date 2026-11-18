@@ -502,8 +502,9 @@ describe('TabBar keyboard', () => {
 // jsdom lays out nothing, so the strip's geometry is stubbed per element with
 // Object.defineProperty (the same idiom useTabStripOverflow.test.tsx uses):
 // scrollLeft/clientWidth/scrollWidth on the scroller are LIVE getters over
-// the `metrics` object, each [role="tab"] row gets a fixed
-// offsetLeft/offsetWidth, and scrollTo/scrollIntoView are spies. The scroller
+// the `metrics` object, the tablist gets a fixed offsetWidth (the overflow
+// flag's source), each [role="tab"] row gets a LIVE visual
+// getBoundingClientRect, and scrollTo/scrollIntoView are spies. The scroller
 // is stubbed after mount, so the strip "becomes" overflowing exactly the way
 // a real one does — the hook re-measures through its scroll listener when a
 // scroll event arrives, and the layout flips without a remount.
@@ -542,9 +543,17 @@ describe('TabBar strip overflow layout', () => {
     Object.defineProperty(scroller, 'scrollWidth', { configurable: true, get: () => metrics.scrollWidth })
     scrollToSpy = vi.fn()
     Object.defineProperty(scroller, 'scrollTo', { configurable: true, value: scrollToSpy })
+    const tablist = container.querySelector<HTMLElement>('[role="tablist"]')
+    if (!tablist) throw new Error('tablist not found')
+    Object.defineProperty(tablist, 'offsetWidth', { configurable: true, value: tabs.length * TAB_WIDTH })
+    Object.defineProperty(scroller, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 0 }) })
     tabRows().forEach((row, index) => {
-      Object.defineProperty(row, 'offsetLeft', { configurable: true, value: index * TAB_WIDTH })
-      Object.defineProperty(row, 'offsetWidth', { configurable: true, value: TAB_WIDTH })
+      // Visual viewport coords: the row shifted by the current scroll — the
+      // hook's rect→scroll-space conversion cancels it back out.
+      Object.defineProperty(row, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ left: index * TAB_WIDTH - metrics.scrollLeft, width: TAB_WIDTH }),
+      })
     })
     emulateScroll(metrics.scrollLeft)
     return tabs.map((tab) => tab.id)
