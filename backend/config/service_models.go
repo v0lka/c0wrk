@@ -135,3 +135,43 @@ func serviceModelValueProblem(value string) string {
 	}
 	return ""
 }
+
+// CleanServiceModels validates a service-models map offered through an RPC
+// (UpdateLLMConfig) with the same format rule the load pipeline applies to
+// llm.service_models: every key must be one of the fixed service keys and
+// every value a composite "provider/model" id with both parts non-empty.
+// Invalid entries are DROPPED fail-soft — matching load semantics — and
+// reported as warnings (the same texts the load path produces); a nil/empty
+// or fully-invalid input cleans to nil so the persisted section vanishes at
+// the next save. Keys are visited in sorted order so the warning order is
+// deterministic, mirroring normalizeServiceModels.
+func CleanServiceModels(models map[string]string) (cleaned map[string]string, warnings []string) {
+	if len(models) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(models))
+	for key := range models {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		value := models[key]
+		if !IsServiceModelKey(key) {
+			warnings = append(warnings, fmt.Sprintf(
+				"llm.service_models.%q ignored (dropped): unknown service model key; valid keys: %s",
+				key, strings.Join(ValidServiceModelKeys(), ", ")))
+			continue
+		}
+		if reason := serviceModelValueProblem(value); reason != "" {
+			warnings = append(warnings, fmt.Sprintf(
+				"llm.service_models.%q ignored (dropped): %s", key, reason))
+			continue
+		}
+		if cleaned == nil {
+			cleaned = make(map[string]string, len(keys))
+		}
+		cleaned[key] = value
+	}
+	return cleaned, warnings
+}

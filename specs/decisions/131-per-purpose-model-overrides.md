@@ -11,6 +11,13 @@ authoritative for everything else — binding once at `Build`, no re-bind path,
 no sync closure, the selector lock, and "global default changes never re-bind
 a live session's judge".
 
+Amended by [ADR-132](132-service-models-experimental-gate.md): the section
+is effective only while `experimental.enabled` is on (persisted but inert
+while off), and decision 1's "deliberately no UI surface" clause is
+relaxed — the section is edited through a Settings → LLM block under the
+same gate. The key set, load validation, resolution, application, and
+gate mechanics of this ADR are unchanged.
+
 ## Context
 
 Every auxiliary one-shot LLM call outside the agent execution loop — tool-call

@@ -269,3 +269,52 @@ func TestServiceModels_UnknownLegacyKeyVanishesOnSave(t *testing.T) {
 		t.Errorf("reload LoadErrors = %v, want none", reloaded.LoadErrors)
 	}
 }
+
+// TestCleanServiceModels pins the RPC-side cleaner (UpdateLLMConfig): the
+// same format rule as the load pipeline, fail-soft drops with the same
+// warning texts in deterministic (sorted-key) order, and nil-out for
+// empty/fully-invalid input — a cleared or fully-invalid section vanishes at
+// the next save instead of persisting garbage.
+func TestCleanServiceModels(t *testing.T) {
+	cleaned, warnings := CleanServiceModels(map[string]string{
+		ServiceModelJudge:               "anthropic/claude-3-haiku",
+		"future_thing":                  "anthropic/claude-3-haiku",
+		ServiceModelTitle:               "no-slash",
+		ServiceModelCompactionSummarize: "",
+	})
+	if len(cleaned) != 1 || cleaned[ServiceModelJudge] != "anthropic/claude-3-haiku" {
+		t.Errorf("cleaned = %v, want only the valid judge entry", cleaned)
+	}
+	// Sorted-key order: compaction_summarize < future_thing < judge < title,
+	// so the dropped keys warn as compaction_summarize, future_thing, title.
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{
+		`llm.service_models."compaction_summarize"`,
+		`llm.service_models."future_thing"`,
+		`llm.service_models."title"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings missing %q, got: %v", want, warnings)
+		}
+	}
+	if idx := strings.Index(joined, "compaction_summarize"); idx == -1 || idx > strings.Index(joined, "future_thing") || strings.Index(joined, "future_thing") > strings.Index(joined, `"title"`) {
+		t.Errorf("warnings are not in sorted-key order: %v", warnings)
+	}
+
+	// Nil/empty input cleans to nil with no warnings (the no-pin default).
+	if c, w := CleanServiceModels(nil); c != nil || len(w) != 0 {
+		t.Errorf("CleanServiceModels(nil) = %v, %v, want nil, none", c, w)
+	}
+	if c, w := CleanServiceModels(map[string]string{}); c != nil || len(w) != 0 {
+		t.Errorf("CleanServiceModels({}) = %v, %v, want nil, none", c, w)
+	}
+
+	// Fully-invalid input cleans to nil (not an empty map) with warnings.
+	c, w := CleanServiceModels(map[string]string{ServiceModelRouter: "no-slash"})
+	if c != nil {
+		t.Errorf("fully-invalid input cleaned to %v, want nil", c)
+	}
+	if len(w) != 1 {
+		t.Errorf("fully-invalid input warnings = %v, want exactly one", w)
+	}
+}

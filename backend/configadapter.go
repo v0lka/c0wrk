@@ -88,6 +88,22 @@ func activeModelProfile(persist config.ModelProfilesPersistConfig, catalog []con
 	return generic
 }
 
+// serviceModelsWithExperimentalGate returns the cfg's llm.service_models
+// section when experimental.enabled is on, and nil otherwise. The adapter is
+// the single conversion point, so gating here covers every pin consumer at
+// once: session builds and per-config router rebuilds resolve no overrides
+// (each one-shot call falls back to the session default), and the embedded
+// readiness gates' ServiceModelPin advisory resolves nothing either. The
+// section itself stays persisted untouched, so flipping the switch back
+// restores the pins on the next config rebuild (UpdateLLMConfig and the
+// experimental toggle both rebuild the session router). See ADR-131.
+func serviceModelsWithExperimentalGate(cfg *config.Config) map[string]string {
+	if !cfg.Experimental.Enabled {
+		return nil
+	}
+	return cfg.LLM.ServiceModels
+}
+
 // ToBuilderConfig converts a *config.Config into a *core.BuilderConfig — the
 // single conversion point, so core never imports backend/config (see
 // specs/architecture/layers.md). modelProfilesCatalog resolves the effective
@@ -206,8 +222,10 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			ProviderConfigs: providerConfigs,
 			// Clone: the loaded config map must stay untouched by the
 			// builder side, and re-adapter calls (config saves) must not
-			// alias stale entries into a fresh BuilderConfig.
-			ServiceModels: maps.Clone(cfg.LLM.ServiceModels),
+			// alias stale entries into a fresh BuilderConfig. The section
+			// is EXPERIMENTAL (ADR-131): serviceModelsWithExperimentalGate
+			// maps it to nil while experimental.enabled is off.
+			ServiceModels: maps.Clone(serviceModelsWithExperimentalGate(cfg)),
 			Retry: core.BuilderRetryConfig{
 				MaxRetries:     cfg.LLM.Retry.MaxRetries,
 				InitialBackoff: cfg.LLM.Retry.InitialBackoff,

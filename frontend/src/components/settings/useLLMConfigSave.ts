@@ -8,9 +8,17 @@ import type { ProviderConfig } from './useLLMConfig'
 
 interface UseLLMConfigSaveResult {
   /** Immediately persist the full config to the backend. */
-  saveFullConfig: (defModel: string, configs: Record<string, ProviderConfig>) => Promise<void>
+  saveFullConfig: (
+    defModel: string,
+    configs: Record<string, ProviderConfig>,
+    serviceModels: Record<string, string>,
+  ) => Promise<void>
   /** Debounced wrapper around saveFullConfig (300 ms). */
-  debouncedSave: (defModel: string, configs: Record<string, ProviderConfig>) => void
+  debouncedSave: (
+    defModel: string,
+    configs: Record<string, ProviderConfig>,
+    serviceModels: Record<string, string>,
+  ) => void
   /** Complete the pending save before an auth flow starts. */
   flushPendingSave: () => Promise<void>
   /** Cancel a queued debounced save before it can persist stale state. */
@@ -51,7 +59,11 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   // Latest snapshot queued by debouncedSave and not yet persisted. Held so the
   // unmount cleanup can FLUSH it (cancelDebouncedSave discards it instead —
   // the "cancel stale state" semantics its callers rely on).
-  const pendingSaveRef = useRef<{ defModel: string; configs: Record<string, ProviderConfig> } | null>(null)
+  const pendingSaveRef = useRef<{
+    defModel: string
+    configs: Record<string, ProviderConfig>
+    serviceModels: Record<string, string>
+  } | null>(null)
   // Bumped when a newer save is queued or an older one is explicitly cancelled,
   // so a failed flush cannot put its snapshot back over that newer decision.
   const saveEpochRef = useRef(0)
@@ -61,7 +73,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
 
   // --- saveFullConfig ----------------------------------------------------------
   const saveFullConfig = useCallback(
-    (defModel: string, configs: Record<string, ProviderConfig>) => {
+    (defModel: string, configs: Record<string, ProviderConfig>, serviceModels: Record<string, string>) => {
       const req: LLMFullConfigRequest & Record<string, unknown> = { default_model: defModel }
       const openaiCompatible: Record<string, ProviderEntryPayload> = {}
       const anthropicCompatible: Record<string, ProviderEntryPayload> = {}
@@ -123,7 +135,15 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
       req.openai_compatible = openaiCompatible
       req.anthropic_compatible = anthropicCompatible
 
-      const snapshot = { defModel, configs }
+      // The service-model pins (ADR-131) are part of the full-form payload:
+      // transmit ALWAYS (like the compatible maps — this is a replacement
+      // payload). The backend sentinel: a present map replaces the section
+      // wholesale, {} clears it, and invalid entries drop fail-soft on the
+      // Go side (config.CleanServiceModels). Sending an empty object here is
+      // what makes "clear the last pin" possible.
+      req.service_models = serviceModels
+
+      const snapshot = { defModel, configs, serviceModels }
       pendingSaveRef.current = snapshot
       const promise = (async () => {
         try {
@@ -148,9 +168,9 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
 
   // --- debouncedSave -----------------------------------------------------------
   const debouncedSave = useCallback(
-    (defModel: string, configs: Record<string, ProviderConfig>) => {
+    (defModel: string, configs: Record<string, ProviderConfig>, serviceModels: Record<string, string>) => {
       saveEpochRef.current += 1
-      pendingSaveRef.current = { defModel, configs }
+      pendingSaveRef.current = { defModel, configs, serviceModels }
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null
@@ -158,7 +178,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
         const epoch = saveEpochRef.current
         pendingSaveRef.current = null
         if (!pending) return
-        void saveFullConfig(pending.defModel, pending.configs).catch(() => {
+        void saveFullConfig(pending.defModel, pending.configs, pending.serviceModels).catch(() => {
           if (saveEpochRef.current === epoch && pendingSaveRef.current === null) {
             pendingSaveRef.current = pending
           }
@@ -193,7 +213,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
       pendingSaveRef.current = null
       if (!pending) return
       try {
-        await saveFullConfig(pending.defModel, pending.configs)
+        await saveFullConfig(pending.defModel, pending.configs, pending.serviceModels)
       } catch (error) {
         // A failed pre-sign-in flush must stay retryable. A region change that
         // never reaches the backend would start OAuth against the previous region.
