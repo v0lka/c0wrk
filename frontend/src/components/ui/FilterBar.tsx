@@ -14,6 +14,9 @@ interface FilterBarProps {
    * "Filter files" → "Filter files... (glob)".
    */
   placeholder?: string
+  /** Optional content rendered BEFORE the input (e.g. the file tree's
+   *  open-workspace / open-temp buttons); the input shrinks to fit. */
+  leftSlot?: ReactNode
   /** Optional content rendered after the mode toggle (e.g. a refresh
    *  action owned by the embedding panel). */
   rightSlot?: ReactNode
@@ -24,15 +27,16 @@ interface FilterBarProps {
  * switches between glob and regex matching modes. Shared by the file-tree
  * panel and the git history panel so the filter UX stays identical.
  */
-export function FilterBar({ value, onChange, mode, onToggleMode, placeholder, rightSlot }: FilterBarProps) {
+export function FilterBar({ value, onChange, mode, onToggleMode, placeholder, leftSlot, rightSlot }: FilterBarProps) {
   const label = placeholder ?? 'Filter'
   return (
     <div className="flex shrink-0 gap-1 border-b border-border px-2 py-1">
+      {leftSlot}
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={`${label}... (${mode})`}
-        className="h-7 text-xs"
+        className="h-7 min-w-0 flex-1 text-xs"
       />
       <Button
         variant={mode === 'regex' ? 'default' : 'ghost'}

@@ -122,6 +122,14 @@ export function CreateBranchInWorktree(arg1, arg2) {
   return window['go']['desktop']['App']['CreateBranchInWorktree'](arg1, arg2);
 }
 
+export function CreateDirectory(arg1, arg2) {
+  return window['go']['desktop']['App']['CreateDirectory'](arg1, arg2);
+}
+
+export function CreateFile(arg1, arg2) {
+  return window['go']['desktop']['App']['CreateFile'](arg1, arg2);
+}
+
 export function CreateHypothesis(arg1, arg2) {
   return window['go']['desktop']['App']['CreateHypothesis'](arg1, arg2);
 }
@@ -152,6 +160,10 @@ export function DeleteBookmark(arg1, arg2) {
 
 export function DeleteBranch(arg1, arg2) {
   return window['go']['desktop']['App']['DeleteBranch'](arg1, arg2);
+}
+
+export function DeleteEntry(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteEntry'](arg1, arg2);
 }
 
 export function DeleteModelProfile(arg1) {
@@ -726,6 +738,10 @@ export function RenameBranch(arg1, arg2) {
   return window['go']['desktop']['App']['RenameBranch'](arg1, arg2);
 }
 
+export function RenameEntry(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['RenameEntry'](arg1, arg2, arg3);
+}
+
 export function RenameProject(arg1, arg2) {
   return window['go']['desktop']['App']['RenameProject'](arg1, arg2);
 }
@@ -756,6 +772,10 @@ export function ResumeSession(arg1, arg2, arg3, arg4) {
 
 export function ResumeTask(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['ResumeTask'](arg1, arg2, arg3);
+}
+
+export function RevealInFileManager(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['RevealInFileManager'](arg1, arg2, arg3);
 }
 
 export function RunBackgroundUpdateCheck() {

@@ -69,6 +69,10 @@ export function CreateBranch(arg1:string,arg2:string):Promise<void>;
 
 export function CreateBranchInWorktree(arg1:string,arg2:string):Promise<void>;
 
+export function CreateDirectory(arg1:string,arg2:string):Promise<void>;
+
+export function CreateFile(arg1:string,arg2:string):Promise<void>;
+
 export function CreateHypothesis(arg1:string,arg2:backend.NewHypothesisCard):Promise<backend.ResearchGraphDTO>;
 
 export function CreateModelProfile(arg1:string,arg2:string):Promise<string>;
@@ -84,6 +88,8 @@ export function DeclineGoalSuggestion(arg1:string,arg2:string):Promise<void>;
 export function DeleteBookmark(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteBranch(arg1:string,arg2:boolean):Promise<void>;
+
+export function DeleteEntry(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteModelProfile(arg1:string):Promise<void>;
 
@@ -371,6 +377,8 @@ export function RenameBookmark(arg1:string,arg2:string,arg3:string):Promise<void
 
 export function RenameBranch(arg1:string,arg2:string):Promise<void>;
 
+export function RenameEntry(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
@@ -386,6 +394,8 @@ export function ResolveSkillResourcePath(arg1:string,arg2:string):Promise<string
 export function ResumeSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function ResumeTask(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function RevealInFileManager(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RunBackgroundUpdateCheck():Promise<void>;
 

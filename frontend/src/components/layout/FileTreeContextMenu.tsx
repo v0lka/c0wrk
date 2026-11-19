@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
-import { Terminal, Copy, Eye, EyeOff, History, Loader2, Microscope, ChevronLeft } from 'lucide-react'
+import { Terminal, Copy, Eye, EyeOff, History, Loader2, Microscope, ChevronLeft, FilePlus, FolderPlus, Pencil, Trash2, FolderOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import {
@@ -18,9 +18,15 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { escapeGlobLiteral } from '@/lib/pathFilter'
+import { treePathSep } from '@/lib/fileTreeNames'
 import { logger } from '@/lib/logger'
 import type { FileEntry } from '@/types/models'
 import { generateUUID } from '@/lib/ids'
+
+/** Callbacks the panel installs for the mutation/reveal actions (issue #60):
+ *  the menu stays a thin dispatcher — inline-input and dialog state live in
+ *  the panel. */
+export type RequestCreateFn = (parentDir: string, kind: 'file' | 'folder') => void
 
 interface FileTreeContextMenuProps {
   entry: FileEntry
@@ -34,16 +40,26 @@ interface FileTreeContextMenuProps {
   position: { x: number; y: number } | null
   /** Called when the menu should close. */
   onClose: () => void
+  /**
+   * Root mode: `entry.path` is the workspace root itself and the menu offers
+   * only New File / New Folder — the tree renders no root row, so creation at
+   * the root arrives through the background context menu.
+   */
+  rootMode?: boolean
+  /** Install New File / New Folder (directories and the workspace root). */
+  onRequestCreate?: RequestCreateFn
+  /** Install a rename for the entry (files and directories). */
+  onRequestRename?: (entry: FileEntry) => void
+  /** Install a confirmed delete for the entry (files and directories). */
+  onRequestDelete?: (entry: FileEntry) => void
+  /** Reveal the entry's parent directory in the OS file manager. */
+  onRevealContaining?: (entry: FileEntry) => void
 }
 
-/** Platform path separator — Windows uses `\`, POSIX uses `/`. Derived
- *  lazily per call, never at module scope: a module-scope `navigator` read
- *  crashes test collection (the vitest environment has no `navigator`),
- *  taking down every importing test file with it. */
-function pathSep(): string {
-  const platform = typeof navigator === 'undefined' ? '' : navigator.platform
-  return platform.includes('Win') ? '\\' : '/'
-}
+/** Platform path separator — see {@link treePathSep} in lib/fileTreeNames
+ *  (shared with the tree panel's inline input; the tree's own path joins must
+ *  agree with this one). */
+const pathSep = treePathSep
 
 /** Repo-relative path suitable as a .gitignore pattern / display string.
  *  Matches workspaceRoot only at a path-separator boundary to avoid a sibling
@@ -59,17 +75,25 @@ function toRelativePath(path: string, workspaceRoot?: string | null): string {
 
 /**
  * Contextual menu for a file-tree entry: Open in Viewer (files only),
- * Open in Terminal (directories only), Copy Path, Copy Relative Path,
+ * Open in Terminal (directories only), New File / New Folder (directories),
+ * Rename, Delete, Open Containing Folder, Copy Path, Copy Relative Path,
  * Add to .gitignore, and View History. The two git-dependent actions are
- * shown only when the active project's workspace is a git repository.
- * Self-contained — calls the API and stores directly, so no callback prop
- * threading is required.
+ * shown only when the active project's workspace is a git repository. The
+ * mutation/reveal actions dispatch to the panel's callbacks; in rootMode the
+ * menu offers only New File / New Folder on the workspace root.
+ * Self-contained for its original actions — calls the API and stores
+ * directly, so no callback prop threading is required for those.
  */
 export function FileTreeContextMenu({
   entry,
   workspaceRoot,
   position,
   onClose,
+  rootMode = false,
+  onRequestCreate,
+  onRequestRename,
+  onRequestDelete,
+  onRevealContaining,
 }: FileTreeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
@@ -320,6 +344,37 @@ export function FileTreeContextMenu({
                 Back
               </button>
             </>
+          ) : rootMode ? (
+            <>
+              {onRequestCreate && (
+                <>
+                  <button
+                    role="menuitem"
+                    data-testid="file-new-root-file"
+                    onClick={() => {
+                      onRequestCreate(entry.path, 'file')
+                      onClose()
+                    }}
+                    className={menuItemClass}
+                  >
+                    <FilePlus className="size-3.5" />
+                    New File
+                  </button>
+                  <button
+                    role="menuitem"
+                    data-testid="file-new-root-folder"
+                    onClick={() => {
+                      onRequestCreate(entry.path, 'folder')
+                      onClose()
+                    }}
+                    className={menuItemClass}
+                  >
+                    <FolderPlus className="size-3.5" />
+                    New Folder
+                  </button>
+                </>
+              )}
+            </>
           ) : (
             <>
               {!entry.is_dir && (
@@ -357,7 +412,77 @@ export function FileTreeContextMenu({
                   Open in Terminal
                 </button>
               )}
-              {entry.is_dir && <MenuSeparator />}
+              {entry.is_dir && onRequestCreate && (
+                <>
+                  <button
+                    role="menuitem"
+                    data-testid="file-new-file"
+                    onClick={() => {
+                      onRequestCreate(entry.path, 'file')
+                      onClose()
+                    }}
+                    className={menuItemClass}
+                  >
+                    <FilePlus className="size-3.5" />
+                    New File
+                  </button>
+                  <button
+                    role="menuitem"
+                    data-testid="file-new-folder"
+                    onClick={() => {
+                      onRequestCreate(entry.path, 'folder')
+                      onClose()
+                    }}
+                    className={menuItemClass}
+                  >
+                    <FolderPlus className="size-3.5" />
+                    New Folder
+                  </button>
+                </>
+              )}
+              {onRevealContaining && (
+                <button
+                  role="menuitem"
+                  data-testid="file-reveal-containing"
+                  onClick={() => {
+                    onRevealContaining(entry)
+                    onClose()
+                  }}
+                  className={menuItemClass}
+                >
+                  <FolderOpen className="size-3.5" />
+                  Open Containing Folder
+                </button>
+              )}
+              {onRequestRename && (
+                <button
+                  role="menuitem"
+                  data-testid="file-rename"
+                  onClick={() => {
+                    onRequestRename(entry)
+                    onClose()
+                  }}
+                  className={menuItemClass}
+                >
+                  <Pencil className="size-3.5" />
+                  Rename
+                </button>
+              )}
+              {onRequestDelete && (
+                <button
+                  role="menuitem"
+                  data-testid="file-delete"
+                  onClick={() => {
+                    onRequestDelete(entry)
+                    onClose()
+                  }}
+                  className={cn(menuItemClass, 'text-destructive hover:bg-destructive/10 focus:bg-destructive/10 [&_svg]:text-destructive')}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete
+                </button>
+              )}
+              {(onRequestCreate || onRequestRename || onRequestDelete || onRevealContaining) && <MenuSeparator />}
               <button
                 role="menuitem"
                 onClick={handleCopyPath}

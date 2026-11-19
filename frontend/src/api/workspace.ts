@@ -228,3 +228,64 @@ export async function getFileIcon(filePath: string): Promise<{ icon: string; ico
     throw err
   }
 }
+
+/** Semantic reveal destination resolved SERVER-SIDE by RevealInFileManager —
+ *  raw app-internal paths (the session temp dir) never cross the wire
+ *  (specs/contracts/desktop-frontend.md). */
+export type RevealTarget = 'workspace' | 'temp'
+
+// --- Structural tree mutations + reveal (issue #60) ---
+// The backend owns admission (workspace containment, No Project per-session
+// isolation, symlink hardening — specs/domains/workspace.md); these wrappers
+// forward string args and rethrow so the tree decides how a failure renders
+// (inline validation error, confirmation dialog, runtime_error toast).
+
+export async function createFile(sessionId: string, path: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CreateFile(sessionId, path)
+  } catch (err) {
+    logger.error('Failed to create file:', err)
+    throw err
+  }
+}
+
+export async function createDirectory(sessionId: string, path: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CreateDirectory(sessionId, path)
+  } catch (err) {
+    logger.error('Failed to create directory:', err)
+    throw err
+  }
+}
+
+export async function renameEntry(sessionId: string, oldPath: string, newPath: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.RenameEntry(sessionId, oldPath, newPath)
+  } catch (err) {
+    logger.error('Failed to rename:', err)
+    throw err
+  }
+}
+
+export async function deleteEntry(sessionId: string, path: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.DeleteEntry(sessionId, path)
+  } catch (err) {
+    logger.error('Failed to delete:', err)
+    throw err
+  }
+}
+
+export async function revealInFileManager(sessionId: string, target: RevealTarget, path: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.RevealInFileManager(sessionId, target, path)
+  } catch (err) {
+    logger.error('Failed to reveal in file manager:', err)
+    throw err
+  }
+}

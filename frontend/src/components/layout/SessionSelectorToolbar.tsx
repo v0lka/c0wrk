@@ -30,7 +30,7 @@ export function SessionSelectorToolbar({
   return (
     <div className="flex items-center gap-1 px-2 py-1">
       <DropdownMenuItem
-        title={grouped ? "Show flat list" : "Group sessions by Git branch"}
+        title={grouped ? "Show flat list" : "Group sessions by repo branch"}
         className="h-7 w-7 shrink-0 justify-center rounded p-0 text-muted-foreground hover:bg-muted/50 active:bg-muted/30"
         onSelect={(event) => {
           // Keep the menu open — only the display mode flips.
