@@ -7,7 +7,7 @@
 // tabStore and titles/statuses derive live from the real project/session/
 // chat stores by id.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -493,5 +493,175 @@ describe('TabBar keyboard', () => {
     expect(press(row, 'a')).toBe(true)
     expect(document.activeElement).toBe(row)
     expect(controller.activate).not.toHaveBeenCalled()
+  })
+})
+
+// --- strip scroll/overflow layout (chevron pair + pinned «+») ---
+//
+// jsdom lays out nothing, so the strip's geometry is stubbed per element with
+// Object.defineProperty (the same idiom useTabStripOverflow.test.tsx uses):
+// scrollLeft/clientWidth/scrollWidth on the scroller are LIVE getters over
+// the `metrics` object, the tablist gets a fixed offsetWidth (the overflow
+// flag's source), each [role="tab"] row gets a LIVE visual
+// getBoundingClientRect, and scrollTo/scrollIntoView are spies. The scroller
+// is stubbed after mount, so the strip "becomes" overflowing exactly the way
+// a real one does — the hook re-measures through its scroll listener when a
+// scroll event arrives, and the layout flips without a remount.
+
+describe('TabBar strip overflow layout', () => {
+  const TAB_WIDTH = 120
+  const FITTING_VIEWPORT = 600 // five 120px tabs fit exactly
+  const CLIPPED_VIEWPORT = 300 // two and a half tabs visible
+
+  let metrics: { scrollLeft: number; clientWidth: number; scrollWidth: number }
+  let scrollToSpy: Mock
+  let scroller: HTMLDivElement
+
+  /** Render the bar with five fixed-width tabs, then stub the strip geometry:
+      row i occupies [i·TAB_WIDTH, (i+1)·TAB_WIDTH). Re-measures once through
+      the hook's scroll listener so the stubbed geometry is what renders. */
+  function renderStrip(viewport: number): string[] {
+    const tabs = Array.from({ length: 5 }, () => createTab({ projectId: PROJ.id, sessionId: SESS.id }))
+    useTabStore.setState({ tabs, activeTabId: tabs[0]!.id })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root.render(<TabBar controller={fakeController()} />)
+    })
+    metrics = { scrollLeft: 0, clientWidth: viewport, scrollWidth: tabs.length * TAB_WIDTH }
+    scroller = container.querySelector<HTMLDivElement>('.no-scrollbar')!
+    if (!scroller) throw new Error('scroller (.no-scrollbar) not found')
+    Object.defineProperty(scroller, 'scrollLeft', { configurable: true, get: () => metrics.scrollLeft })
+    Object.defineProperty(scroller, 'clientWidth', { configurable: true, get: () => metrics.clientWidth })
+    Object.defineProperty(scroller, 'scrollWidth', { configurable: true, get: () => metrics.scrollWidth })
+    scrollToSpy = vi.fn()
+    Object.defineProperty(scroller, 'scrollTo', { configurable: true, value: scrollToSpy })
+    const tablist = container.querySelector<HTMLElement>('[role="tablist"]')
+    if (!tablist) throw new Error('tablist not found')
+    Object.defineProperty(tablist, 'offsetWidth', { configurable: true, value: tabs.length * TAB_WIDTH })
+    Object.defineProperty(scroller, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 0 }) })
+    tabRows().forEach((row, index) => {
+      // Visual viewport coords: the row shifted by the current scroll — the
+      // hook's rect→scroll-space conversion cancels it back out.
+      Object.defineProperty(row, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ left: index * TAB_WIDTH - metrics.scrollLeft, width: TAB_WIDTH }),
+      })
+    })
+    emulateScroll(metrics.scrollLeft)
+    return tabs.map((tab) => tab.id)
+  }
+
+  /** "Scroll" the strip: assign scrollLeft, then re-measure through the
+      hook's passive scroll listener — the same path a real scroll drives. */
+  function emulateScroll(left: number): void {
+    metrics.scrollLeft = left
+    act(() => {
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+  }
+
+  it('fitting strip: no chevrons and the «+» stays in-flow inside the scroller', () => {
+    renderStrip(FITTING_VIEWPORT)
+    expect(container.querySelector('button[aria-label="Scroll tabs left"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="Scroll tabs right"]')).toBeNull()
+    // In-flow: the «+» is the scroller's last child, right after the tablist.
+    const plus = buttonByLabel('New tab')
+    expect(container.querySelectorAll('button[aria-label="New tab"]')).toHaveLength(1)
+    expect(scroller.contains(plus)).toBe(true)
+    expect(scroller.lastElementChild).toBe(plus)
+    expect(plus.previousElementSibling?.getAttribute('role')).toBe('tablist')
+  })
+
+  it('overflowing strip: both chevrons render, the «+» is pinned outside the scroller, «<» starts disabled', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    // At scrollLeft 0 nothing is hidden to the left, but 300px of strip
+    // remain past the right edge.
+    expect(buttonByLabel('Scroll tabs left').disabled).toBe(true)
+    expect(buttonByLabel('Scroll tabs right').disabled).toBe(false)
+    // Exactly one «+», OUT of the scroller: the bar's rightmost child, right
+    // of the right chevron — and the scroller's sole child is the tablist.
+    const plus = buttonByLabel('New tab')
+    expect(container.querySelectorAll('button[aria-label="New tab"]')).toHaveLength(1)
+    expect(scroller.contains(plus)).toBe(false)
+    const bar = scroller.parentElement!
+    expect(bar.lastElementChild).toBe(plus)
+    expect(plus.previousElementSibling).toBe(buttonByLabel('Scroll tabs right'))
+    expect(scroller.children).toHaveLength(1)
+    expect(scroller.firstElementChild?.getAttribute('role')).toBe('tablist')
+  })
+
+  it('chevron hints are native titles with no Radix trigger ancestor', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    for (const label of ['Scroll tabs left', 'Scroll tabs right']) {
+      const chevron = buttonByLabel(label)
+      // The native-title channel (same as «+»): the icon-only button names its
+      // action through `title`; a TooltipTrigger ancestor would stack the
+      // Radix popup on top of it (button-tooltips.md R4).
+      expect(chevron.getAttribute('title')).toBe(label)
+      expect(chevron.closest('[data-slot="tooltip-trigger"]')).toBeNull()
+    }
+  })
+
+  it('«>» scrolls to fully reveal the tab clipped past the right edge', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    // Viewport [0, 300) clips the third tab [240, 360): the target aligns its
+    // right edge (360) with the viewport's right edge → scrollLeft 60.
+    act(() => {
+      buttonByLabel('Scroll tabs right').click()
+    })
+    expect(scrollToSpy).toHaveBeenCalledTimes(1)
+    expect(scrollToSpy).toHaveBeenCalledWith({ left: 60, behavior: 'instant' })
+  })
+
+  it('«<» scrolls to fully reveal the tab clipped at the left edge', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    // Parked at the right extreme [300, 600) the third tab [240, 360) is
+    // clipped at the LEFT edge; the target aligns its left edge → 240 —
+    // the mirror image of the «>» target.
+    emulateScroll(300)
+    act(() => {
+      buttonByLabel('Scroll tabs left').click()
+    })
+    expect(scrollToSpy).toHaveBeenCalledTimes(1)
+    expect(scrollToSpy).toHaveBeenCalledWith({ left: 240, behavior: 'instant' })
+  })
+
+  it('each chevron disables at its own extreme', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    const max = metrics.scrollWidth - metrics.clientWidth
+    emulateScroll(max)
+    expect(buttonByLabel('Scroll tabs right').disabled).toBe(true)
+    expect(buttonByLabel('Scroll tabs left').disabled).toBe(false)
+    emulateScroll(0)
+    expect(buttonByLabel('Scroll tabs left').disabled).toBe(true)
+    expect(buttonByLabel('Scroll tabs right').disabled).toBe(false)
+  })
+
+  it('activating a tab scrolls that row into view', () => {
+    const ids = renderStrip(CLIPPED_VIEWPORT)
+    // jsdom ships no scrollIntoView; spy per row AFTER the mount effect has
+    // already consumed the guarded no-op for the initial active tab.
+    const spies = tabRows().map((row) => {
+      const spy = vi.fn()
+      Object.defineProperty(row, 'scrollIntoView', { configurable: true, value: spy })
+      return spy
+    })
+    const third = ids[2]!
+    act(() => {
+      useTabStore.setState({ activeTabId: third })
+    })
+    expect(spies[2]).toHaveBeenCalledTimes(1)
+    expect(spies[2]).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' })
+    spies.forEach((spy, index) => {
+      if (index !== 2) expect(spy).not.toHaveBeenCalled()
+    })
+  })
+
+  it('the scroller hides the native scrollbar without the custom-scrollbar token', () => {
+    renderStrip(CLIPPED_VIEWPORT)
+    expect(scroller.classList.contains('no-scrollbar')).toBe(true)
+    expect(scroller.classList.contains('custom-scrollbar')).toBe(false)
   })
 })
