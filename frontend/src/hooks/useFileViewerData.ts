@@ -223,7 +223,16 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
       reloadTimerRef.current = setTimeout(runCoalescedReload, TREE_CHANGED_DEBOUNCE_MS)
     }
     const unsubTree = onGlobalEvent('workspace:tree_changed', (payload) => scheduleReload(payload))
-    const unsubGit = onGlobalEvent('git:status_changed', () => markViewerDiffsStale())
+    const unsubGit = onGlobalEvent('git:status_changed', () => {
+      // A git mutation moves hunks without touching bytes: bump the epoch so
+      // the short-circuit refetches diffs, AND schedule a pathless reload —
+      // the git-only watcher batch the same mutation produces scopes to .git
+      // paths no open tab holds, so the epoch bump alone would leave the
+      // stale overlay rendered until an unrelated workspace event. The
+      // shared debounce coalesces this with the watcher's own cycle.
+      markViewerDiffsStale()
+      scheduleReload(undefined)
+    })
     return () => {
       unsubTree()
       unsubGit()
