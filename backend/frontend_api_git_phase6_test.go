@@ -823,6 +823,59 @@ func TestGetFileDiffHunks_NoChanges(t *testing.T) {
 	})
 }
 
+// TestGetFileDiffHunks_UntrackedNoIndexHunks: an untracked file gets its
+// hunks from the same synthetic --no-index diff GetFileDiff builds, so the
+// viewer can assemble the unified diff from the hunk list alone (one RPC
+// instead of the GetFileDiff + GetFileDiffHunks pair on the auto-refresh
+// path). The no-index failure path (a vanished file) must degrade to zero
+// hunks, never an RPC error.
+func TestGetFileDiffHunks_UntrackedNoIndexHunks(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		path := filepath.Join(dir, "brand-new.txt")
+		if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		hunks, err := f.GetFileDiffHunks(path)
+		if err != nil {
+			t.Fatalf("GetFileDiffHunks: %v", err)
+		}
+		if len(hunks) == 0 {
+			t.Fatal("expected --no-index hunks for an untracked file, got none")
+		}
+		for _, h := range hunks {
+			if h.Staged {
+				t.Errorf("untracked hunks must not be marked staged")
+			}
+			if !strings.HasPrefix(h.Diff, "@@") {
+				t.Errorf("hunk block must start with an @@ header, got:\n%s", h.Diff)
+			}
+		}
+		var assembled strings.Builder
+		for i, h := range hunks {
+			if i > 0 {
+				assembled.WriteString("\n")
+			}
+			assembled.WriteString(h.Diff)
+		}
+		if !strings.Contains(assembled.String(), "+alpha") || !strings.Contains(assembled.String(), "+beta") {
+			t.Errorf("assembled diff missing the added lines:\n%s", assembled.String())
+		}
+
+		// Parity with the legacy RPC: every hunk block must parse out of
+		// exactly the diff GetFileDiff produced for the same file.
+		legacy, err := f.GetFileDiff(path)
+		if err != nil {
+			t.Fatalf("GetFileDiff: %v", err)
+		}
+		for _, h := range hunks {
+			if !strings.Contains(legacy, h.Diff) {
+				t.Errorf("hunk block not contained in GetFileDiff output:\n%s", h.Diff)
+			}
+		}
+	})
+}
+
 func TestDiscardChanges_StagedNewFileRemoved(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
 		path := filepath.Join(dir, "staged-new.txt")

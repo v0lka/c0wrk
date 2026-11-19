@@ -2348,7 +2348,12 @@ func parseHunkInfos(diff string, staged bool) []HunkDiffInfo {
 // uncommitted changes, distinguishing staged hunks (HEAD vs index) from
 // unstaged hunks (index vs worktree); each hunk carries its line-range
 // metadata, a staged flag, and the raw unified-diff block (for tooltip
-// display). Read-only. See resolveGitPath for the shared error contract.
+// display). An untracked file surfaces as unstaged hunks parsed from the same
+// synthetic --no-index diff GetFileDiff builds, so the viewer can assemble
+// the whole unified diff from the hunk list alone — one RPC (two git spawns,
+// three for an untracked file) replaces the former GetFileDiff +
+// GetFileDiffHunks pair (two RPCs / four spawns) on the auto-refresh path.
+// Read-only. See resolveGitPath for the shared error contract.
 func (f *FrontendAPI) GetFileDiffHunks(filePath string) ([]HunkDiffInfo, error) {
 	repoPath, relPath, err := f.resolveGitPath(filePath)
 	if err != nil {
@@ -2370,5 +2375,23 @@ func (f *FrontendAPI) GetFileDiffHunks(filePath string) ([]HunkDiffInfo, error) 
 
 	hunks := parseHunkInfos(strings.TrimSpace(stagedDiff), true)
 	hunks = append(hunks, parseHunkInfos(strings.TrimSpace(unstagedDiff), false)...)
+
+	// Untracked file: neither diff carries hunks, and GetFileDiff would fall
+	// through to the synthetic full-file --no-index diff (the exact
+	// GetFileDiffInRepo condition: empty staged AND unstaged output AND
+	// untracked). Produce the same blocks here so the assembled hunk diff
+	// matches what the viewer used to get from GetFileDiff. The no-index
+	// runner treats exit 1 ("differences exist") as success; any other
+	// failure — e.g. the file vanished mid-call — degrades to an empty hunk
+	// list: the diff overlay is optional, never an RPC error.
+	if len(hunks) == 0 {
+		ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+		defer cancel()
+		if !workspace.IsGitTracked(ctx, repoPath, relPath) {
+			if untrackedDiff, uerr := workspace.GetFileDiffNoRepo(ctx, repoPath, relPath); uerr == nil {
+				hunks = parseHunkInfos(strings.TrimSpace(untrackedDiff), false)
+			}
+		}
+	}
 	return hunks, nil
 }

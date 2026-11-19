@@ -45,6 +45,21 @@ export interface DisplayLine {
 
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
+/**
+ * Assemble a unified-diff text from structured hunk blocks (HunkDiffInfo.Diff
+ * — each an `@@ … @@` header plus body). The viewer's parseUnifiedDiff only
+ * consumes `@@` sections, so the per-file header lines the raw `git diff`
+ * output carries (diff --git / index / --- / +++) are neither needed nor
+ * reproduced. Blocks keep their backend order (staged, then unstaged, then
+ * the untracked --no-index section), which is exactly the order GetFileDiff's
+ * concatenated raw diffs presented them in. An empty hunk list assembles to
+ * '' — the same no-changes signal the raw RPC used to return.
+ */
+export function assembleUnifiedDiff(hunks: ReadonlyArray<{ diff: string }>): string {
+  if (hunks.length === 0) return ''
+  return hunks.map((h) => h.diff).join('\n')
+}
+
 export function parseUnifiedDiff(diffText: string): ParseResult {
   if (!diffText) return { hunks: [] }
   const lines = diffText.split('\n')

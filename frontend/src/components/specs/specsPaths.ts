@@ -57,9 +57,9 @@ function extractEventPaths(payload: unknown): string[] | null {
 
 /**
  * The workspace:tree_changed relevance filter: refresh when the change
- * touches the ACTIVE framework's tree. Both PRODUCTION payload shapes carry
- * no path list at all — the fs watcher emits `{research_scoped?}` and the
- * agent-write emitter emits nothing — so a payload without paths means
+ * touches the ACTIVE framework's tree. The fs watcher emits the batch's
+ * changed paths under `paths`; the agent-write emitter (tool results carry
+ * no path metadata) emits nothing — so a payload without paths means
  * "cannot scope" and a payload arriving before the first parse (no root yet)
  * means the same: both fail OPEN. GetSpecsStatus is one light read-only
  * parse, and DETECTION itself depends on files outside the roots (a skill
