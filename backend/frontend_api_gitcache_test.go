@@ -479,6 +479,78 @@ func TestGitSnapshotCache_UnrelatedDropKeepsRefreshLaunchable(t *testing.T) {
 	}
 }
 
+// TestInvalidateGitCachesOnWatcher_ExternalGitMutation: a .git write no
+// backend RPC performed (a terminal git add/commit/stash) is a git-mutation
+// signal — the funnel emits git:status_changed (the frontend's viewer-diff
+// epoch keys off it, so an externally staged overlay heals like a
+// UI-initiated one) and the status snapshots drop. A batch without
+// git-internal paths stays event-silent and still drops the caches.
+func TestInvalidateGitCachesOnWatcher_ExternalGitMutation(t *testing.T) {
+	root := "/repo"
+	var statusCalls atomic.Int32
+	type emitted struct {
+		name    string
+		payload any
+	}
+	var events []emitted
+	f := &FrontendAPI{
+		gitStatusFn: genStatusSeam(&statusCalls),
+		emitEvent: func(name string, payloads ...any) {
+			var payload any
+			if len(payloads) > 0 {
+				payload = payloads[0]
+			}
+			events = append(events, emitted{name, payload})
+		},
+	}
+	f.seedPublished.Store(true)
+
+	if _, err := f.cachedGitStatus(root); err != nil {
+		t.Fatalf("prime status: %v", err)
+	}
+
+	// A terminal `git add` touches .git/index: the funnel emits
+	// git:status_changed and drops the status snapshots.
+	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, ".git", "index")})
+	if _, err := f.cachedGitStatus(root); err != nil {
+		t.Fatalf("status after external stage: %v", err)
+	}
+	if got := statusCalls.Load(); got != 2 {
+		t.Fatalf("external git mutation must drop the status caches: spawned %d, want 2", got)
+	}
+	statusEvents := 0
+	var payload any
+	for _, e := range events {
+		if e.name == EventGitStatusChanged {
+			statusEvents++
+			payload = e.payload
+		}
+	}
+	if statusEvents != 1 {
+		t.Fatalf("external git mutation must emit git:status_changed once, got %d", statusEvents)
+	}
+	if payload != root {
+		t.Fatalf("git:status_changed payload = %v, want the repo root", payload)
+	}
+
+	// A batch without git-internal paths stays event-silent (tree_changed is
+	// the watcher callback's own emission, not the cache route's) and still
+	// drops the status caches.
+	events = nil
+	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, "main.go")})
+	for _, e := range events {
+		if e.name == EventGitStatusChanged {
+			t.Fatalf("regular file change must not emit git:status_changed, got %+v", e)
+		}
+	}
+	if _, err := f.cachedGitStatus(root); err != nil {
+		t.Fatalf("status after regular change: %v", err)
+	}
+	if got := statusCalls.Load(); got != 3 {
+		t.Fatalf("regular change must still drop the status caches: spawned %d, want 3", got)
+	}
+}
+
 // TestListDirectory_GitIgnoredFlagsCachedOnce verifies that two back-to-back
 // ListDirectory calls on a git repo run the batched check-ignore once: the
 // second listing is served from the per-directory flags cache.
