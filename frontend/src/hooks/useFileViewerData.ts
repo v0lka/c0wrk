@@ -21,14 +21,27 @@ import { isTreeChangedPayload } from '@/types/events'
 export const TREE_CHANGED_DEBOUNCE_MS = 400
 
 /**
+ * Cap on how long a sustained event stream may postpone the coalesced cycle
+ * beyond the FIRST pending change: a pure trailing debounce re-arms on every
+ * event, so a writer faster than the window (a build, a log writer, a fast
+ * loop of agent tool calls) would starve viewer refreshes for the whole
+ * stream. Whichever fires first — the quiet window or this max-wait — runs
+ * the cycle.
+ */
+export const TREE_CHANGED_MAX_WAIT_MS = 2000
+
+/**
  * True when path equals a changed path or lives under one (path-boundary
- * aware). Watcher batches can name a DIRECTORY — fsnotify reports
+ * aware, separator-normalized — Windows payloads and tab paths both carry
+ * backslashes). Watcher batches can name a DIRECTORY — fsnotify reports
  * rename/move/create at the dir level — so a tab under a changed path must
  * refresh too; the same rule the SPECS relevance filter applies.
  */
 function isPathCovered(path: string, changed: ReadonlySet<string>): boolean {
-  for (const p of changed) {
-    if (path === p || path.startsWith(p.endsWith('/') ? p : p + '/')) return true
+  const norm = path.replace(/\\/g, '/')
+  for (const raw of changed) {
+    const p = raw.replace(/\\/g, '/')
+    if (norm === p || norm.startsWith(p.endsWith('/') ? p : p + '/')) return true
   }
   return false
 }
@@ -86,6 +99,9 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingPathsRef = useRef(new Set<string>())
   const pendingAllRef = useRef(false)
+  // Timestamp of the first pending change in the current cycle window — the
+  // max-wait anchor (0 = no pending change).
+  const firstPendingAtRef = useRef(0)
   // Stable indirections so loadFile's own deferred follow-ups and the
   // workspace event subscription always call the latest loadFile / read the
   // latest openTabs without re-binding effects.
@@ -217,6 +233,7 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
       const paths = pendingPathsRef.current
       pendingAllRef.current = false
       pendingPathsRef.current = new Set()
+      firstPendingAtRef.current = 0
       for (const path of openTabsRef.current) {
         // Virtual files have no on-disk counterpart to reload.
         if (useFileViewerStore.getState().files[path]?.virtual) continue
@@ -233,7 +250,15 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
         for (const p of scoped) pendingPathsRef.current.add(p)
       }
       if (reloadTimerRef.current !== null) clearTimeout(reloadTimerRef.current)
-      reloadTimerRef.current = setTimeout(runCoalescedReload, TREE_CHANGED_DEBOUNCE_MS)
+      // Trailing debounce, but never beyond the max-wait since the FIRST
+      // pending change: sustained streams refresh on a bounded cadence.
+      const now = Date.now()
+      if (firstPendingAtRef.current === 0) firstPendingAtRef.current = now
+      const wait = Math.max(
+        0,
+        Math.min(TREE_CHANGED_DEBOUNCE_MS, TREE_CHANGED_MAX_WAIT_MS - (now - firstPendingAtRef.current)),
+      )
+      reloadTimerRef.current = setTimeout(runCoalescedReload, wait)
     }
     const unsubTree = onGlobalEvent('workspace:tree_changed', (payload) => scheduleReload(payload))
     const unsubGit = onGlobalEvent('git:status_changed', () => {

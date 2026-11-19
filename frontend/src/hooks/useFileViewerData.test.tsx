@@ -38,7 +38,7 @@ vi.mock('@/api/runtime', () => ({
   }),
 }))
 
-import { useFileViewerData, TREE_CHANGED_DEBOUNCE_MS } from './useFileViewerData'
+import { useFileViewerData, TREE_CHANGED_DEBOUNCE_MS, TREE_CHANGED_MAX_WAIT_MS } from './useFileViewerData'
 import { useFileViewerStore, type FileData } from '@/stores/fileViewerStore'
 import { markViewerDiffsStale } from '@/lib/viewerDiffEpoch'
 
@@ -188,6 +188,42 @@ describe('useFileViewerData — tree_changed scoping', () => {
 
     expect(readFileMock).toHaveBeenCalledWith(a)
     expect(readFileMock).not.toHaveBeenCalledWith(b)
+  })
+
+  it('matches Windows backslash separators between payload paths and tab paths', async () => {
+    const a = 'C:\\ws\\src\\a.ts'
+    await mountWith(a, [a], { [a]: { content: 'a', loading: false } })
+    readFileMock.mockResolvedValue('a-new')
+
+    act(() => {
+      fire('workspace:tree_changed', { paths: ['C:\\ws\\src'] })
+    })
+    await flushDebounce()
+
+    expect(readFileMock).toHaveBeenCalledWith(a)
+  })
+
+  it('refreshes within the max wait even while events keep re-arming the debounce', async () => {
+    const path = '/ws/src/main.ts'
+    readFileMock.mockResolvedValue('same\n')
+    await mountWith(path, [path], { [path]: { content: 'x', loading: false } })
+    expect(readFileMock).not.toHaveBeenCalled()
+
+    // A sustained stream faster than the debounce window keeps re-arming the
+    // timer, but the max-wait forces a cycle within TREE_CHANGED_MAX_WAIT_MS
+    // of the first pending change (fake timers make the cadence exact).
+    for (let elapsed = 0; elapsed < TREE_CHANGED_MAX_WAIT_MS - TREE_CHANGED_DEBOUNCE_MS; elapsed += 300) {
+      act(() => {
+        fire('workspace:tree_changed', { paths: [path] })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+    }
+    expect(readFileMock).not.toHaveBeenCalled()
+
+    await flushDebounce()
+    expect(readFileMock).toHaveBeenCalledTimes(1)
   })
 })
 
