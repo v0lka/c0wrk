@@ -11,6 +11,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
+	"github.com/v0lka/c0wrk/internal/gittest"
 )
 
 // ---------------------------------------------------------------------------
@@ -912,6 +913,46 @@ func TestGetFileDiffHunks_DiffsInOwningRepo(t *testing.T) {
 		joined := assembled.String()
 		if !strings.Contains(joined, "-b") || !strings.Contains(joined, "+B") {
 			t.Errorf("hunks must be the inner repo's b→B modification, got:\n%s", joined)
+		}
+		if strings.Contains(joined, "+a") {
+			t.Errorf("unchanged line a must not render as an addition (whole-file --no-index fallback leaked):\n%s", joined)
+		}
+	})
+}
+
+// TestGetFileDiffHunks_ExternalFocusTreeReach: the Git panel can focus an
+// EXTERNAL linked worktree (resolveGitStatusRoot's containment set), and a
+// viewer tab may hold a file of that tree — the hunks RPC must keep
+// rendering it (diffed in the tree's own repository), not error with "path
+// outside project workspace" and wipe the hunk panel on every refresh.
+func TestGetFileDiffHunks_ExternalFocusTreeReach(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		external := gittest.TempDir(t)
+		gitInit(t, external)
+		commitFile(t, external, "owned.txt", "a\nb\nc\n")
+		if err := os.WriteFile(filepath.Join(external, "owned.txt"), []byte("a\nB\nc\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// Focus the panel on the external tree, as SetGitPanelFocus allows.
+		f.setGitFocusPath(external)
+
+		hunks, err := f.GetFileDiffHunks(filepath.Join(external, "owned.txt"))
+		if err != nil {
+			t.Fatalf("GetFileDiffHunks (external focus): %v", err)
+		}
+		if len(hunks) == 0 {
+			t.Fatal("expected the external tree's modification hunks, got none")
+		}
+		var assembled strings.Builder
+		for i, h := range hunks {
+			if i > 0 {
+				assembled.WriteString("\n")
+			}
+			assembled.WriteString(h.Diff)
+		}
+		joined := assembled.String()
+		if !strings.Contains(joined, "-b") || !strings.Contains(joined, "+B") {
+			t.Errorf("hunks must be the external tree's b→B modification, got:\n%s", joined)
 		}
 		if strings.Contains(joined, "+a") {
 			t.Errorf("unchanged line a must not render as an addition (whole-file --no-index fallback leaked):\n%s", joined)
