@@ -1,7 +1,9 @@
 package backend
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -709,6 +711,76 @@ func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 	}
 	if got := flagsCalls.Load(); got != 2 {
 		t.Fatalf("flags must revalidate after a .gitignore change: spawned %d, want 2", got)
+	}
+}
+
+// TestListDirectory_ManagedWorktreeNotFlagged pins the ignore-flag re-rooting:
+// a session tree rooted at a managed worktree sits INSIDE the checkout, under
+// the /.worktrees/ container exclude (anchored to the checkout root), but the
+// flags must be evaluated in the tree's OWN repository — a checkout-rooted
+// check-ignore batch matches every deep path of the tree and would dim the
+// whole session tree. Rules the tree's repository carries (*.log via the
+// shared info/exclude) still flag inside the tree, and the checkout's own
+// listing still flags the container.
+func TestListDirectory_ManagedWorktreeNotFlagged(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	checkout := t.TempDir()
+	gitInit(t, checkout)
+	commitFile(t, checkout, "base.txt", "v1\n")
+
+	exclude := filepath.Join(checkout, ".git", "info", "exclude")
+	fx, err := os.OpenFile(exclude, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open exclude: %v", err)
+	}
+	if _, err := fx.WriteString("/.worktrees/\n*.log\n"); err != nil {
+		t.Fatalf("write exclude: %v", err)
+	}
+	_ = fx.Close()
+
+	tree := filepath.Join(checkout, ".worktrees", "wt")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", checkout, "worktree", "add", "-q", "-b", "wt", tree)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "plain.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "err.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write ignored: %v", err)
+	}
+
+	api := newGitCacheTestAPI(checkout)
+	nodes, err := api.ListDirectory(tree, false)
+	if err != nil {
+		t.Fatalf("ListDirectory(tree): %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, n := range nodes {
+		flagged[n.Name] = n.GitIgnored
+	}
+	if flagged["plain.txt"] {
+		t.Error("plain.txt must not be gitignored — the container exclude is anchored to the checkout root, not the tree")
+	}
+	if !flagged["err.log"] {
+		t.Error("err.log must stay gitignored — rules the tree's repository carries still apply")
+	}
+
+	// The checkout's own listing still flags the .worktrees container.
+	nodes, err = api.ListDirectory(checkout, false)
+	if err != nil {
+		t.Fatalf("ListDirectory(checkout): %v", err)
+	}
+	containerFlagged := false
+	for _, n := range nodes {
+		if n.Name == ".worktrees" {
+			containerFlagged = n.GitIgnored
+		}
+	}
+	if !containerFlagged {
+		t.Error(".worktrees container must stay gitignored in the checkout listing")
 	}
 }
 
