@@ -250,6 +250,28 @@ describe('useFileViewerData — diff pipeline', () => {
     expect(useFileViewerStore.getState().files[path]?.content).toBe('v2\n')
   })
 
+  it('refreshes open tabs on git:status_changed alone — a git-only watcher batch scopes to no tab', async () => {
+    const path = '/ws/src/main.ts'
+    readFileMock.mockResolvedValue('same\n')
+    getFileDiffHunksMock.mockResolvedValue([
+      { oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, oldChangeStart: 1, newChangeStart: 1, staged: false, diff: '@@ -1,1 +1,1 @@\n+x' },
+    ])
+
+    await mount(path)
+    expect(getFileDiffHunksMock).toHaveBeenCalledTimes(1)
+
+    // A stage/commit (Git panel or external terminal) fires git:status_changed
+    // while the watcher batch scopes to .git paths no open tab holds: the
+    // handler must schedule a pathless reload — the epoch bump alone would
+    // leave the stale hunks rendered until an unrelated workspace event.
+    act(() => {
+      fire('git:status_changed')
+    })
+    await flushDebounce()
+    expect(readFileMock).toHaveBeenCalledTimes(2)
+    expect(getFileDiffHunksMock).toHaveBeenCalledTimes(2)
+  })
+
   it('retries the diff fetch after a hunks failure (the epoch stays unmoved)', async () => {
     const path = '/ws/src/main.ts'
     readFileMock.mockResolvedValue('same\n')
