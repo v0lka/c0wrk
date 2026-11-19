@@ -6,7 +6,7 @@ import react from 'eslint-plugin-react'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist', 'wailsjs'] },
+  { ignores: ['dist', 'wailsjs', 'plugins/*/dist'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

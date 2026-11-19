@@ -19,6 +19,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/gittrust"
 	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
@@ -688,6 +689,14 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 	// specs/domains/model-profiles.md.
 	f.refreshModelProfilesGateLocked()
 	f.configMu.Unlock()
+
+	// Register the spawn-layer drift handler BEFORE the registry mirror: a
+	// drift the first raw-eligible spawn catches must be able to remove its
+	// config record (onGitTrustDrift), or the next registry sync would
+	// resurrect the evicted trust. Registration must precede syncGitTrustRegistry
+	// for the same reason — from that call on, raw-eligible entries exist.
+	// See specs/decisions/070-git-semantic-trust.md (spawn-path recheck).
+	gittrust.SetDriftHandler(f.onGitTrustDrift)
 
 	// Mirror the trusted-repo list into the process-wide git trust registry
 	// (core/gittrust) — fail-closed when config is nil or the list is empty.

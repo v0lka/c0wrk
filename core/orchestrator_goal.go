@@ -1178,6 +1178,21 @@ func (o *Orchestrator) defaultGoalVerifier(
 	if gs.VerificationMode == goal.VerificationModeReDerivation {
 		verifierTools = verifierReDerivationToolFilter(availableTools, deps.disabledTools)
 	}
+	// The verifier's dispatch surface must match its advertised descriptor
+	// set: verifierTools is a filtered subset of the session registry, and
+	// deps.toolExec is the shared unrestricted executor — a hallucinated or
+	// smuggled call (a hidden write_file, or delegate in the executable
+	// mode) would otherwise dispatch through the session gates with no
+	// knowledge of the verifier's grant. The catalog decorator labels every
+	// call context with the advertised set; the registry's Gate 2c refuses
+	// names outside it — the same mechanism that binds delegated subagents
+	// to their grant (delegation_catalog.go). The verifier's delegations
+	// re-wrap per child in buildSubAgentTask, so each child's own catalog
+	// replaces this one on its call contexts.
+	deps.toolExec = &delegationCatalogToolExec{
+		inner:   deps.toolExec,
+		catalog: tools.CatalogFromDescriptors(verifierTools),
+	}
 	// Single mode→directive mapping in the prompts layer — the verbose and
 	// Lite branches cannot drift apart.
 	evidence := renderReportedEvidence(verdict)

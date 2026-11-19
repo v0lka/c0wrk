@@ -418,3 +418,75 @@ func truncate(s string, n int) string {
 
 // Ensure fmt is referenced (used by error formatting in a richer future test).
 var _ = fmt.Sprintf
+
+// --- Finding В: the verifier conduit is catalog-gated ---
+
+// TestDefaultGoalVerifier_DispatchSurfaceMatchesAdvertisedSet pins the
+// verifier-side catalog label: defaultGoalVerifier wraps the shared
+// deps.ToolExec with the delegation-catalog decorator built from the
+// verifier's advertised descriptor set, so every call the verifier's
+// Conductor pass dispatches carries a catalog and the registry's Gate 2c can
+// refuse names outside the grant. Executable mode excludes the mutating
+// builtins: a smuggled write_file call arrives labeled with a catalog that
+// does not allow it, while the advertised read_final_result stays
+// dispatchable. The registry-level refusal itself is pinned by the Gate 2c
+// registry tests; this test pins that the verifier conduit is labeled at
+// all — without the label its calls bypass the grant mechanism entirely.
+func TestDefaultGoalVerifier_DispatchSurfaceMatchesAdvertisedSet(t *testing.T) {
+	var smuggledCatalog, legitCatalog ctools.DelegationCatalog
+	var smuggledLabeled, legitLabeled bool
+	exec := &mockToolExecutor{
+		results: map[string]sdktools.ToolResult{},
+		executeFn: func(ctx context.Context, name string, _ json.RawMessage) (sdktools.ToolResult, error) {
+			catalog, ok := ctools.DelegationCatalogFromContext(ctx)
+			switch name {
+			case "write_file":
+				smuggledLabeled = ok
+				smuggledCatalog = catalog
+			case "read_final_result":
+				legitLabeled = ok
+				legitCatalog = catalog
+			}
+			return sdktools.ToolResult{Content: "ok"}, nil
+		},
+	}
+	calls := []llm.ToolCall{
+		{ID: "c1", Name: "write_file", Input: json.RawMessage(`{"path":"x","content":"y"}`)},
+		{ID: "c2", Name: "read_final_result", Input: json.RawMessage(`{}`)},
+	}
+	o := newVerifierTestOrchestrator(t, calls, exec)
+	// write_file is group-tagged into the mutating set; read_final_result and
+	// finish ride the system include group — undeclared (zero) groups match
+	// no include criterion, so the fixture tags them explicitly.
+	available := []sdktools.ToolDescriptor{
+		{Name: "write_file", Group: sdktools.GroupLocalWrite},
+		{Name: "read_final_result", Group: sdktools.GroupSystem},
+		{Name: "declare_verification", Group: sdktools.GroupSystem},
+		{Name: "finish", Group: sdktools.GroupSystem},
+	}
+
+	gs := &goal.GoalState{
+		Status:           goal.StatusActive,
+		Condition:        "x",
+		VerifyClause:     "y",
+		VerificationMode: goal.VerificationModeExecutable,
+	}
+	deps := o.buildConductorDeps(nil, nil)
+	_, _ = o.defaultGoalVerifier(context.Background(), gs, &goal.Verdict{Status: "met"}, "msg", "work", orchestration.NewMapBlackboard(), available, deps)
+
+	if !smuggledLabeled {
+		t.Fatal("smuggled write_file call carried no catalog — the verifier conduit is unlabeled and bypasses the grant mechanism")
+	}
+	if smuggledCatalog.Allows("write_file") {
+		t.Error("the verifier catalog must not allow the executable-mode-excluded write_file")
+	}
+	if !legitLabeled {
+		t.Fatal("read_final_result call carried no catalog")
+	}
+	if !legitCatalog.Allows("read_final_result") {
+		t.Error("the verifier catalog must allow the advertised read_final_result")
+	}
+	if legitCatalog.Allows("write_file") {
+		t.Error("the verifier catalog must exclude write_file from the advertised set")
+	}
+}

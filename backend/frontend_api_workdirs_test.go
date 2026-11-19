@@ -458,47 +458,47 @@ func containsPath(paths []string, want string) bool {
 	return false
 }
 
-// TestAutoAddPromptWorkDirs_AddsExistingDirectories verifies that existing
-// directories mentioned in the prompt are added as session-scoped work
-// directories with the auto-detected description, and a single change event
-// is emitted.
+// TestAutoAddPromptWorkDirs_AddsExistingDirectories verifies that an existing
+// directory inside an already-approved session root is auto-added with the
+// auto-detected description, a directory outside the workspace and every
+// approved root is NOT added, and the change event fires only when something
+// was added.
 func TestAutoAddPromptWorkDirs_AddsExistingDirectories(t *testing.T) {
 	h := newWorkDirsHarness(t)
-	dir1 := h.existingDir(t)
-	dir2 := h.existingDir(t)
-	// A regular file and a non-existent path: both must be skipped.
-	filePath := filepath.Join(t.TempDir(), "file.txt")
-	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("setup file: %v", err)
+	// The approval root the user added explicitly; candidates inside it are
+	// eligible, anything outside it and the session workspace is not.
+	root := h.existingDir(t)
+	if err := h.api.AddWorkDirectory("session", h.sessionID, root, "manual root"); err != nil {
+		t.Fatalf("manual add: %v", err)
 	}
-	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	outside := h.existingDir(t)
 
-	text := "look at " + dir1 + " and " + dir2 + " plus " + filePath + " and " + missing
-	h.api.autoAddPromptWorkDirs(h.sessionID, text)
+	h.api.autoAddPromptWorkDirs(h.sessionID, "", "look at "+root+" and "+sub+" plus "+outside)
 
 	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
+	subResolved, _ := filepath.EvalSymlinks(sub)
 	if len(recs) != 2 {
-		t.Fatalf("expected 2 auto-added directories, got %d: %#v", len(recs), recs)
+		t.Fatalf("expected 2 records (manual root + auto-added subdir), got %d: %#v", len(recs), recs)
 	}
-	resolved1, _ := filepath.EvalSymlinks(dir1)
-	resolved2, _ := filepath.EvalSymlinks(dir2)
 	paths := map[string]string{recs[0].Path: recs[0].Description, recs[1].Path: recs[1].Description}
-	if _, ok := paths[resolved1]; !ok {
-		t.Errorf("expected %q added, got %v", resolved1, paths)
+	if desc, ok := paths[subResolved]; !ok {
+		t.Errorf("expected the in-root subdir %q auto-added, got %v", subResolved, paths)
+	} else if desc != promptAutoWorkDirDescription {
+		t.Errorf("expected auto-detected description, got %q", desc)
 	}
-	if _, ok := paths[resolved2]; !ok {
-		t.Errorf("expected %q added, got %v", resolved2, paths)
+	outResolved, _ := filepath.EvalSymlinks(outside)
+	if _, ok := paths[outResolved]; ok {
+		t.Errorf("an outside-workspace, unapproved directory must NOT be auto-added, got %v", paths)
 	}
-	for _, desc := range paths {
-		if desc != promptAutoWorkDirDescription {
-			t.Errorf("expected auto-detected description, got %q", desc)
-		}
-	}
-	if h.emitCount(EventWorkDirsChanged) != 1 {
-		t.Fatalf("expected exactly 1 emission, got %d", h.emitCount(EventWorkDirsChanged))
+	if h.emitCount(EventWorkDirsChanged) != 2 {
+		t.Fatalf("expected 2 emissions (manual add + auto add), got %d", h.emitCount(EventWorkDirsChanged))
 	}
 }
 
@@ -513,7 +513,7 @@ func TestAutoAddPromptWorkDirs_SkipsAlreadyRecorded(t *testing.T) {
 	}
 	beforeEmit := h.emitCount(EventWorkDirsChanged)
 
-	h.api.autoAddPromptWorkDirs(h.sessionID, "see "+dir)
+	h.api.autoAddPromptWorkDirs(h.sessionID, "", "see "+dir)
 
 	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
 	if err != nil {
@@ -534,7 +534,7 @@ func TestAutoAddPromptWorkDirs_SkipsAlreadyRecorded(t *testing.T) {
 // the prompt contains no local paths (no records, no emission).
 func TestAutoAddPromptWorkDirs_NoPathsNoop(t *testing.T) {
 	h := newWorkDirsHarness(t)
-	h.api.autoAddPromptWorkDirs(h.sessionID, "just a regular message with no paths")
+	h.api.autoAddPromptWorkDirs(h.sessionID, "", "just a regular message with no paths")
 
 	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
 	if err != nil {
@@ -545,5 +545,101 @@ func TestAutoAddPromptWorkDirs_NoPathsNoop(t *testing.T) {
 	}
 	if h.emitCount(EventWorkDirsChanged) != 0 {
 		t.Fatalf("expected no emission, got %d", h.emitCount(EventWorkDirsChanged))
+	}
+}
+
+// TestAutoAddPromptWorkDirs_RejectsContainmentWidening pins the containment
+// rule for prompt-mentioned paths: prompt text is untrusted input (a
+// repository can plant a command template whose body mentions credential
+// directories — ADR-096 templates are expanded and sent without a preview),
+// so a mention may only extend containment the session already has.
+// Arbitrary outside directories, hidden state/credential stores directly
+// under home (~/.ssh, ~/.c0wrk), and chained widening (a candidate inside a
+// root the SAME prompt would have added) are all rejected; only an explicit
+// user action may add them.
+func TestAutoAddPromptWorkDirs_RejectsContainmentWidening(t *testing.T) {
+	h := newWorkDirsHarness(t)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+
+	outside := h.existingDir(t)
+	chainedParent := h.existingDir(t)
+	chainedChild := filepath.Join(chainedParent, "child")
+	if err := os.MkdirAll(chainedChild, 0o755); err != nil {
+		t.Fatalf("mkdir chained child: %v", err)
+	}
+	sshDir := filepath.Join(fakeHome, ".ssh")
+	c0wrkDir := filepath.Join(fakeHome, ".c0wrk")
+	for _, d := range []string{sshDir, c0wrkDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	h.api.autoAddPromptWorkDirs(h.sessionID, "", "check "+outside+" and "+chainedParent+
+		" and "+chainedChild+" plus ~/.ssh and ~/.c0wrk")
+
+	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("expected no auto-added records, got %#v", recs)
+	}
+	if h.emitCount(EventWorkDirsChanged) != 0 {
+		t.Errorf("expected no emission, got %d", h.emitCount(EventWorkDirsChanged))
+	}
+}
+
+// TestAutoAddPromptWorkDirs_AllowsInsideWorkspace pins the allow side of the
+// containment rule: a directory inside the session's workspace is eligible —
+// it adds no new read scope, the workspace is already a root — so a prose
+// mention still promotes it to an explicit session work directory.
+func TestAutoAddPromptWorkDirs_AllowsInsideWorkspace(t *testing.T) {
+	h := newWorkDirsHarness(t)
+	ws := h.existingDir(t)
+	inner := filepath.Join(ws, "notes")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatalf("mkdir inner: %v", err)
+	}
+
+	h.api.autoAddPromptWorkDirs(h.sessionID, ws, "summarize "+inner)
+
+	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	innerResolved, _ := filepath.EvalSymlinks(inner)
+	if len(recs) != 1 || recs[0].Path != innerResolved {
+		t.Fatalf("expected exactly the workspace-inner dir added, got %#v", recs)
+	}
+	if h.emitCount(EventWorkDirsChanged) != 1 {
+		t.Errorf("expected exactly 1 emission, got %d", h.emitCount(EventWorkDirsChanged))
+	}
+}
+
+// TestIsSensitiveWorkDir_HomeDotStores pins the denylist for hidden
+// directories directly under home (state/credential stores by convention):
+// the home root and every dot-directory under it are never auto-addable,
+// while a non-hidden path under home stays eligible for the containment
+// checks ([promptAutoAddAllowed]).
+func TestIsSensitiveWorkDir_HomeDotStores(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+
+	for _, p := range []string{
+		fakeHome,
+		filepath.Join(fakeHome, ".ssh"),
+		filepath.Join(fakeHome, ".c0wrk"),
+		filepath.Join(fakeHome, ".config"),
+	} {
+		if !isSensitiveWorkDir(p) {
+			t.Errorf("isSensitiveWorkDir(%s) = false, want true (hidden store under home)", p)
+		}
+	}
+	if isSensitiveWorkDir(filepath.Join(fakeHome, "projects", "x")) {
+		t.Error("a non-hidden path under home must not be blanket-sensitive (containment governs it)")
 	}
 }

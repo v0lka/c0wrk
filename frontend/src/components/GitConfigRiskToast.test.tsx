@@ -141,6 +141,23 @@ describe('GitConfigRiskToast', () => {
     expect(el?.textContent).not.toContain('filter.lfs.process')
   })
 
+  it('renders the spawn source with its own label (drift caught by the git spawn layer)', () => {
+    render()
+    act(() =>
+      fire?.({
+        path: '/tmp/drifted-repo',
+        source: 'spawn',
+        notice: 'Repository-defined git hooks do not run inside c0wrk.',
+        reason: 'The trust has been revoked and the repository is hardened again.',
+        findings: [{ key: 'core.fsmonitor', description: 'runs a filesystem-monitor command' }],
+      }),
+    )
+    const el = toast()
+    expect(el?.textContent).toContain('Git operation')
+    expect(el?.textContent).toContain('/tmp/drifted-repo')
+    expect(el?.textContent).toContain('The trust has been revoked')
+  })
+
   it('renders every finding even when keys repeat (duplicate config keys, several include markers)', () => {
     render()
     act(() =>

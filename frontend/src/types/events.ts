@@ -885,7 +885,10 @@ export interface GitConfigRiskFinding {
  *  absent for ordinary first-time intake warnings. */
 export interface GitConfigRiskData {
   readonly path: string
-  readonly source: 'project' | 'workdir'
+  /** Where the warning came from: a project switch, an added working
+   *  directory, or a git operation whose raw-spawn gate caught a previously
+   *  trusted repository's config drifted from the recorded trust decision. */
+  readonly source: 'project' | 'workdir' | 'spawn'
   readonly notice: string
   readonly findings: readonly GitConfigRiskFinding[]
   /** Set when the warning fired because a previously-trusted repository's
@@ -1843,12 +1846,13 @@ export function isRuntimeError(d: unknown): d is RuntimeError {
 }
 
 /** Guard for a `project:git_config_risk` payload (dangerous git config in a
- *  newly opened project or added work directory). `findings` must be non-empty
+ *  newly opened project, an added work directory, or a git operation that
+ *  caught a trusted repository's config drifted). `findings` must be non-empty
  *  and fully typed — the toast renders each key/description pair directly. */
 export function isGitConfigRiskData(d: unknown): d is GitConfigRiskData {
   if (!isObj(d)) return false
   if (typeof d.path !== 'string' || typeof d.notice !== 'string') return false
-  if (d.source !== 'project' && d.source !== 'workdir') return false
+  if (d.source !== 'project' && d.source !== 'workdir' && d.source !== 'spawn') return false
   if (!Array.isArray(d.findings) || d.findings.length === 0) return false
   if (d.reason !== undefined && typeof d.reason !== 'string') return false
   if (d.diff !== undefined && typeof d.diff !== 'string') return false

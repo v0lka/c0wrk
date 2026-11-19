@@ -29,6 +29,12 @@ import (
 const (
 	GitConfigRiskSourceProject = "project"
 	GitConfigRiskSourceWorkdir = "workdir"
+	// GitConfigRiskSourceSpawn marks a warning raised by the git spawn
+	// layer: a raw-eligible trusted repository's live config no longer
+	// matched the semantic fingerprint recorded at trust time, the trust was
+	// evicted, and the same reasoned recheck the intake paths run re-emits
+	// the warning (ADR-070's recheck, extended to the spawn path).
+	GitConfigRiskSourceSpawn = "spawn"
 )
 
 // gitConfigRiskNotice is the standing safety note carried with every warning:
@@ -65,8 +71,9 @@ type GitConfigRiskData struct {
 	// workspace.ResolveWorkTreeRoot, review [52] — the scan walks up to the
 	// parent repository, so attribution and trust key on its root).
 	Path string `json:"path"`
-	// Source is "project" (project switch) or "workdir" (added auxiliary
-	// working directory).
+	// Source is "project" (project switch), "workdir" (added auxiliary
+	// working directory), or "spawn" (a git operation caught a trusted
+	// repository's config drifted from its recorded trust decision).
 	Source string `json:"source"`
 	// Notice is the fixed hooks-do-not-run safety note.
 	Notice string `json:"notice"`
@@ -172,22 +179,26 @@ func (f *FrontendAPI) readGitConfigSnapshot(fingerprint string) ([]byte, error) 
 // git (ADR-034). Entries register under their REPOSITORY TRUST ROOT because
 // the registry matches strings exactly — a legacy worktree-keyed entry must
 // register the main root; an unresolvable pointer chain mirrors verbatim
-// (the form degraded probes still reach). Harden entries never mirror.
+// (the form degraded probes still reach). Each entry carries the semantic
+// fingerprint the trust decision was bound to (ADR-070), which the spawn
+// layer re-checks before every raw git; an entry whose identity is empty (a
+// v1 record awaiting its next-open migration) registers without one and the
+// spawn layer keeps the hardened path. Harden entries never mirror.
 // Caller holds configMu in concurrent contexts.
 func (f *FrontendAPI) syncGitTrustRegistry() {
 	if f.config == nil {
-		gittrust.Replace(nil)
+		gittrust.ReplaceEntries(nil)
 		return
 	}
-	paths := make([]string, 0, len(f.config.Security.TrustedGitRepos))
+	entries := make([]gittrust.Entry, 0, len(f.config.Security.TrustedGitRepos))
 	for _, r := range f.config.Security.TrustedGitRepos {
 		registered := r.Path
 		if root := workspace.ResolveGitTrustRoot(r.Path); root != "" {
 			registered = root
 		}
-		paths = append(paths, registered)
+		entries = append(entries, gittrust.Entry{Root: registered, SemanticFingerprint: r.SemanticFingerprint})
 	}
-	gittrust.Replace(paths)
+	gittrust.ReplaceEntries(entries)
 }
 
 // GetTrustedGitRepos returns the trusted repository roots as a defensive
@@ -709,6 +720,28 @@ func (f *FrontendAPI) evictTrustedGitRepo(trusted config.TrustedGitRepo) {
 	if err := f.RemoveTrustedGitRepo(trusted.Path); err != nil {
 		f.log().Warn("failed to evict drifted trusted git repository", "path", trusted.Path, "error", err)
 	}
+}
+
+// onGitTrustDrift is the core/gittrust drift handler: the git spawn layer
+// caught a trusted repository whose live config no longer reproduces the
+// semantic fingerprint recorded at trust time, and has already evicted the
+// registry entry. Route through the same recheck the intake paths run, so
+// the config record leaves the list — a stale record would re-mirror the
+// evicted trust on the next registry sync — and the user receives the same
+// reasoned drift warning (diff included) an open-time eviction produces.
+// Runs on git-operation goroutines: the registry lock is released before the
+// handler fires, and this method takes only configMu, so the lock order
+// (registry → config) stays one-directional.
+func (f *FrontendAPI) onGitTrustDrift(root string) {
+	entry, ok := f.trustedGitRepoEntryFor(root)
+	if !ok {
+		// No config record behind the registry entry (removed concurrently,
+		// or the trust list mutated between the drift and the handler): the
+		// registry eviction is the whole job — nothing to re-warn about.
+		f.log().Debug("git trust drift for a root with no trusted record", "path", root)
+		return
+	}
+	f.recheckTrustedGitRepo(GitConfigRiskSourceSpawn, root, entry)
 }
 
 // buildGitConfigFindings renders a scan result into the findings slice the

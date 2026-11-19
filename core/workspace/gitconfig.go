@@ -76,6 +76,8 @@ const (
 	GitConfigFindingAttrRouting    = "attributes_routing" // filter/merge/diff routing in .git/info/attributes or core.attributesFile
 	GitConfigFindingCredential     = "credential_helper"  // credential.helper / credential.<url>.helper
 	GitConfigFindingSigning        = "signing"            // commit.gpgsign / gpg.format / gpg.program / user.signingkey
+	GitConfigFindingUploadPack     = "upload_pack"        // remote.<n>.uploadpack
+	GitConfigFindingReceivePack    = "receive_pack"       // remote.<n>.receivepack
 )
 
 // Verified neutralizing override values (GitSpawn neutralization study).
@@ -87,6 +89,12 @@ const (
 	// neutralPassthroughValue is a benign passthrough command for
 	// textconv / clean / smudge fallbacks.
 	neutralPassthroughValue = "cat"
+	// neutralUploadPackValue restores git's default remote-side fetch
+	// program; -c beats file config wherever the remote name is defined.
+	neutralUploadPackValue = "git-upload-pack"
+	// neutralReceivePackValue restores git's default remote-side push
+	// program.
+	neutralReceivePackValue = "git-receive-pack"
 )
 
 const attrTreeKey = "attr.tree"
@@ -1052,6 +1060,9 @@ func lineNumberBefore(ops []diffOp, pos int, isOld bool) int {
 // driver ("false %O %A %B"), textconv (cat) and external diff driver (empty
 // — plain `git diff` executes these by default); the transport keys
 // (core.sshCommand=ssh, core.askPass=, credential.helper= + per-URL pin);
+// remote.<n>.uploadpack/receivepack=git-upload-pack/git-receive-pack (the
+// name-independent blanket is the spawn-level --upload-pack/--receive-pack
+// pin in git.go);
 // core.attributesFile= plus per-name pins for the attribute sources attr.tree
 // does not cover; and the blanket attr.tree=<object-format empty tree> ONLY
 // for include-bearing configs, where per-name pins cannot see every driver
@@ -1121,6 +1132,10 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 				set["diff."+f.Subsection+".textconv"] = neutralPassthroughValue
 				set["diff."+f.Subsection+".command"] = ""
 			}
+		case GitConfigFindingUploadPack:
+			set["remote."+f.Subsection+".uploadpack"] = neutralUploadPackValue
+		case GitConfigFindingReceivePack:
+			set["remote."+f.Subsection+".receivepack"] = neutralReceivePackValue
 		}
 	}
 	for name := range filterNames {
@@ -1147,6 +1162,11 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 		set["credential.helper"] = ""
 		set["diff.external"] = ""
 		set[gitProxyAllowKey] = gitProxyDenyValue
+		// remote.<n>.uploadpack/receivepack have no name-independent -c pin
+		// (an include may arm an unseen remote name), so the include-hidden
+		// case is NOT covered here — every c0wrk remote-op spawn carries the
+		// command-line --upload-pack/--receive-pack pin instead, which beats
+		// file config regardless of name (remoteTransportPin in git.go).
 	}
 	if len(set) == 0 {
 		return nil
@@ -1226,12 +1246,14 @@ func (info *GitConfigInfo) NeutralizingArgv() []string {
 // ScanGitConfig safely reads and parses (text-only, never spawns) the config
 // of the repository git would discover for repoRoot: the .git chain walks up
 // (subdirectory workspaces covered), .git may be a directory or "gitdir:"
-// pointer, no .git → empty result; linked worktrees scan the COMMON config
-// (commondir file) plus the enabled config.worktree overlay, merged with
-// git's layering ([2]a); attribute sources ([1]a) and the object format
-// ([1]d) are validated as the attr.tree kill needs — unscannable source or
-// unknown format fails the scan closed; missing/oversized config is an
-// error; ignored includes log warnings
+// pointer, no .git → empty result; the scan reads the COMMON config plus the
+// enabled config.worktree overlay, merged with git's layering ([2]a) — a
+// linked worktree resolves the common dir via the commondir file, and a main
+// work tree's own <git-dir>/config.worktree is scanned the same way, since
+// git reads it there too whenever extensions.worktreeConfig is on; attribute
+// sources ([1]a) and the object format ([1]d) are validated as the attr.tree
+// kill needs — unscannable source or unknown format fails the scan closed;
+// missing/oversized config is an error; ignored includes log warnings
 // (specs/decisions/033-git-subprocess-hardening.md).
 func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, error) {
 	logger := slog.Default()
@@ -1246,7 +1268,7 @@ func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, er
 		return &GitConfigInfo{}, nil
 	}
 
-	commonDir, isWorktree, err := resolveCommonGitDir(gitDir)
+	commonDir, _, err := resolveCommonGitDir(gitDir)
 	if err != nil {
 		return nil, err
 	}
@@ -1258,9 +1280,16 @@ func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, er
 	info.GitDir = gitDir
 	info.CommonDir = commonDir
 
-	if isWorktree && info.worktreeConfigEnabled {
+	if info.worktreeConfigEnabled {
 		// config.worktree only matters when extensions.worktreeConfig is
-		// enabled; a planted-but-disabled file is inert, not scanned.
+		// enabled; a planted-but-disabled file is inert, not scanned. The
+		// overlay is scanned for the MAIN work tree too: with the extension
+		// on, git reads <git-dir>/config.worktree there exactly as it does
+		// for linked worktrees (verified empirically) — skipping it left
+		// main-checkout filter/driver configs invisible to both the
+		// neutralization and the trust snapshot. For a git that ignored the
+		// overlay in a main work tree the extra scan only over-approximates
+		// (fail-closed direction).
 		wtPath := filepath.Join(gitDir, "config.worktree")
 		if _, statErr := os.Lstat(wtPath); statErr == nil {
 			wt, wtErr := ScanGitConfigFile(wtPath, logger)
@@ -2263,6 +2292,17 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 			kind = GitConfigFindingCredential
 			description = credentialHelperDescription(p.subsection)
 		}
+	case "remote":
+		// remote.<name>.uploadpack / remote.<name>.receivepack name the
+		// remote-side transport program; a local-path remote executes the
+		// value locally on the first fetch/push — no user interaction.
+		if p.subsection != "" && (key == "uploadpack" || key == "receivepack") {
+			kind = GitConfigFindingUploadPack
+			description = remoteTransportKeyDescription(key, p.subsection)
+			if key == "receivepack" {
+				kind = GitConfigFindingReceivePack
+			}
+		}
 	case "commit":
 		// Truthy-gated: gpgsign=false (the baseline's own pin) must keep a
 		// config Clean; only an ARMED (true/yes/on/1/bare) commit.gpgsign
@@ -2355,6 +2395,10 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 		} else {
 			finding.Overrides = []GitConfigOverride{{Key: "diff." + p.subsection + ".command", Value: ""}}
 		}
+	case GitConfigFindingUploadPack:
+		finding.Overrides = []GitConfigOverride{{Key: "remote." + p.subsection + ".uploadpack", Value: neutralUploadPackValue}}
+	case GitConfigFindingReceivePack:
+		finding.Overrides = []GitConfigOverride{{Key: "remote." + p.subsection + ".receivepack", Value: neutralReceivePackValue}}
 	}
 	p.info.Findings = append(p.info.Findings, finding)
 }
@@ -2465,6 +2509,25 @@ func credentialHelperDescription(url string) string {
 		return desc + "."
 	}
 	return desc + ", plus a credential." + url + ".helper= (empty) pin for this URL."
+}
+
+// remoteTransportKeyDescription explains one remote.<name>.uploadpack /
+// remote.<name>.receivepack occurrence (the remote-side transport program).
+func remoteTransportKeyDescription(key, name string) string {
+	if key == "uploadpack" {
+		return "remote." + name + ".uploadpack names the command git executes as the remote-side program of " +
+			"a fetch/pull/ls-remote from this remote — for a local-path remote the value runs locally on " +
+			"the first fetch, without user interaction (verified on git 2.56.0). Neutralized twice: every " +
+			"c0wrk remote-op spawn pins the command-line --upload-pack=git-upload-pack option, which beats " +
+			"file config regardless of remote name, and the scan derives a remote." + name + ".uploadpack=" +
+			neutralUploadPackValue + " -c pin restoring the default."
+	}
+	return "remote." + name + ".receivepack names the command git executes as the remote-side program of " +
+		"a push to this remote — for a local-path remote the value runs locally on the first push, " +
+		"without user interaction (verified on git 2.56.0). Neutralized twice: every c0wrk remote-op " +
+		"spawn pins the command-line --receive-pack=git-receive-pack option, which beats file config " +
+		"regardless of remote name, and the scan derives a remote." + name + ".receivepack=" +
+		neutralReceivePackValue + " -c pin restoring the default."
 }
 
 // filterKeyDescription explains one filter sub-key.

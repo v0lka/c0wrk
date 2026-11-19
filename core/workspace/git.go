@@ -44,6 +44,7 @@ func errNotGitRepo(err error, stderr string) bool {
 // GitCmdInRepo returns a hardened git [exec.Cmd] for `git <args...>`: the
 // repo-scoped layer on [sysproc.GitCmd] — it scans the repository config fresh
 // per invocation, prepends the scan's neutralizing `-c key=value` overrides,
+// pins the remote-side transport program on fetch/pull/push/ls-remote spawns,
 // and fails closed on unscannable config; cmd.Dir defaults to repoPath. See
 // specs/domains/workspace.md (Git Subprocess Hardening) and
 // specs/decisions/033-git-subprocess-hardening.md (operation-local gitScanMemo).
@@ -94,17 +95,38 @@ var scanGitConfigFn = func(repoRoot string) (*GitConfigInfo, error) {
 	return ScanGitConfig(repoRoot)
 }
 
-// trustedRootRawEligible gates a trusted spawn on the one per-worktree source
-// a repository-level trust decision can never cover: a linked worktree's own
-// config.worktree overlay, plantable after the trust decision. Raw git runs
-// from the worktree only while a fresh scan shows the overlay contributing
-// nothing dangerous; anything else — a failed scan included — takes the hardened
-// baseline below; plain checkouts stay unconditionally raw. Lives below the
-// commit gate (prompting here cannot re-key the trust entry). See
-// specs/decisions/034-git-trust-opt-out.md.
-func trustedRootRawEligible(scan *gitScanMemo) bool {
+// trustedRootRawEligible gates a trusted spawn on everything a
+// repository-level trust decision can never cover on its own:
+//
+//   - a plain checkout's config may have drifted since the decision: the
+//     spawn re-scans fresh per operation and requires the semantic
+//     fingerprint recorded at trust time to still match — any drift evicts
+//     the trust (the backend-registered handler removes the config record
+//     and re-warns) and the spawn takes the hardened baseline below; a
+//     fingerprint-less entry (legacy record awaiting its next-open
+//     migration) never spawns raw, and a failing scan refuses the spawn
+//     exactly like an untrusted repository. This closes the check-then-act
+//     hole where raw git executed a config edited after the trust decision —
+//     through an include target the snapshot covered — with no recheck
+//     between decision and spawn: intake was the only path that rechecked,
+//     so auto-fetch, panel refreshes, and every other GitCmdInRepo caller
+//     ran whatever stood in the repository at that moment.
+//
+//   - a linked worktree's own config.worktree overlay, plantable after the
+//     trust decision. Raw git runs from the worktree only while a fresh scan
+//     shows the overlay contributing nothing dangerous; anything else — a
+//     failed scan included — takes the hardened baseline below. The overlay
+//     stays on its own scan gate rather than the fingerprint: the recorded
+//     identity covers the MAIN checkout's scan, so comparing it against a
+//     linked worktree's source set would evict on every benign per-worktree
+//     overlay.
+//
+// Lives below the commit gate (prompting here cannot re-key the trust
+// entry). See specs/decisions/034-git-trust-opt-out.md and
+// specs/decisions/070-git-semantic-trust.md.
+func trustedRootRawEligible(scan *gitScanMemo, trustedRoot string) bool {
 	if ResolveGitTrustRoot(scan.path) == ResolveWorkTreeRoot(scan.path) {
-		return true
+		return plainCheckoutRawEligible(scan, trustedRoot)
 	}
 	info, err := scan.scanInfo()
 	if err != nil {
@@ -113,23 +135,103 @@ func trustedRootRawEligible(scan *gitScanMemo) bool {
 	return info.WorktreeOverlayClean()
 }
 
+// plainCheckoutRawEligible binds a plain-checkout trusted spawn to the exact
+// semantic identity the trust decision recorded: a fresh scan plus include
+// resolution — the same pipeline TrustGitRepo ran — must reproduce the
+// stored fingerprint, else the trust is evicted and the spawn hardens.
+func plainCheckoutRawEligible(scan *gitScanMemo, trustedRoot string) bool {
+	info, err := scan.scanInfo()
+	if err != nil {
+		// Fail closed: the hardened path re-derives the same memoized error
+		// and refuses the spawn, exactly as for untrusted repositories.
+		return false
+	}
+	stored, ok := gittrust.SemanticFingerprint(trustedRoot)
+	if !ok || stored == "" {
+		// Registered without a verifiable identity: the decision cannot be
+		// checked against the live config — keep the hardened path.
+		return false
+	}
+	// The identity covers the include targets resolved at trust time, so the
+	// same resolution here reads an edited target as drift. ResolveIncludes
+	// only appends include sources — findings, records, and the Includes
+	// directive list are untouched — so the hardened path's override
+	// derivation, which reuses this memoized scan on the mismatch path,
+	// derives the same overrides it would from a fresh scan.
+	logger := scan.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	info.ResolveIncludes(logger)
+	if current := info.SemanticFingerprint(); current != stored {
+		gittrust.EvictDrifted(trustedRoot)
+		return false
+	}
+	return true
+}
+
+// remoteTransportPin returns the argv pin that forces git's DEFAULT
+// remote-side transport program for the given subcommand, or nil for
+// non-transport commands. remote.<n>.uploadpack (fetch/pull/ls-remote) and
+// remote.<n>.receivepack (push) are command-bearing config keys the
+// neutralizing-argv machinery cannot blanket-cover: there is no
+// name-independent -c key, and an include-hidden config may arm a remote
+// name the scan never sees (specs/decisions/033-git-subprocess-hardening.md).
+// A command-line option beats file config regardless of remote name and
+// config layer (verified on git 2.56.0: armed uploadpack/receivepack values
+// execute on a local-path remote, and the pins suppress execution), so every
+// c0wrk remote-op spawn carries the pin — trust-independently, on both the
+// trusted-raw and hardened paths. A caller that explicitly passes its own
+// --upload-pack/--receive-pack later in args overrides the pin (git's
+// last-option-wins), preserving an escape hatch; the collateral is that a
+// trusted repository's custom remote.<n>.uploadpack/receivepack no longer
+// applies to c0wrk-issued remote operations.
+func remoteTransportPin(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "fetch", "pull", "ls-remote":
+		return []string{"--upload-pack=git-upload-pack"}
+	case "push":
+		return []string{"--receive-pack=git-receive-pack"}
+	}
+	return nil
+}
+
+// withRemoteTransportPin inserts the transport pin right after the
+// subcommand (git accepts options among the positionals); args flow through
+// unchanged for every other subcommand.
+func withRemoteTransportPin(args []string) []string {
+	pin := remoteTransportPin(args)
+	if pin == nil {
+		return args
+	}
+	pinned := make([]string, 0, len(args)+len(pin))
+	pinned = append(pinned, args[0])
+	pinned = append(pinned, pin...)
+	pinned = append(pinned, args[1:]...)
+	return pinned
+}
+
 // gitCmdInRepoScanned is GitCmdInRepo over an operation-scoped scan memo;
 // the memo's path is the command's working directory.
 func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string) (*exec.Cmd, error) {
+	args = withRemoteTransportPin(args)
 	// Trusted repository: spawn raw git — no baseline, no neutralizing argv,
 	// no GIT_EDITOR pin — so it behaves exactly as outside c0wrk, hooks/
 	// filters/signing included. The comparison probes every trust-key form of
 	// scan.path (TrustProbePaths: trust root, work-tree root, raw path, each
 	// canonical) so subdirectory/root/worktree workspaces of a trusted repo agree
 	// with the stored entry.
-	trustedRoot := false
+	trustedRoot := ""
 	for _, root := range TrustProbePaths(scan.path) {
 		if gittrust.IsTrusted(root) {
-			trustedRoot = true
+			trustedRoot = root
 			break
 		}
 	}
-	if trustedRoot && trustedRootRawEligible(scan) {
+	if trustedRoot != "" && trustedRootRawEligible(scan, trustedRoot) {
 		cmd := sysproc.GitCmdRaw(ctx, args...)
 		cmd.Dir = scan.path
 		// GIT_OPTIONAL_LOCKS=0 is c0wrk's own watcher-loop prevention, not a

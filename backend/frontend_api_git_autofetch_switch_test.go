@@ -10,6 +10,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/gittrust"
+	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // Switch-trigger and runner-level tests for the auto-fetch funnel
@@ -337,7 +338,17 @@ func TestAutoFetchEnv_TrustedPath_InheritsFullEnvironment(t *testing.T) {
 	t.Cleanup(gittrust.Clear)
 
 	repo := setupAutoFetchRepo(t)
-	gittrust.Trust(repo)
+	// Trust bound to the repo's recorded semantic identity: the spawn-path
+	// recheck requires a registry entry whose fingerprint reproduces the live
+	// config, so the test registers the way the backend mirror does — a
+	// fingerprint-less entry keeps the hardened path (ADR-070 on the spawn
+	// path).
+	info, err := workspace.ScanGitConfig(repo)
+	if err != nil {
+		t.Fatalf("ScanGitConfig: %v", err)
+	}
+	info.ResolveIncludes()
+	gittrust.TrustWithFingerprint(repo, info.SemanticFingerprint())
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
 
 	cmd, err := newAutoFetchCmd(context.Background(), repo)

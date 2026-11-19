@@ -450,8 +450,10 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, workspacePath)
 
 	// No send-time vector re-scoping: the per-root registry (ADR-080/081)
-	// routes each session's searches through its own task context.
-	f.autoAddPromptWorkDirs(id, text)
+	// routes each session's searches through its own task context. The
+	// auto-add runs against the session's authoritative workspace root so a
+	// prompt mention can only extend containment it already has.
+	f.autoAddPromptWorkDirs(id, workspacePath, text)
 
 	// The dispatch consumes the PREPROCESSED text, but the message_received
 	// echo must carry the RAW input: the persisted row and the sender's
