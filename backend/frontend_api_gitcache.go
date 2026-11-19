@@ -20,19 +20,21 @@ import (
 //
 //   - status / status-lite (git status --porcelain) — expensive, so a stale
 //     snapshot serves instantly while at most one background refresh per
-//     gitRefreshMinInterval runs (stale-while-revalidate). Watcher batches
-//     only MARK entries stale; refreshes launch exclusively on read, so a
-//     tree_changed storm costs one git run per interval however fast the
-//     events arrive.
+//     gitRefreshMinInterval runs (stale-while-revalidate). That path is
+//     reachable only while the tree is QUIET: any real change drops the
+//     entries outright (below), and the consumers' single refetch per
+//     workspace:tree_changed is the only delivery of git status to the UI —
+//     serving a pre-change snapshot there would pin it until the next event.
 //   - ignore flags (git check-ignore over the listed entries) — a batch over
 //     a handful of paths, so a stale entry revalidates SYNCHRONOUSLY on read
 //     (SWR would render freshly listed files with last-cycle flags).
 //
-// Mutating git RPCs drop the status entries outright via emitGitStatusChanged,
-// so the refetch they trigger is a synchronous cold fetch. The flags cache is
-// deliberately NOT dropped there: check-ignore is pattern-only (it never
-// consults the index or the tracked set), so a commit or stage cannot change
-// its answer.
+// Every real change therefore hard-drops the status entries — mutating git
+// RPCs via emitGitStatusChanged and watcher batches alike — so the refetch
+// each triggers is a synchronous cold fetch (singleflight-coalesced). The
+// flags cache is deliberately NOT dropped there: check-ignore is pattern-only
+// (it never consults the index or the tracked set), so a commit or stage
+// cannot change its answer.
 const (
 	// gitStatusCacheTTL stays short: the tree changes constantly while
 	// editing, and the watcher plus every mutating git RPC invalidate anyway.
@@ -169,9 +171,10 @@ func (c *gitSnapshotCache[M, V2]) snapshot(base context.Context, key string, fet
 }
 
 // markStale ends the freshness window of key's entry, if any, without
-// launching anything — the next read serves the snapshot and revalidates.
-// This is the watcher batch's whole effect: events stay O(1) and the cost
-// lands only on a real consumer.
+// launching anything — the next read serves the snapshot and revalidates
+// (synchronously under staleSync, else in the background). The watcher batch
+// uses it only for the flags family, whose staleSync revalidation answers the
+// very next read with fresh data.
 func (c *gitSnapshotCache[M, V2]) markStale(key string) {
 	c.mu.Lock()
 	if e, ok := c.entries[key]; ok {
@@ -442,10 +445,11 @@ func (f *FrontendAPI) cachedGitIgnoredFlags(repoRoot, dir, scope string, paths [
 	})
 }
 
-// invalidateGitCaches evicts both status snapshots for one repo root; the
-// hook every mutating git operation reaches via emitGitStatusChanged. The
-// flags cache is intentionally untouched (check-ignore never consults the
-// tracked set — see the const block).
+// invalidateGitCaches evicts both status snapshots for one repo root — the
+// funnel every real change reaches: mutating git operations via
+// emitGitStatusChanged and workspace-watcher batches via
+// invalidateGitCachesOnWatcher. The flags cache is intentionally untouched
+// (check-ignore never consults the tracked set — see the const block).
 func (f *FrontendAPI) invalidateGitCaches(repoRoot string) {
 	if repoRoot == "" {
 		return
@@ -461,17 +465,21 @@ func (f *FrontendAPI) statusCacheDropWhere(keep func(key string) bool) {
 	f.gitStatusLiteCache.dropWhere(keep)
 }
 
-// markGitStatusStale marks both status snapshots of repoRoot stale without
-// launching anything; the next read serves the last snapshot and revalidates
-// under the min-refresh throttle.
-func (f *FrontendAPI) markGitStatusStale(repoRoot string) {
+// invalidateGitCachesOnWatcher routes a debounced watcher batch: any tree
+// change drops the status snapshots so the consumers' own refetch (one
+// GetGitStatus / listing per workspace:tree_changed, with no trailing read)
+// is a synchronous cold fetch — a mark would leave that read serving
+// pre-change status until the next event. An ignore-rule edit additionally
+// stales the per-directory ignore flags, which revalidate synchronously on
+// read.
+func (f *FrontendAPI) invalidateGitCachesOnWatcher(repoRoot string, changedPaths []string) {
 	if repoRoot == "" {
 		return
 	}
-	f.ensureGitCaches()
-	key := gitCacheKey(repoRoot)
-	f.gitStatusCache.markStale(key)
-	f.gitStatusLiteCache.markStale(key)
+	f.invalidateGitCaches(repoRoot)
+	if hasIgnoreRuleChange(changedPaths) {
+		f.markGitFlagsStaleUnderRoot(repoRoot)
+	}
 }
 
 // markGitFlagsStaleUnderRoot marks every per-directory flags entry of repoRoot
@@ -494,20 +502,6 @@ func (f *FrontendAPI) markGitFlagsStaleUnderRoot(repoRoot string) {
 	c.mu.Unlock()
 	for _, k := range keys {
 		c.markStale(k)
-	}
-}
-
-// invalidateGitCachesOnWatcher routes a debounced watcher batch: any tree
-// change stales the status snapshots (the next read revalidates under the
-// throttle — no git run per event), and an ignore-rule edit also stales the
-// per-directory ignore flags.
-func (f *FrontendAPI) invalidateGitCachesOnWatcher(repoRoot string, changedPaths []string) {
-	if repoRoot == "" {
-		return
-	}
-	f.markGitStatusStale(repoRoot)
-	if hasIgnoreRuleChange(changedPaths) {
-		f.markGitFlagsStaleUnderRoot(repoRoot)
 	}
 }
 
