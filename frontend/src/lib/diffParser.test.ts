@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseUnifiedDiff, classifyLines, buildDisplayLines, computeCharDiff } from './diffParser'
+import { parseUnifiedDiff, classifyLines, buildDisplayLines, computeCharDiff, assembleUnifiedDiff } from './diffParser'
 
 describe('parseUnifiedDiff', () => {
   it('returns empty hunks for empty input', () => {
@@ -454,5 +454,36 @@ describe('buildDisplayLines', () => {
 
     const addedBottom = result.find(dl => dl.content === 'added_at_bottom')
     expect(addedBottom!.type).toBe('added')
+  })
+})
+
+describe('assembleUnifiedDiff', () => {
+  const hunk = (diff: string) => ({ diff })
+
+  it('returns an empty string for an empty hunk list (no-changes signal)', () => {
+    expect(assembleUnifiedDiff([])).toBe('')
+  })
+
+  it('joins hunk blocks with newlines, preserving backend order', () => {
+    const assembled = assembleUnifiedDiff([
+      hunk('@@ -1,1 +1,2 @@\n-old\n+new1'),
+      hunk('@@ -5,1 +6,1 @@\n ctx\n+added'),
+    ])
+    expect(assembled).toBe('@@ -1,1 +1,2 @@\n-old\n+new1\n@@ -5,1 +6,1 @@\n ctx\n+added')
+  })
+
+  it('round-trips through parseUnifiedDiff: the assembled text parses back to the same hunks', () => {
+    const blocks = [
+      '@@ -1,3 +1,4 @@\n line1\n+added\n line2\n line3',
+      '@@ -10,2 +11,3 @@\n line10\n-old\n+new\n line11',
+    ]
+    const assembled = assembleUnifiedDiff(blocks.map(hunk))
+    const parsed = parseUnifiedDiff(assembled)
+    expect(parsed.hunks).toHaveLength(2)
+    // File headers (diff --git / index / --- / +++) are deliberately not
+    // reproduced — parseUnifiedDiff consumes bare @@ sections.
+    expect(assembled).not.toContain('diff --git')
+    expect(parsed.hunks[0]!.oldStart).toBe(1)
+    expect(parsed.hunks[1]!.newStart).toBe(11)
   })
 })

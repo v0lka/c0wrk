@@ -177,6 +177,8 @@ export function GetGitPanelFocus():Promise<backend.GitPanelFocusInfo>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
+export function GetGitStatusLite(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
+
 export function GetHardenGitRepos():Promise<Array<string>>;
 
 export function GetIsGitRepo():Promise<boolean>;

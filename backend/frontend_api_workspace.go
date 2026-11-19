@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/epilande/go-devicons"
 	"github.com/v0lka/sp4rk/ignore"
@@ -184,39 +185,41 @@ func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
 	return FileIconResponse{Icon: style.Icon, IconColor: snapToTheme(style.Color)}, nil
 }
 
-// GetGitStatus returns the git status for the Git-panel focus target — the
-// focused worktree, or the checkout by default (focus model:
-// specs/domains/session-worktrees.md). No Project returns an empty map.
-func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
+// resolveGitStatusRoot validates dirPath under the Git-panel focus rules and
+// returns the repo root both status variants cache under: the focused
+// worktree, or the checkout by default (focus model:
+// specs/domains/session-worktrees.md). No Project yields no error and no
+// root — the callers short-circuit to an empty map.
+func (f *FrontendAPI) resolveGitStatusRoot(dirPath string) (focusRoot string, haveRoot bool, err error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
 	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
-		return nil, errors.New("no active project")
+		return "", false, errors.New("no active project")
 	}
 
 	// No Project: git operations are not available.
 	if projectID == project.NoProjectID {
-		return map[string]GitStatusEntry{}, nil
+		return "", false, nil
 	}
 
 	absDir, err := filepath.Abs(dirPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
+		return "", false, fmt.Errorf("invalid path: %w", err)
 	}
 	absRoot, err := filepath.Abs(projectPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid workspace path: %w", err)
+		return "", false, fmt.Errorf("invalid workspace path: %w", err)
 	}
-	focusRoot := f.resolveGitFocusRoot(absRoot)
+	resolved := f.resolveGitFocusRoot(absRoot)
 
 	ok, err := config.IsWithinPath(absRoot, absDir)
 	if err != nil || !ok {
 		// An external linked-tree focus lies outside the project workspace;
 		// containment against the focus root keeps it reachable.
-		absFocus, focusErr := filepath.Abs(focusRoot)
+		absFocus, focusErr := filepath.Abs(resolved)
 		focusOK := focusErr == nil
 		if focusOK {
 			if focusWithin, fwErr := config.IsWithinPath(absFocus, absDir); fwErr != nil || !focusWithin {
@@ -225,11 +228,54 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 		}
 		_, managed := config.ManagedWorktreeRootForPath(absRoot, absDir)
 		if !focusOK && !managed {
-			return nil, errors.New("path outside project workspace")
+			return "", false, errors.New("path outside project workspace")
 		}
 	}
+	return resolved, true, nil
+}
 
-	return f.cachedGitStatus(focusRoot)
+// GetGitStatus returns the git status for the Git-panel focus target — the
+// full porcelain -uall enumeration, the staging surface's contract.
+func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
+	root, haveRoot, err := f.resolveGitStatusRoot(dirPath)
+	if err != nil {
+		return nil, err
+	}
+	if !haveRoot {
+		return map[string]GitStatusEntry{}, nil
+	}
+	return f.cachedGitStatus(root)
+}
+
+// GetGitStatusLite returns the git status for the FILE TREE's badges, with
+// untracked directories left collapsed (-unormal): git skips the per-file
+// enumeration beneath them, which is what keeps a huge-repo expand cheap.
+// The tree inherits the untracked verdict down to the entries it lists.
+//
+// The status runs in the repository that OWNS dirPath (ResolveWorkTreeRoot —
+// the same re-rooting the ignore flags and the viewer diffs apply), NOT the
+// Git-panel focus target: a managed-worktree session's tree root is its own
+// repository, and the checkout's status never names the tree's files (a
+// linked worktree has an independent index and /.worktrees/ is
+// info/excluded), so the focus-based root would silently blank every badge.
+// The Git panel keeps its focus semantics through GetGitStatus; containment
+// (checkout ∨ external focus ∨ managed tree) stays shared.
+func (f *FrontendAPI) GetGitStatusLite(dirPath string) (map[string]GitStatusEntry, error) {
+	root, haveRoot, err := f.resolveGitStatusRoot(dirPath)
+	if err != nil {
+		return nil, err
+	}
+	if !haveRoot {
+		return map[string]GitStatusEntry{}, nil
+	}
+	absDir, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+	if owner := workspace.ResolveWorkTreeRoot(absDir); owner != "" {
+		root = owner
+	}
+	return f.cachedGitStatusLite(root)
 }
 
 // ReadFile returns any agent-surfaced file (uncontained, via
@@ -421,9 +467,13 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 
 // ListDirectory lists dirPath (immediate children, or a recursive flat list;
 // .git excluded), flags .gitignore/.aiignore hits for subdued rendering, and
-// attaches icons (specs/domains/workspace.md). A git failure computing the
-// ignore set degrades to flag-less entries — only containment violations and
-// an unreadable directory are fatal, so a broken repo never blanks the tree.
+// attaches icons (specs/domains/workspace.md). Both flag signals are bounded:
+// git's verdict is one batched check-ignore over the listed entries, and the
+// resolver join gives up after ignoreResolverJoinTimeout — a not-yet-ready
+// walk ships the listing without .aiignore flags and workspace:ignore_ready
+// delivers them when it lands. A git failure degrades to flag-less entries —
+// only containment violations and an unreadable directory are fatal, so a
+// broken repo never blanks the tree.
 func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
@@ -462,81 +512,168 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 		}
 	}
 
-	var ignoredPaths map[string]bool
-	isRepo := f.isGitRepo(absRoot)
-	if isRepo {
-		ignored, gitErr := f.cachedGitIgnoredPaths(absRoot)
-		if gitErr != nil {
-			// Degrade, don't fail: the flags are cosmetic, and the frontend
-			// caches a rejected root listing as empty with no retry. No
-			// security property is relaxed by dropping them.
-			f.log().Warn("failed to list git-ignored paths; listing without ignore flags",
-				"dir", absDir, "error", gitErr)
-			ignoredPaths = nil
-		} else {
-			ignoredPaths = ignored
-		}
-	}
-
 	opts := []workspace.ListDirOption{
 		workspace.WithIconResolver(resolveFileIcon),
 		workspace.WithLogger(f.log()),
 	}
 
 	var nodes []FileNode
+	var listErr error
 	if !recursive {
-		nodes, err = workspace.ListDirFlat(absDir, ignoredPaths, opts...)
+		nodes, listErr = workspace.ListDirFlat(absDir, opts...)
 	} else {
-		nodes, err = workspace.ListDirRecursive(absDir, ignoredPaths, opts...)
+		nodes, listErr = workspace.ListDirRecursive(absDir, opts...)
 	}
-	if err != nil {
-		return nil, err
-	}
-
-	// ignore.Resolver layering: in a git repo only .aiignore rules are added
-	// (git already honoured .gitignore with negation; OR-merging the full
-	// verdict would let the resolver's negation-less matching override a git
-	// "un-ignore" !pattern). Non-git: the resolver is the sole authority for
-	// both files, like the indexer and search tools. The resolver comes from
-	// the session Manager's per-root cache (shared with the agent path — one
-	// tree walk serves both): a fresh build walks the whole tree and costs
-	// seconds on large workspaces. A build failure is non-fatal — the listing
-	// ships without ignore flags and the next call retries (errors are not
-	// cached).
-	r, rErr := f.ignoreResolverFor(absRoot)
-	if rErr != nil {
-		f.log().Debug("ignore resolver unavailable; listing without ignore flags", "root", absRoot, "error", rErr)
-	}
-	if r != nil {
-		for i := range nodes {
-			if nodes[i].GitIgnored {
-				continue
-			}
-			ignored := r.IgnoredByAIIgnore(nodes[i].Path, nodes[i].IsDir)
-			if !isRepo {
-				// Non-git: resolver is the sole ignore authority.
-				ignored = r.Ignored(nodes[i].Path, nodes[i].IsDir)
-			}
-			if ignored {
-				nodes[i].GitIgnored = true
-			}
-		}
+	if listErr != nil {
+		return nil, listErr
 	}
 
+	f.applyIgnoreFlags(nodes, absRoot, absDir, listScope(recursive))
 	return nodes, nil
 }
 
-// ignoreResolverFor returns the workspace-root ignore resolver for the file
-// tree: the session Manager's per-root cache in production (one walk per
-// root shared with the agent path), a direct build when no manager is wired
-// (tests).
-func (f *FrontendAPI) ignoreResolverFor(root string) (*ignore.Resolver, error) {
-	if f.app != nil {
-		if mgr := f.app.Manager(); mgr != nil {
-			return mgr.IgnoreResolverFor(f.ctx(), root)
+// Listing scopes naming the ignore-flags cache key (gitFlagsCacheKey): a flat
+// and a recursive listing of the same directory cache their verdicts
+// separately, so neither serves the other a set that misses its paths.
+const (
+	ignoreScopeFlat      = "flat"
+	ignoreScopeRecursive = "recursive"
+)
+
+// listScope maps ListDirectory's recursive flag onto the cache-key scope.
+func listScope(recursive bool) string {
+	if recursive {
+		return ignoreScopeRecursive
+	}
+	return ignoreScopeFlat
+}
+
+// ignoreResolverJoinTimeout bounds ListDirectory's wait on a not-yet-built
+// ignore resolver: fast trees build within it (flags on the first listing),
+// huge trees return unflagged and pick the flags up via workspace:ignore_ready.
+const ignoreResolverJoinTimeout = 300 * time.Millisecond
+
+// ignoreDeliveryTimeout bounds the background goroutine that waits for a
+// resolver build to land before emitting workspace:ignore_ready — generous on
+// purpose (huge-root walks run minutes), finite so the goroutine always exits.
+const ignoreDeliveryTimeout = 5 * time.Minute
+
+// applyIgnoreFlags flags the listed nodes per git and .aiignore. Git's verdict
+// is one batched check-ignore over the listed paths (O(entries), no walk),
+// cached per (root, dir, scope) and revalidated synchronously when stale.
+func (f *FrontendAPI) applyIgnoreFlags(nodes []FileNode, absRoot, absDir, scope string) {
+	if len(nodes) == 0 {
+		return
+	}
+	// check-ignore runs in the repository that OWNS the listed directory —
+	// the same re-rooting gitStatus applies. A session tree rooted at a
+	// managed worktree sits INSIDE the checkout, under the /.worktrees/
+	// container exclude (anchored to the checkout root): a checkout-rooted
+	// batch would match every deep path of the tree and dim the whole
+	// session tree. Resolved against the tree's own root, the container
+	// exclude cannot match (the paths are relative to the tree), while rules
+	// the tree's repository actually carries still apply.
+	repoRoot := workspace.ResolveWorkTreeRoot(absDir)
+	if repoRoot == "" {
+		repoRoot = absRoot
+	}
+	isRepo := f.isGitRepo(repoRoot)
+	if isRepo {
+		paths := make([]string, len(nodes))
+		for i := range nodes {
+			paths[i] = nodes[i].Path
+		}
+		flags, err := f.cachedGitIgnoredFlags(repoRoot, absDir, scope, paths)
+		if err != nil {
+			// Degrade, don't fail: the flags are cosmetic, and the frontend
+			// caches a rejected root listing as empty with no retry. No
+			// security property is relaxed by dropping them.
+			f.log().Warn("failed to compute git ignore flags; listing without them",
+				"dir", absDir, "error", err)
+		} else {
+			for i := range nodes {
+				if flags[nodes[i].Path] {
+					nodes[i].GitIgnored = true
+				}
+			}
 		}
 	}
-	return ignore.NewResolverContext(f.ctx(), root)
+	f.applyResolverFlags(nodes, absRoot, isRepo)
+}
+
+// applyResolverFlags layers the .aiignore rules (and, outside a git repo, the
+// full ignore verdict) from the session Manager's per-root resolver — the
+// cache one walk per root shares with the agent path (injectIgnoreChecker).
+// The join is bounded: a not-ready walk returns ready=false and schedules the
+// workspace:ignore_ready delivery instead of holding the listing open for a
+// minutes-long tree walk.
+func (f *FrontendAPI) applyResolverFlags(nodes []FileNode, absRoot string, isRepo bool) {
+	r, ready := f.ignoreResolverWithin(absRoot)
+	if !ready {
+		f.scheduleIgnoreDelivery(absRoot)
+	}
+	if r == nil {
+		return
+	}
+	for i := range nodes {
+		if nodes[i].GitIgnored {
+			continue
+		}
+		ignored := r.IgnoredByAIIgnore(nodes[i].Path, nodes[i].IsDir)
+		if !isRepo {
+			// Non-git: resolver is the sole ignore authority.
+			ignored = r.Ignored(nodes[i].Path, nodes[i].IsDir)
+		}
+		if ignored {
+			nodes[i].GitIgnored = true
+		}
+	}
+}
+
+// ignoreResolverWithin joins the workspace root's cached resolver for at most
+// ignoreResolverJoinTimeout. With the session manager wired the build runs in
+// its tracked background goroutine (a miss starts one and waits briefly); the
+// direct-build fallback keeps tests without a manager on the old behavior.
+func (f *FrontendAPI) ignoreResolverWithin(root string) (*ignore.Resolver, bool) {
+	if f.app != nil {
+		if mgr := f.app.Manager(); mgr != nil {
+			return mgr.IgnoreResolverWithin(root, ignoreResolverJoinTimeout)
+		}
+	}
+	r, err := ignore.NewResolverContext(f.ctx(), root)
+	return r, err == nil
+}
+
+// scheduleIgnoreDelivery emits workspace:ignore_ready once root's resolver
+// build lands, so the tree refetches with .aiignore flags applied. One
+// delivery per root at a time (the pending map CAS); the goroutine joins the
+// same build every other surface waits on and is bounded by both
+// ignoreDeliveryTimeout and the tracked WaitGroup.
+func (f *FrontendAPI) scheduleIgnoreDelivery(root string) {
+	if root == "" || f.app == nil || f.app.Manager() == nil {
+		return
+	}
+	if _, loaded := f.ignoreDeliveryPending.LoadOrStore(root, struct{}{}); loaded {
+		return
+	}
+	// trackGitBg pairs the stopped check with WaitGroup.Add under the
+	// admission mutex — a bare check-then-Add here could race
+	// JoinGitBackground's Wait and leak the delivery past the shutdown join.
+	if !f.trackGitBg(func() {
+		defer f.ignoreDeliveryPending.Delete(root)
+		ctx, cancel := context.WithTimeout(context.Background(), ignoreDeliveryTimeout)
+		defer cancel()
+		r, err := f.app.Manager().IgnoreResolverFor(ctx, root)
+		if err != nil || r == nil {
+			// Build failed or teardown won: the next expand schedules anew.
+			return
+		}
+		if f.emitEvent != nil {
+			f.emitEvent(EventWorkspaceIgnoreReady, root)
+		}
+	}) {
+		f.ignoreDeliveryPending.Delete(root)
+	}
 }
 
 // prewarmIgnoreResolver starts the manager's tracked background resolver

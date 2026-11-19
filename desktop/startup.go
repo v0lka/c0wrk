@@ -532,6 +532,17 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.stopWebAccess(ctx)
 	shutdownStep("stopWebAccess")
 
+	// Stop admitting and drain in-flight background git refreshes /
+	// ignore-ready deliveries before the backend teardown (see
+	// backend/frontend_api_gitcache.go JoinGitBackground). Nil-guarded like
+	// the neighboring teardown consumers: the accessor's zero-value shell can
+	// predate the wiring (tests, failed startup), and the join touches live
+	// gitBg state unconditionally.
+	if fa := a.frontendAPI(); fa != nil {
+		backend.JoinGitBackground(fa, backend.GitShutdownJoinBudget)
+	}
+	shutdownStep("joinGitBackground")
+
 	// Drain all pending confirmation/ask-user/step-limit channels so that
 	// blocked goroutines can exit cleanly instead of leaking.
 	a.pendingConfirmations.Range(func(key, value any) bool {

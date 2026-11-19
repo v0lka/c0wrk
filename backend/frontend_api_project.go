@@ -714,12 +714,16 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 		// papers:changed for the paper library / comparisons roots — tracked
 		// independently of the active R-NNN (ADR-099).
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
-		// Nil-guarded like every other emitter: this callback runs on the
-		// fsnotify goroutine, which can fire in tests or early startup
-		// before the Wails event wiring lands.
+		// The watcher batch KNOWS its changed paths — carry them so scoped
+		// consumers (the file viewer's per-tab refresh, the SPECS relevance
+		// filter) can narrow a storm to the touched files. Nil-guarded like
+		// every other emitter: this callback runs on the fsnotify goroutine,
+		// which can fire in tests or early startup before the Wails event
+		// wiring lands.
 		if f.emitEvent != nil {
-			f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
+			f.emitEvent(EventWorkspaceTreeChanged, map[string]any{
 				"research_scoped": researchScoped,
+				"paths":           changedPaths,
 			})
 		}
 
@@ -864,11 +868,14 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		// No Project has no paper library or comparisons dir (both roots
 		// empty) — a no-op, kept for parity with the CODE-mode callback.
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
-		// Nil-guarded: the fsnotify goroutine can outlive the emitter wiring
-		// (see the CODE-mode callback).
+		// The watcher batch KNOWS its changed paths — carry them (same
+		// payload contract as the CODE-mode callback). Nil-guarded: the
+		// fsnotify goroutine can outlive the emitter wiring (see the
+		// CODE-mode callback).
 		if f.emitEvent != nil {
-			f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
+			f.emitEvent(EventWorkspaceTreeChanged, map[string]any{
 				"research_scoped": researchScoped,
+				"paths":           changedPaths,
 			})
 		}
 

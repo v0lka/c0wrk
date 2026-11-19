@@ -258,6 +258,71 @@ func (f *FrontendAPI) resolveGitRepoRoot() (string, error) {
 	return f.resolveGitFocusRoot(projectPath), nil
 }
 
+// resolveDiffRepoPath resolves a file-viewer diff target in the repository
+// that OWNS the file — the same walk GetFileDiff does (ResolveWorkTreeRoot
+// from the file up to the nearest .git), NOT the Git-panel focus root: focus
+// scopes the panel's staging surface, while a viewer tab may hold a file of
+// any worktree under the project, and a managed-worktree file must diff
+// against its own baseline (the checkout's info/exclude hides .worktrees, so
+// focus-root resolution would return empty hunks there and the untracked
+// fallback would misrender the whole file as added). Containment admits the
+// location set resolveGitStatusRoot admits — the project workspace, the
+// externally focused linked tree, and managed worktrees — so a file of the
+// focused tree keeps rendering (the focus reach resolveGitPath granted).
+// The error contract stays resolveGitPath's — missing/inactive project, No
+// Project, and a path outside all admitted locations surface as errors —
+// this is the viewer's auto-refresh path, where a silent degradation would
+// strand a stale overlay.
+func (f *FrontendAPI) resolveDiffRepoPath(filePath string) (repoPath, relPath string, err error) {
+	projectPath, _, err := f.activeGitProjectRoot()
+	if err != nil {
+		return "", "", err
+	}
+	absPath, err := f.resolveReadablePath(filePath)
+	if err != nil {
+		return "", "", err
+	}
+	absRoot, err := filepath.Abs(projectPath)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid workspace path: %w", err)
+	}
+	ok, err := config.IsWithinPath(absRoot, absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to check path containment: %w", err)
+	}
+	if !ok {
+		// An external linked-tree focus lies outside the project workspace;
+		// containment against the focus root keeps it reachable.
+		if absFocus, focusErr := filepath.Abs(f.resolveGitFocusRoot(absRoot)); focusErr == nil {
+			if focusWithin, fwErr := config.IsWithinPath(absFocus, absPath); fwErr == nil && focusWithin {
+				ok = true
+				absRoot = absFocus
+			}
+		}
+	}
+	if !ok {
+		if tree, managed := config.ManagedWorktreeRootForPath(absRoot, absPath); managed {
+			absRoot = tree
+		} else {
+			return "", "", errors.New("path outside project workspace")
+		}
+	}
+	// Diff in the repository that OWNS the file, not the checkout: a
+	// managed-worktree file belongs to its own repository and the checkout's
+	// info/exclude hides .worktrees. ResolveWorkTreeRoot finds the nearest
+	// .git (a linked worktree's .git pointer included), so the diff follows
+	// the session workspace.
+	fileRoot := workspace.ResolveWorkTreeRoot(absPath)
+	if fileRoot == "" {
+		fileRoot = absRoot
+	}
+	relPath, err = filepath.Rel(fileRoot, absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to compute relative path: %w", err)
+	}
+	return fileRoot, relPath, nil
+}
+
 // runGitCmd runs a git sub-command in dir with the 30s gitCmdTimeout and
 // returns stdout.
 func (f *FrontendAPI) runGitCmd(dir string, args ...string) (string, error) {
@@ -2350,9 +2415,16 @@ func parseHunkInfos(diff string, staged bool) []HunkDiffInfo {
 // uncommitted changes, distinguishing staged hunks (HEAD vs index) from
 // unstaged hunks (index vs worktree); each hunk carries its line-range
 // metadata, a staged flag, and the raw unified-diff block (for tooltip
-// display). Read-only. See resolveGitPath for the shared error contract.
+// display). An untracked file surfaces as unstaged hunks parsed from the same
+// synthetic --no-index diff GetFileDiff builds, so the viewer can assemble
+// the whole unified diff from the hunk list alone — one RPC (two git spawns,
+// three for an untracked file) replaces the former GetFileDiff +
+// GetFileDiffHunks pair (two RPCs / four spawns) on the auto-refresh path.
+// Read-only. See resolveDiffRepoPath for the resolution and error contract:
+// the diff runs in the repository that OWNS the file (GetFileDiff's walk),
+// not the Git-panel focus root.
 func (f *FrontendAPI) GetFileDiffHunks(filePath string) ([]HunkDiffInfo, error) {
-	repoPath, relPath, err := f.resolveGitPath(filePath)
+	repoPath, relPath, err := f.resolveDiffRepoPath(filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -2372,5 +2444,23 @@ func (f *FrontendAPI) GetFileDiffHunks(filePath string) ([]HunkDiffInfo, error) 
 
 	hunks := parseHunkInfos(strings.TrimSpace(stagedDiff), true)
 	hunks = append(hunks, parseHunkInfos(strings.TrimSpace(unstagedDiff), false)...)
+
+	// Untracked file: neither diff carries hunks, and GetFileDiff would fall
+	// through to the synthetic full-file --no-index diff (the exact
+	// GetFileDiffInRepo condition: empty staged AND unstaged output AND
+	// untracked). Produce the same blocks here so the assembled hunk diff
+	// matches what the viewer used to get from GetFileDiff. The no-index
+	// runner treats exit 1 ("differences exist") as success; any other
+	// failure — e.g. the file vanished mid-call — degrades to an empty hunk
+	// list: the diff overlay is optional, never an RPC error.
+	if len(hunks) == 0 {
+		ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+		defer cancel()
+		if !workspace.IsGitTracked(ctx, repoPath, relPath) {
+			if untrackedDiff, uerr := workspace.GetFileDiffNoRepo(ctx, repoPath, relPath); uerr == nil {
+				hunks = parseHunkInfos(strings.TrimSpace(untrackedDiff), false)
+			}
+		}
+	}
 	return hunks, nil
 }

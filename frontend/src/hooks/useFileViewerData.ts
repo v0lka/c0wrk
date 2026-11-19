@@ -1,17 +1,77 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { subscribe } from '@/api/runtime'
-import { readFile, readImageAsDataURL, getFileDiff } from '@/api/workspace'
+import { onGlobalEvent } from '@/api/runtime'
+import { readFile, readImageAsDataURL } from '@/api/workspace'
 import { getFileDiffHunks } from '@/api/git'
 import { isBinaryContent, isImageFilePath } from '@/lib/fileViewerUtils'
+import { assembleUnifiedDiff } from '@/lib/diffParser'
 import { detectLanguageFromPath } from '@/lib/cmLanguages'
+import { markViewerDiffsStale, viewerDiffEpoch } from '@/lib/viewerDiffEpoch'
+import { isTreeChangedPayload } from '@/types/events'
+
+/**
+ * Trailing-debounce window coalescing a burst of `workspace:tree_changed`
+ * events into ONE silent-refresh cycle. A busy agent fires this event after
+ * every write and the fs watcher batches add more; refreshing every open tab
+ * once per event stacked parallel readFile + diff chains. 400ms absorbs the
+ * burst (the watcher itself debounces at 200ms) without visibly delaying a
+ * quiet single-change refresh.
+ */
+export const TREE_CHANGED_DEBOUNCE_MS = 400
+
+/**
+ * Cap on how long a sustained event stream may postpone the coalesced cycle
+ * beyond the FIRST pending change: a pure trailing debounce re-arms on every
+ * event, so a writer faster than the window (a build, a log writer, a fast
+ * loop of agent tool calls) would starve viewer refreshes for the whole
+ * stream. Whichever fires first — the quiet window or this max-wait — runs
+ * the cycle.
+ */
+export const TREE_CHANGED_MAX_WAIT_MS = 2000
+
+/**
+ * True when path equals a changed path or lives under one (path-boundary
+ * aware, separator-normalized — Windows payloads and tab paths both carry
+ * backslashes). Watcher batches can name a DIRECTORY — fsnotify reports
+ * rename/move/create at the dir level — so a tab under a changed path must
+ * refresh too; the same rule the SPECS relevance filter applies.
+ */
+function isPathCovered(path: string, changed: ReadonlySet<string>): boolean {
+  const norm = path.replace(/\\/g, '/')
+  for (const raw of changed) {
+    const p = raw.replace(/\\/g, '/')
+    if (norm === p || norm.startsWith(p.endsWith('/') ? p : p + '/')) return true
+  }
+  return false
+}
 
 /**
  * useFileViewerData centralizes the file-loading and tree-change subscription
  * logic for the file viewer. It exposes a single `loadFile(path, silent)`
  * function that updates the file-viewer store, and subscribes to
- * `workspace:tree_changed` to silently refresh every open tab.
+ * `workspace:tree_changed` + `git:status_changed` to silently refresh the
+ * open tabs:
+ *
+ *  - tree_changed bursts are coalesced into one trailing-debounced cycle;
+ *    a payload carrying `paths` refreshes only the tabs whose exact path
+ *    changed, a payload without one (the agent-write PostExecuteHook emitter
+ *    carries no path metadata) refreshes every tab — fail-open, mirroring the
+ *    SPECS panel's relevance filter.
+ *  - Per-path in-flight dedup: an explicit (re)open racing an in-flight load
+ *    joins it; a silent refresh queued while a chain runs waits for the chain
+ *    to settle and then runs exactly one fresh follow-up read — parallel
+ *    readFile + diff pipelines never stack, and a refresh can never join a
+ *    chain that predates the change it was scheduled by.
+ *  - Content short-circuit: a reload whose re-read is byte-identical to the
+ *    cached content skips the diff/hunks RPCs entirely — unless a git
+ *    mutation moved the viewer-diff epoch (lib/viewerDiffEpoch) since that
+ *    diff was fetched: staging or committing moves hunks without touching
+ *    the file bytes, and only the epoch proves the cached diff stale.
+ *  - The unified diff overlay is assembled from the hunks RPC alone
+ *    (assembleUnifiedDiff — parseUnifiedDiff consumes bare `@@` sections):
+ *    one RPC / two git spawns replaces the former GetFileDiff +
+ *    GetFileDiffHunks pair (two RPCs / four spawns) per refreshed tab.
  *
  * The hook is referentially stable: the returned `loadFile` is wrapped in
  * useCallback over store-action references that themselves are stable, so
@@ -26,46 +86,123 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
   const setFileImage = useFileViewerStore((s) => s.setFileImage)
   const setFileLoading = useFileViewerStore((s) => s.setFileLoading)
 
-  const loadFile = useCallback(async (path: string, silent: boolean) => {
-    if (!silent) setFileLoading(path, true)
-    try {
-      // Image files are binary and cannot be shown as text — fetch them as a
-      // base64 data URL and let the viewer render the picture instead. Done
-      // before readFile so image bytes never round-trip as a (lossy) string,
-      // and the diff/hunk pipeline is skipped entirely (a picture has no
-      // meaningful line diff).
-      if (isImageFilePath(path)) {
-        const dataUrl = await readImageAsDataURL(path)
-        setFileImage(path, dataUrl)
-        return
-      }
-      const content = await readFile(path)
-      if (isBinaryContent(content)) { setFileBinary(path); return }
-      setFileContent(path, content, detectLanguageFromPath(path))
-      // Skip diff for No Project (no git operations)
-      const activeProject = useProjectStore.getState().projects?.find(
-        (p) => p.id === useProjectStore.getState().activeProjectId
-      )
-      if (activeProject?.is_no_project !== true) {
-        // Always set the diff — even when empty — so stale diffs from a
-        // previous load (e.g. changes reverted, or file moved to a non-git
-        // context) are cleared and the hunk-staging panel does not linger.
-        try { const diff = await getFileDiff(path); setFileDiff(path, diff) } catch { /* optional */ }
-        // Fetch structured hunk info (staging status, per-hunk diff text)
-        // for the hunk panel. Errors are non-fatal — the panel just won't
-        // render.
-        try { const hunks = await getFileDiffHunks(path); setFileHunks(path, hunks) } catch { setFileHunks(path, []) }
-      }
-    } catch (err) { setFileError(path, err instanceof Error ? err.message : String(err)) }
-  }, [setFileLoading, setFileBinary, setFileImage, setFileContent, setFileDiff, setFileHunks, setFileError])
-
-  // Stable refs so the workspace event subscription does not re-bind on every
-  // openTabs change. We re-read the current openTabs/loadFile inside the
-  // event handler.
-  const loadFileRef = useRef(loadFile)
-  loadFileRef.current = loadFile
+  // In-flight load chains per path. Entries exist only while a chain runs;
+  // both silent refreshes and the active-file effect join through here.
+  const inFlightRef = useRef(new Map<string, Promise<void>>())
+  // Viewer-diff epoch at which each path's diff was last fetched
+  // SUCCESSFULLY — the short-circuit key. A failed fetch records nothing, so
+  // the next refresh retries. Entries outlive their tab (bounded by the
+  // distinct files opened during the session: a path → number pair each).
+  const diffFetchedAtRef = useRef(new Map<string, number>())
+  // tree_changed coalescing state: paths seen since the last fired cycle and
+  // the "cannot scope" flag any pathless event poisons the cycle with.
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingPathsRef = useRef(new Set<string>())
+  const pendingAllRef = useRef(false)
+  // Timestamp of the first pending change in the current cycle window — the
+  // max-wait anchor (0 = no pending change).
+  const firstPendingAtRef = useRef(0)
+  // Stable indirections so loadFile's own deferred follow-ups and the
+  // workspace event subscription always call the latest loadFile / read the
+  // latest openTabs without re-binding effects.
+  const loadFileRef = useRef<(path: string, silent: boolean) => Promise<void>>(async () => {})
   const openTabsRef = useRef(openTabs)
   openTabsRef.current = openTabs
+
+  const loadFile = useCallback(async (path: string, silent: boolean): Promise<void> => {
+    if (!silent) setFileLoading(path, true)
+    // Overlapping load for the same path. An explicit (re)open joins the
+    // running chain — it performs the same store updates this call would
+    // have. A silent refresh does NOT: the running chain may have started
+    // (and read) BEFORE the change that scheduled this refresh, and joining
+    // it would pin stale content until the next unrelated event. It queues
+    // exactly one fresh follow-up read for after the chain settles, so two
+    // parallel pipelines never stack either.
+    const running = inFlightRef.current.get(path)
+    if (running) {
+      if (!silent) return running
+      void running.then(() => {
+        if (!inFlightRef.current.has(path)) void loadFileRef.current(path, true)
+      })
+      return running
+    }
+    const chain = (async () => {
+      try {
+        // Image files are binary and cannot be shown as text — fetch them as a
+        // base64 data URL and let the viewer render the picture instead. Done
+        // before readFile so image bytes never round-trip as a (lossy) string,
+        // and the diff/hunk pipeline is skipped entirely (a picture has no
+        // meaningful line diff).
+        if (isImageFilePath(path)) {
+          const dataUrl = await readImageAsDataURL(path)
+          setFileImage(path, dataUrl)
+          return
+        }
+        const content = await readFile(path)
+        if (isBinaryContent(content)) { setFileBinary(path); return }
+        // Capture the PREVIOUS cached content before the store overwrite: the
+        // short-circuit below must compare the re-read against what the tab
+        // was DISPLAYING. (Reading the cached entry after setFileContent made
+        // the byte-identical leg vacuous — the fresh bytes were compared
+        // against themselves — so every refresh skipped the diff RPCs while
+        // the epoch stood still, pinning pre-edit hunks to post-edit content.)
+        const prevContent = useFileViewerStore.getState().files[path]?.content
+        setFileContent(path, content, detectLanguageFromPath(path))
+        // Skip diff for No Project (no git operations)
+        const activeProject = useProjectStore.getState().projects?.find(
+          (p) => p.id === useProjectStore.getState().activeProjectId
+        )
+        if (activeProject?.is_no_project !== true) {
+          // Content short-circuit: byte-identical content with a diff
+          // fetched at the CURRENT git-mutation epoch is known-current —
+          // skip the hunks RPC. The epoch guard is what keeps a staged
+          // change (hunks move, bytes do not) from being skipped over.
+          const fetchedAt = diffFetchedAtRef.current.get(path)
+          const diffCurrent =
+            prevContent === content &&
+            fetchedAt !== undefined &&
+            fetchedAt === viewerDiffEpoch()
+          if (!diffCurrent) {
+            // Fetch structured hunk info (staging status, per-hunk diff text)
+            // for the hunk panel, and assemble the overlay's unified diff from
+            // the same blocks — one RPC / two git spawns total (three for an
+            // untracked file, whose synthetic --no-index hunks the backend
+            // appends). Errors are non-fatal: the panel just won't render and
+            // the epoch stays unmoved, so the next refresh retries. Setting
+            // the diff even when empty clears stale overlay state, matching
+            // the old always-set GetFileDiff behavior on success.
+            try {
+              // Record the epoch captured BEFORE the fetch: a git mutation
+              // landing mid-fetch must invalidate the result (its hunks may
+              // reflect pre-mutation index state), and stamping the
+              // completion-time epoch would label exactly such a result as
+              // current — stale hunks short-circuited until the next
+              // mutation.
+              const epochAtFetch = viewerDiffEpoch()
+              const hunks = await getFileDiffHunks(path)
+              setFileHunks(path, hunks)
+              setFileDiff(path, assembleUnifiedDiff(hunks))
+              diffFetchedAtRef.current.set(path, epochAtFetch)
+            } catch {
+              // The hunks RPC also fails where GetFileDiff used to degrade to
+              // ("", nil) — a path that left the workspace or lost its git
+              // baseline — so clear the overlay here too: a previous repo's
+              // or pre-move diff must not stay rendered over unrelated bytes.
+              setFileHunks(path, [])
+              setFileDiff(path, '')
+            }
+          }
+        }
+      } catch (err) { setFileError(path, err instanceof Error ? err.message : String(err)) }
+      finally { inFlightRef.current.delete(path) }
+    })()
+    inFlightRef.current.set(path, chain)
+    return chain
+  }, [setFileLoading, setFileBinary, setFileImage, setFileContent, setFileDiff, setFileHunks, setFileError])
+
+  // Keep the indirection pointed at the latest loadFile (deps are stable
+  // store actions, so this rarely changes — the re-assignment is cheap).
+  loadFileRef.current = loadFile
 
   // Load the active file when it changes (skipped if cache already populated).
   useEffect(() => {
@@ -79,15 +216,68 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
     loadFileRef.current(activeFile, false)
   }, [activeFile])
 
-  // Auto-refresh on workspace:tree_changed — silently reload all open files.
+  // Auto-refresh subscriptions. tree_changed bursts coalesce into one
+  // trailing-debounced cycle scoped to the payload's changed paths when it
+  // carries them (exact absolute-path match — watcher events and viewer tabs
+  // draw their paths from the same source, so the strings agree); every
+  // backend-mutating git RPC's git:status_changed moves the viewer-diff
+  // epoch, so the NEXT refresh refetches diffs even for byte-identical
+  // content.
   useEffect(() => {
-    const unsub = subscribe('workspace:tree_changed', () => {
+    const runCoalescedReload = () => {
+      reloadTimerRef.current = null
+      const all = pendingAllRef.current
+      // Snapshot-and-reset BEFORE iterating: an event landing mid-cycle
+      // repopulates the fresh set and schedules the next cycle instead of
+      // racing this one's iteration.
+      const paths = pendingPathsRef.current
+      pendingAllRef.current = false
+      pendingPathsRef.current = new Set()
+      firstPendingAtRef.current = 0
       for (const path of openTabsRef.current) {
         // Virtual files have no on-disk counterpart to reload.
         if (useFileViewerStore.getState().files[path]?.virtual) continue
-        loadFileRef.current(path, true)
+        if (!all && !isPathCovered(path, paths)) continue
+        void loadFileRef.current(path, true)
       }
+    }
+    const scheduleReload = (payload: unknown) => {
+      const scoped = isTreeChangedPayload(payload) ? payload.paths : undefined
+      if (scoped === undefined || scoped.length === 0) {
+        // No usable path list — cannot scope; this cycle refreshes every tab.
+        pendingAllRef.current = true
+      } else {
+        for (const p of scoped) pendingPathsRef.current.add(p)
+      }
+      if (reloadTimerRef.current !== null) clearTimeout(reloadTimerRef.current)
+      // Trailing debounce, but never beyond the max-wait since the FIRST
+      // pending change: sustained streams refresh on a bounded cadence.
+      const now = Date.now()
+      if (firstPendingAtRef.current === 0) firstPendingAtRef.current = now
+      const wait = Math.max(
+        0,
+        Math.min(TREE_CHANGED_DEBOUNCE_MS, TREE_CHANGED_MAX_WAIT_MS - (now - firstPendingAtRef.current)),
+      )
+      reloadTimerRef.current = setTimeout(runCoalescedReload, wait)
+    }
+    const unsubTree = onGlobalEvent('workspace:tree_changed', (payload) => scheduleReload(payload))
+    const unsubGit = onGlobalEvent('git:status_changed', () => {
+      // A git mutation moves hunks without touching bytes: bump the epoch so
+      // the short-circuit refetches diffs, AND schedule a pathless reload —
+      // the git-only watcher batch the same mutation produces scopes to .git
+      // paths no open tab holds, so the epoch bump alone would leave the
+      // stale overlay rendered until an unrelated workspace event. The
+      // shared debounce coalesces this with the watcher's own cycle.
+      markViewerDiffsStale()
+      scheduleReload(undefined)
     })
-    return unsub
+    return () => {
+      unsubTree()
+      unsubGit()
+      if (reloadTimerRef.current !== null) {
+        clearTimeout(reloadTimerRef.current)
+        reloadTimerRef.current = null
+      }
+    }
   }, [])
 }

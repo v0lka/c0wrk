@@ -16,7 +16,7 @@ import (
 func TestListDirRecursive_MissingRootErrors(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
-	nodes, err := ListDirRecursive(missing, nil)
+	nodes, err := ListDirRecursive(missing)
 	if err == nil {
 		t.Fatal("expected an error for a missing walk root, got nil")
 	}
@@ -32,7 +32,7 @@ func TestListDirRecursive_MissingRootErrors(t *testing.T) {
 func TestListDirRecursive_EmptyDirReturnsEmptyNonNil(t *testing.T) {
 	empty := t.TempDir()
 
-	nodes, err := ListDirRecursive(empty, nil)
+	nodes, err := ListDirRecursive(empty)
 	if err != nil {
 		t.Fatalf("ListDirRecursive on empty dir: unexpected error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestListDirRecursive_ListsFiles(t *testing.T) {
 		t.Fatalf("write sub/b.txt: %v", err)
 	}
 
-	nodes, err := ListDirRecursive(root, nil)
+	nodes, err := ListDirRecursive(root)
 	if err != nil {
 		t.Fatalf("ListDirRecursive: unexpected error: %v", err)
 	}

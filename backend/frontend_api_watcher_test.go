@@ -394,6 +394,71 @@ func TestSwitchProjectSetupWatcher_CodeSessionTreeEventsEmit(t *testing.T) {
 	writeUntilEmitted(t, filepath.Join(tree, "notes.txt"), []byte("session work\n"), &treeEvents, 1)
 }
 
+// TestSwitchProjectSetupWatcher_TreeChangedPayloadCarriesPaths pins the
+// payload contract the scoped-refresh consumers rely on: the CODE-mode
+// watcher callback emits workspace:tree_changed with the batch's changed
+// absolute paths under "paths" (the agent-write PostExecuteHook emitter
+// deliberately emits none — tool results carry no path metadata — and
+// consumers treat a missing list as "cannot scope").
+func TestSwitchProjectSetupWatcher_TreeChangedPayloadCarriesPaths(t *testing.T) {
+	h := newWTHarness(t, wtFactory())
+	f := h.api
+	managed := f.mustManagedSession(t, "", true, "")
+	tree := managed.WorkspaceBinding.WorkspacePath
+	t.Cleanup(closeAPIWatcher(f))
+
+	// The callback runs on the fsnotify goroutine — hand batches over a
+	// buffered channel (non-blocking send; a burst that overflows it keeps
+	// the emission counters honest and merely drops inspection copies).
+	payloadCh := make(chan []string, 64)
+	var treeEvents atomic.Int32
+	f.emitEvent = func(name string, data ...any) {
+		if name != EventWorkspaceTreeChanged {
+			return
+		}
+		treeEvents.Add(1)
+		if len(data) == 0 {
+			return
+		}
+		payload, _ := data[0].(map[string]any)
+		raw, _ := payload["paths"].([]string)
+		select {
+		case payloadCh <- raw:
+		default:
+		}
+	}
+
+	f.switchProjectSetupWatcher(context.Background(), h.project)
+
+	probe := filepath.Join(tree, "scoped.txt")
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for !found {
+		if time.Now().After(deadline) {
+			t.Fatalf("no workspace:tree_changed payload carried the changed path %s", probe)
+		}
+		if err := os.WriteFile(probe, []byte("scoped\n"), 0o644); err != nil {
+			t.Fatalf("write probe: %v", err)
+		}
+		if !waitForEmission(&treeEvents, treeEvents.Load()+1, 750*time.Millisecond) {
+			continue
+		}
+	drain:
+		for {
+			select {
+			case batch := <-payloadCh:
+				for _, changed := range batch {
+					if changed == probe {
+						found = true
+					}
+				}
+			default:
+				break drain
+			}
+		}
+	}
+}
+
 // TestWatchDirectory_CodeRescopesToSessionTree pins the session-switch path:
 // the panel re-roots the file tree via WatchDirectory and the watcher follows
 // — from the checkout to an outside-checkout managed tree, tracked emit roots

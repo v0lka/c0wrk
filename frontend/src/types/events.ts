@@ -1019,8 +1019,22 @@ export interface GlobalEventMap {
    *  changed path was inside the research directory; the backend's
    *  emitResearchFileChanged returns true on a partial overlap, because the
    *  research-only files in the batch are covered by the incremental
-   *  research:file_changed path); consumers use it to defer to that path. */
-  readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
+   *  research:file_changed path); consumers use it to defer to that path.
+   *  `paths` lists the watcher batch's changed absolute paths when the
+   *  emitter knows them (the fs watcher callbacks); the agent-write
+   *  PostExecuteHook emitter carries no path metadata in tool results and
+   *  emits the event WITHOUT paths — absent or empty paths mean "cannot
+   *  scope" and consumers refresh everything (fail-open). Validated with
+   *  isTreeChangedPayload. */
+  readonly 'workspace:tree_changed': {
+    readonly research_scoped?: boolean
+    readonly paths?: readonly string[]
+  }
+  /** A workspace root's ignore resolver build landed after a listing shipped
+   *  without .aiignore flags (the bounded resolver join gave up on a
+   *  still-running walk). Payload: the workspace root the flags are ready
+   *  for — consumers reload only when it matches their active root. */
+  readonly 'workspace:ignore_ready': string
   /** RESEARCH mutation for a project: the active R-NNN switched
    *  (`SetActiveResearch`), a research project was deleted (`DeleteResearch`),
    *  or a pre-rename `<workspace>/.research` root was migrated to the
@@ -1734,6 +1748,16 @@ function isE2SChecklistItem(v: unknown): v is E2SChecklistItem {
 
 function isStringArray(v: unknown): v is readonly string[] {
   return isArrayOf(v, (s): s is string => typeof s === 'string')
+}
+
+/** Guard for the `workspace:tree_changed` payload: an optional
+ *  `research_scoped` flag plus an optional absolute-path list (`paths`).
+ *  Both fields are optional — the agent-write emitter sends no payload at
+ *  all, and a payload without a usable `paths` array means "cannot scope". */
+export function isTreeChangedPayload(d: unknown): d is GlobalEventMap['workspace:tree_changed'] {
+  if (!isObj(d)) return false
+  if (d.paths === undefined) return true
+  return isStringArray(d.paths)
 }
 
 /**

@@ -38,7 +38,7 @@ export function FileViewerPanel() {
             size="icon-xs"
             className="flex-shrink-0"
             onClick={() => setPinned(!pinned)}
-            title={pinned ? "Unpin file viewer (float over chat)" : "Pin file viewer (dock in place)"}
+            title={pinned ? "Unpin viewer (float over chat)" : "Pin viewer (dock in place)"}
           >
             {pinned ? <Pin className="size-4" /> : <PinOff className="size-4 text-primary" />}
           </Button>
@@ -47,7 +47,7 @@ export function FileViewerPanel() {
             size="icon-xs"
             className="flex-shrink-0"
             onClick={() => setCollapsed(true)}
-            title="Collapse file viewer"
+            title="Collapse viewer"
           >
             <PanelRightClose className="size-4" />
           </Button>

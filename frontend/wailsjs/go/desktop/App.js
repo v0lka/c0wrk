@@ -338,6 +338,10 @@ export function GetGitStatus(arg1) {
   return window['go']['desktop']['App']['GetGitStatus'](arg1);
 }
 
+export function GetGitStatusLite(arg1) {
+  return window['go']['desktop']['App']['GetGitStatusLite'](arg1);
+}
+
 export function GetHardenGitRepos() {
   return window['go']['desktop']['App']['GetHardenGitRepos']();
 }

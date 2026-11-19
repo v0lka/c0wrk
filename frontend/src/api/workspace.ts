@@ -52,19 +52,45 @@ export async function getGitStatus(path: string): Promise<Record<string, GitStat
   try {
     const app = getApp()
     const result = await app.GetGitStatus(path)
-    if (typeof result !== 'object' || result === null) {
-      throw new Error('getGitStatus: backend returned invalid data')
-    }
-    const raw = result as Record<string, unknown>
-    if (!Object.values(raw).every(isGitStatusEntry)) {
-      logger.error('getGitStatus: malformed status entry in response, returning {}', result)
-      return {}
-    }
-    return raw as Record<string, GitStatusEntry>
+    return validateGitStatusMap(result)
   } catch (err) {
     logger.error('Failed to get git status:', err)
     throw err
   }
+}
+
+/**
+ * The FILE TREE's status source: untracked directories stay collapsed
+ * (`-unormal`), so git never enumerates every untracked file beneath them.
+ * Tracked-change entries are identical to getGitStatus; untracked verdicts
+ * arrive as one collapsed entry per directory (worktree_status '?'), which
+ * the tree inherits down to the entries it lists. The Git panel keeps the
+ * full per-file enumeration for staging.
+ */
+export async function getGitStatusLite(path: string): Promise<Record<string, GitStatusEntry>> {
+  try {
+    const app = getApp()
+    const result = await app.GetGitStatusLite(path)
+    return validateGitStatusMap(result)
+  } catch (err) {
+    logger.error('Failed to get git status (lite):', err)
+    throw err
+  }
+}
+
+/** Shared boundary validation for both status variants (the consumers
+ *  dereference status/staged/index_status/worktree_status inside
+ *  fire-and-forget refreshes — a malformed value must fail here). */
+function validateGitStatusMap(result: unknown): Record<string, GitStatusEntry> {
+  if (typeof result !== 'object' || result === null) {
+    throw new Error('getGitStatus: backend returned invalid data')
+  }
+  const raw = result as Record<string, unknown>
+  if (!Object.values(raw).every(isGitStatusEntry)) {
+    logger.error('getGitStatus: malformed status entry in response, returning {}', result)
+    return {}
+  }
+  return raw as Record<string, GitStatusEntry>
 }
 
 export async function watchDirectory(path: string): Promise<void> {

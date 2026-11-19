@@ -11,6 +11,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
+	"github.com/v0lka/c0wrk/internal/gittest"
 )
 
 // ---------------------------------------------------------------------------
@@ -819,6 +820,142 @@ func TestGetFileDiffHunks_NoChanges(t *testing.T) {
 		}
 		if len(hunks) != 0 {
 			t.Errorf("expected 0 hunks for clean file, got %d", len(hunks))
+		}
+	})
+}
+
+// TestGetFileDiffHunks_UntrackedNoIndexHunks: an untracked file gets its
+// hunks from the same synthetic --no-index diff GetFileDiff builds, so the
+// viewer can assemble the unified diff from the hunk list alone (one RPC
+// instead of the GetFileDiff + GetFileDiffHunks pair on the auto-refresh
+// path). The no-index failure path (a vanished file) must degrade to zero
+// hunks, never an RPC error.
+func TestGetFileDiffHunks_UntrackedNoIndexHunks(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		path := filepath.Join(dir, "brand-new.txt")
+		if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		hunks, err := f.GetFileDiffHunks(path)
+		if err != nil {
+			t.Fatalf("GetFileDiffHunks: %v", err)
+		}
+		if len(hunks) == 0 {
+			t.Fatal("expected --no-index hunks for an untracked file, got none")
+		}
+		for _, h := range hunks {
+			if h.Staged {
+				t.Errorf("untracked hunks must not be marked staged")
+			}
+			if !strings.HasPrefix(h.Diff, "@@") {
+				t.Errorf("hunk block must start with an @@ header, got:\n%s", h.Diff)
+			}
+		}
+		var assembled strings.Builder
+		for i, h := range hunks {
+			if i > 0 {
+				assembled.WriteString("\n")
+			}
+			assembled.WriteString(h.Diff)
+		}
+		if !strings.Contains(assembled.String(), "+alpha") || !strings.Contains(assembled.String(), "+beta") {
+			t.Errorf("assembled diff missing the added lines:\n%s", assembled.String())
+		}
+
+		// Parity with the legacy RPC: every hunk block must parse out of
+		// exactly the diff GetFileDiff produced for the same file.
+		legacy, err := f.GetFileDiff(path)
+		if err != nil {
+			t.Fatalf("GetFileDiff: %v", err)
+		}
+		for _, h := range hunks {
+			if !strings.Contains(legacy, h.Diff) {
+				t.Errorf("hunk block not contained in GetFileDiff output:\n%s", h.Diff)
+			}
+		}
+	})
+}
+
+// TestGetFileDiffHunks_DiffsInOwningRepo: a file inside a nested repository
+// (a managed worktree is the production case; a nested repo is the same
+// ownership shape without the worktree fixture) is diffed against ITS OWN
+// baseline, not the outer project root the Git-panel focus resolves to.
+// Focus-root resolution would find no diff in the outer repo, classify the
+// path as untracked there, and fall through to the synthetic whole-file
+// --no-index diff — every line rendered as added.
+func TestGetFileDiffHunks_DiffsInOwningRepo(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		inner := filepath.Join(dir, "inner")
+		if err := os.MkdirAll(inner, 0o755); err != nil {
+			t.Fatalf("mkdir inner: %v", err)
+		}
+		gitInit(t, inner)
+		commitFile(t, inner, "owned.txt", "a\nb\nc\n")
+		if err := os.WriteFile(filepath.Join(inner, "owned.txt"), []byte("a\nB\nc\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		hunks, err := f.GetFileDiffHunks(filepath.Join(inner, "owned.txt"))
+		if err != nil {
+			t.Fatalf("GetFileDiffHunks: %v", err)
+		}
+		if len(hunks) == 0 {
+			t.Fatal("expected the inner repo's modification hunks, got none")
+		}
+		var assembled strings.Builder
+		for i, h := range hunks {
+			if i > 0 {
+				assembled.WriteString("\n")
+			}
+			assembled.WriteString(h.Diff)
+		}
+		joined := assembled.String()
+		if !strings.Contains(joined, "-b") || !strings.Contains(joined, "+B") {
+			t.Errorf("hunks must be the inner repo's b→B modification, got:\n%s", joined)
+		}
+		if strings.Contains(joined, "+a") {
+			t.Errorf("unchanged line a must not render as an addition (whole-file --no-index fallback leaked):\n%s", joined)
+		}
+	})
+}
+
+// TestGetFileDiffHunks_ExternalFocusTreeReach: the Git panel can focus an
+// EXTERNAL linked worktree (resolveGitStatusRoot's containment set), and a
+// viewer tab may hold a file of that tree — the hunks RPC must keep
+// rendering it (diffed in the tree's own repository), not error with "path
+// outside project workspace" and wipe the hunk panel on every refresh.
+func TestGetFileDiffHunks_ExternalFocusTreeReach(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		external := gittest.TempDir(t)
+		gitInit(t, external)
+		commitFile(t, external, "owned.txt", "a\nb\nc\n")
+		if err := os.WriteFile(filepath.Join(external, "owned.txt"), []byte("a\nB\nc\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// Focus the panel on the external tree, as SetGitPanelFocus allows.
+		f.setGitFocusPath(external)
+
+		hunks, err := f.GetFileDiffHunks(filepath.Join(external, "owned.txt"))
+		if err != nil {
+			t.Fatalf("GetFileDiffHunks (external focus): %v", err)
+		}
+		if len(hunks) == 0 {
+			t.Fatal("expected the external tree's modification hunks, got none")
+		}
+		var assembled strings.Builder
+		for i, h := range hunks {
+			if i > 0 {
+				assembled.WriteString("\n")
+			}
+			assembled.WriteString(h.Diff)
+		}
+		joined := assembled.String()
+		if !strings.Contains(joined, "-b") || !strings.Contains(joined, "+B") {
+			t.Errorf("hunks must be the external tree's b→B modification, got:\n%s", joined)
+		}
+		if strings.Contains(joined, "+a") {
+			t.Errorf("unchanged line a must not render as an addition (whole-file --no-index fallback leaked):\n%s", joined)
 		}
 	})
 }

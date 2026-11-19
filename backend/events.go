@@ -71,8 +71,20 @@ const EventProjectSwitched = "project:switched"
 const EventGitConfigRisk = "project:git_config_risk"
 
 // EventWorkspaceTreeChanged is emitted when filesystem changes are detected
-// in the active workspace.
+// in the active workspace. Payload: {"research_scoped": bool,
+// "paths": []string} — paths lists the watcher batch's changed absolute
+// paths when the emitter knows them (the fs watcher callbacks); the
+// agent-write PostExecuteHook emitter carries no path metadata in tool
+// results and emits the event WITHOUT paths. Consumers treat absent or
+// empty paths as "cannot scope" and refresh everything (fail-open).
 const EventWorkspaceTreeChanged = "workspace:tree_changed"
+
+// EventWorkspaceIgnoreReady is emitted when a workspace root's ignore resolver
+// build lands after a ListDirectory shipped without .aiignore flags (the
+// bounded resolver join gave up on a still-running walk). The payload is the
+// workspace root; the file tree refetches its listings with the flags applied.
+// See specs/domains/workspace.md (ignore flags).
+const EventWorkspaceIgnoreReady = "workspace:ignore_ready"
 
 // EventFilesDropped is emitted for files dragged onto the window; the payload
 // carries the absolute paths under "paths". The webview's own drag-and-drop

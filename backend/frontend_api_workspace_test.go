@@ -553,13 +553,22 @@ func TestListDirectoryFlat_HiddenAndGitIgnored(t *testing.T) {
 	gitInit(t, tmpDir)
 	_ = os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("ignored.txt\n"), 0o644)
 
-	ignoredPaths, err := workspace.GitIgnoredPaths(context.Background(), tmpDir)
-	if err != nil {
-		t.Fatalf("GitIgnoredPaths: %v", err)
-	}
-	nodes, err := workspace.ListDirFlat(tmpDir, ignoredPaths)
+	nodes, err := workspace.ListDirFlat(tmpDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	paths := make([]string, len(nodes))
+	for i, n := range nodes {
+		paths[i] = n.Path
+	}
+	flags, err := workspace.FilterGitIgnoredPaths(context.Background(), tmpDir, paths)
+	if err != nil {
+		t.Fatalf("FilterGitIgnoredPaths: %v", err)
+	}
+	for i := range nodes {
+		if flags[nodes[i].Path] {
+			nodes[i].GitIgnored = true
+		}
 	}
 
 	byName := make(map[string]FileNode)
@@ -597,13 +606,22 @@ func TestListDirectoryWalk_HiddenAndGitIgnored(t *testing.T) {
 	gitInit(t, tmpDir)
 	_ = os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("sub/ignored.txt\nsub/.hidden.txt\n"), 0o644)
 
-	ignoredPaths, err := workspace.GitIgnoredPaths(context.Background(), tmpDir)
-	if err != nil {
-		t.Fatalf("GitIgnoredPaths: %v", err)
-	}
-	nodes, err := workspace.ListDirRecursive(tmpDir, ignoredPaths)
+	nodes, err := workspace.ListDirRecursive(tmpDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	paths := make([]string, len(nodes))
+	for i, n := range nodes {
+		paths[i] = n.Path
+	}
+	flags, err := workspace.FilterGitIgnoredPaths(context.Background(), tmpDir, paths)
+	if err != nil {
+		t.Fatalf("FilterGitIgnoredPaths: %v", err)
+	}
+	for i := range nodes {
+		if flags[nodes[i].Path] {
+			nodes[i].GitIgnored = true
+		}
 	}
 
 	byPath := make(map[string]FileNode)

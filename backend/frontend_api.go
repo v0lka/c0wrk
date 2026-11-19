@@ -82,18 +82,36 @@ type FrontendAPI struct {
 	watcherMu      sync.Mutex
 	gitRepoCache   map[string]gitRepoCacheEntry
 	gitRepoCacheMu sync.Mutex
-	// gitStatusCache / gitIgnoredCache memoize the two heavy per-repo git
-	// subprocesses (git status --porcelain -uall; git ls-files --others
-	// --ignored) that dominate GetGitStatus / ListDirectory. See
-	// frontend_api_gitcache.go.
-	gitStatusCache    map[string]gitStatusCacheEntry
-	gitStatusCacheMu  sync.Mutex
-	gitIgnoredCache   map[string]gitIgnoredCacheEntry
-	gitIgnoredCacheMu sync.Mutex
-	// gitStatusFn / gitIgnoredFn are test seams overriding the workspace git
-	// helpers; nil in production, where the real workspace functions run.
-	gitStatusFn  func(root string) (map[string]GitStatusEntry, error)
-	gitIgnoredFn func(root string) (map[string]bool, error)
+	// gitStatusCache / gitStatusLiteCache / gitIgnoredFlagsCache memoize the
+	// heavy per-repo git subprocesses behind GetGitStatus / GetGitStatusLite /
+	// ListDirectory — snapshot caches with singleflight, stale-while-revalidate
+	// (status) and synchronous revalidation (flags). See
+	// frontend_api_gitcache.go and specs/domains/workspace.md.
+	gitStatusCacheMu     sync.Mutex
+	gitStatusCache       *gitSnapshotCache[map[string]GitStatusEntry, GitStatusEntry]
+	gitStatusLiteCache   *gitSnapshotCache[map[string]GitStatusEntry, GitStatusEntry]
+	gitIgnoredFlagsCache *gitSnapshotCache[map[string]bool, bool]
+	// gitBgWG tracks the detached background git refreshes and ignore-ready
+	// deliveries; backend.JoinGitBackground drains it during teardown while
+	// gitBgStopped stops admitting new ones. gitBgMu pairs the stopped check
+	// with WaitGroup.Add so an admission can never race the shutdown Wait
+	// (Add after Wait returned would leak the goroutine past the join).
+	gitBgMu      sync.Mutex
+	gitBgWG      sync.WaitGroup
+	gitBgStopped atomic.Bool
+	// ignoreDeliveryPending dedupes the per-root workspace:ignore_ready
+	// deliveries (one waiting goroutine per root at a time).
+	ignoreDeliveryPending sync.Map
+	// gitStatusFn / gitStatusLiteFn / gitIgnoredFlagsFn are test seams
+	// overriding the workspace git helpers; nil in production, where the real
+	// workspace functions run.
+	gitStatusFn       func(root string) (map[string]GitStatusEntry, error)
+	gitStatusLiteFn   func(root string) (map[string]GitStatusEntry, error)
+	gitIgnoredFlagsFn func(root, dir, scope string, paths []string) (map[string]bool, error)
+	// gitRefreshSettled, when non-nil, runs after every background git refresh
+	// settles — test hook for deterministic awaits (nil in production),
+	// mirroring gitStatusFn.
+	gitRefreshSettled func(key string, err error)
 	// readProcessRSSFn, when non-nil, overrides the resident-set-size read
 	// behind GetProcessMemory. Test-only seam (nil in production), mirroring
 	// gitStatusFn.
