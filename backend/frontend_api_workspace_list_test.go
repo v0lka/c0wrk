@@ -53,21 +53,24 @@ func TestListDirectory_GitIgnoreFailureDegrades(t *testing.T) {
 	if !workspace.IsGitRepo(t.Context(), ws) {
 		t.Fatal("fixture precondition failed: workspace not detected as git repo")
 	}
-	// ...while the ignored-paths computation fails (corrupted index:
-	// rev-parse tolerates it, ls-files does not).
+	// ...while the ignore-flags computation fails (corrupted index:
+	// rev-parse tolerates it, check-ignore does not).
 	if err := os.WriteFile(filepath.Join(ws, ".git", "index"), []byte("GARBAGE-NOT-AN-INDEX"), 0o644); err != nil {
 		t.Fatalf("corrupt .git/index: %v", err)
 	}
 	if _, ignoredErr := workspace.GitIgnoredPaths(t.Context(), ws); ignoredErr == nil {
 		t.Fatal("fixture precondition failed: expected GitIgnoredPaths to fail on corrupted index")
 	}
+	if _, flagsErr := workspace.FilterGitIgnoredPaths(t.Context(), ws, []string{filepath.Join(ws, "tracked.txt")}); flagsErr == nil {
+		t.Fatal("fixture precondition failed: expected FilterGitIgnoredPaths to fail on corrupted index")
+	}
 
 	f := &FrontendAPI{agentDir: base}
 	f.seedPublished.Store(true)
 	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
-		message: "failed to list git-ignored paths; listing without ignore flags",
-		attrs:   map[string]string{"dir": ws, "error": "git ls-files failed: exit status 128"},
+		message: "failed to compute git ignore flags; listing without them",
+		attrs:   map[string]string{"dir": ws, "error": "git check-ignore failed: exit status 128"},
 	})
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "test-project"

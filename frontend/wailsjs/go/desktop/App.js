@@ -338,6 +338,10 @@ export function GetGitStatus(arg1) {
   return window['go']['desktop']['App']['GetGitStatus'](arg1);
 }
 
+export function GetGitStatusLite(arg1) {
+  return window['go']['desktop']['App']['GetGitStatusLite'](arg1);
+}
+
 export function GetHardenGitRepos() {
   return window['go']['desktop']['App']['GetHardenGitRepos']();
 }
@@ -524,6 +528,10 @@ export function InitNotifications() {
 
 export function InstallEmbeddedLLM() {
   return window['go']['desktop']['App']['InstallEmbeddedLLM']();
+}
+
+export function JoinGitBackground(arg1) {
+  return window['go']['desktop']['App']['JoinGitBackground'](arg1);
 }
 
 export function Lifecycle() {

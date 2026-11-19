@@ -1,22 +1,31 @@
 package backend
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
 )
 
-// --- git cache (frontend_api_gitcache.go) tests ---
+// --- git snapshot caches (frontend_api_gitcache.go) tests ---
 //
 // Contract under test:
-//   - GetGitStatus / ListDirectory must not spawn the same heavy git
-//     subprocess twice within the cache TTL.
-//   - Mutating git RPCs (funnelled through emitGitStatusChanged), the
-//     workspace watcher debounce, ignore-rule edits, and a project switch must
-//     each evict the relevant snapshot so the next read recomputes.
+//   - GetGitStatus / GetGitStatusLite / ListDirectory must not spawn the same
+//     heavy git subprocess twice within the cache TTL, and concurrent cold
+//     callers must share one run (singleflight).
+//   - A stale status snapshot serves instantly while at most one background
+//     refresh per gitRefreshMinInterval runs (stale-while-revalidate); the
+//     watcher only MARKS entries stale, so a tree_changed storm costs no git
+//     run by itself.
+//   - Ignore flags revalidate synchronously (a stale read re-runs the batched
+//     check-ignore), and only an ignore-rule edit stales them.
+//   - Mutating git RPCs (funnelled through emitGitStatusChanged) and a project
+//     switch must drop the status snapshots so the next read recomputes.
 
 // newGitCacheTestAPI builds a FrontendAPI with an active (non-No-Project)
 // project rooted at ws, which is what GetGitStatus/ListDirectory require before
@@ -24,12 +33,43 @@ import (
 func newGitCacheTestAPI(ws string) *FrontendAPI {
 	f := &FrontendAPI{}
 	f.seedPublished.Store(true)
-	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "gitcache-test-project"
 	f.activeProjectPath = ws
 	f.activeProjectMu.Unlock()
 	return f
+}
+
+// gitCacheEntryCount reports how many snapshots a cache currently holds.
+func gitCacheEntryCount[M ~map[string]V2, V2 any](c *gitSnapshotCache[M, V2]) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// genStatusSeam returns a gitStatusFn whose snapshots are unique per call
+// ("f<N>.txt"), so a stale-serving read is distinguishable from a recompute.
+func genStatusSeam(calls *atomic.Int32) func(string) (map[string]GitStatusEntry, error) {
+	return func(string) (map[string]GitStatusEntry, error) {
+		n := calls.Add(1)
+		return map[string]GitStatusEntry{fmt.Sprintf("f%d.txt", n): {Status: "M"}}, nil
+	}
+}
+
+// backdateStatusLastRefresh pushes the status entry's lastRefresh past the
+// min-refresh window, making the next stale read eligible for a background
+// refresh launch. Tests must not sleep out the real interval.
+func backdateStatusLastRefresh(t *testing.T, f *FrontendAPI, root string) {
+	t.Helper()
+	f.ensureGitCaches()
+	c := f.gitStatusCache
+	c.mu.Lock()
+	e := c.entries[gitCacheKey(root)]
+	c.mu.Unlock()
+	if e == nil {
+		t.Fatalf("backdate: no status cache entry for %s", root)
+	}
+	e.lastRefresh = time.Now().Add(-gitRefreshMinInterval)
 }
 
 // TestGetGitStatus_CachedWithinTTL verifies that repeated GetGitStatus calls
@@ -57,7 +97,8 @@ func TestGetGitStatus_CachedWithinTTL(t *testing.T) {
 
 // TestGetGitStatus_RecomputedAfterInvalidation verifies that a mutating git RPC
 // (which funnels through emitGitStatusChanged) evicts the cached snapshot so
-// the next GetGitStatus spawns git again.
+// the next GetGitStatus spawns git again — instant fresh feedback after a
+// user-initiated stage/commit must not be throttled away.
 func TestGetGitStatus_RecomputedAfterInvalidation(t *testing.T) {
 	ws := t.TempDir()
 	var calls atomic.Int32
@@ -81,21 +122,156 @@ func TestGetGitStatus_RecomputedAfterInvalidation(t *testing.T) {
 	}
 }
 
-// TestListDirectory_GitIgnoredPathsCachedOnce verifies that two back-to-back
-// ListDirectory calls on a git repo compute the ignored-path set once: the
-// second listing is served from the ignored-path cache.
-func TestListDirectory_GitIgnoredPathsCachedOnce(t *testing.T) {
+// TestCachedGitStatus_ColdSingleflight verifies that concurrent cold callers
+// share one git run: the second caller joins the in-flight fetch instead of
+// spawning its own subprocess.
+func TestCachedGitStatus_ColdSingleflight(t *testing.T) {
+	ws := t.TempDir()
+	var calls atomic.Int32
+	var started sync.Once
+	gate := make(chan struct{})
+	startedCh := make(chan struct{})
+	f := newGitCacheTestAPI(ws)
+	f.gitStatusFn = func(string) (map[string]GitStatusEntry, error) {
+		n := calls.Add(1)
+		started.Do(func() { close(startedCh) })
+		<-gate
+		return map[string]GitStatusEntry{fmt.Sprintf("f%d.txt", n): {Status: "M"}}, nil
+	}
+
+	type result struct {
+		status map[string]GitStatusEntry
+		err    error
+	}
+	done := make(chan result, 2)
+	go func() {
+		st, err := f.cachedGitStatus(ws)
+		done <- result{st, err}
+	}()
+	<-startedCh
+	go func() {
+		st, err := f.cachedGitStatus(ws)
+		done <- result{st, err}
+	}()
+
+	close(gate)
+	first, second := <-done, <-done
+	if first.err != nil || second.err != nil {
+		t.Fatalf("cold singleflight: %v / %v", first.err, second.err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent cold callers spawned %d git runs, want 1 (shared fetch)", got)
+	}
+	if _, ok := first.status["f1.txt"]; !ok {
+		t.Errorf("first caller must receive the shared snapshot, got %v", first.status)
+	}
+	if _, ok := second.status["f1.txt"]; !ok {
+		t.Errorf("second caller must receive the shared snapshot, got %v", second.status)
+	}
+}
+
+// TestCachedGitStatus_StaleServedWhileRefreshing verifies stale-while-
+// revalidate: a stale read returns the last snapshot immediately (no git run
+// on the RPC's critical path), launches exactly one background refresh, and
+// the next read after it settles serves the fresh snapshot.
+func TestCachedGitStatus_StaleServedWhileRefreshing(t *testing.T) {
+	ws := t.TempDir()
+	var calls atomic.Int32
+	settled := make(chan error, 4)
+	f := newGitCacheTestAPI(ws)
+	f.gitRefreshSettled = func(key string, err error) { settled <- err }
+	f.gitStatusFn = genStatusSeam(&calls)
+
+	f.ensureGitCaches()
+	f.gitStatusCache.seed(gitCacheKey(ws), map[string]GitStatusEntry{"f0.txt": {Status: "A"}}, true)
+
+	// Stale read: instant serve, no git run on this path.
+	staleStatus, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("stale read: %v", err)
+	}
+	if _, ok := staleStatus["f0.txt"]; !ok {
+		t.Fatalf("stale read must serve the seeded snapshot, got %v", staleStatus)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("stale read must not spawn git on the critical path, spawned %d", got)
+	}
+
+	// The background refresh settles (bounded watchdog against a hang).
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatalf("background refresh failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background refresh never settled")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("background refresh ran %d times, want 1", got)
+	}
+
+	// Next read: fresh snapshot, no further git run.
+	fresh, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("fresh read: %v", err)
+	}
+	if _, ok := fresh["f1.txt"]; !ok {
+		t.Fatalf("read after refresh must serve the recomputed snapshot, got %v", fresh)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("fresh read must be a cache hit, spawned %d total", got)
+	}
+}
+
+// TestCachedGitStatus_MinRefreshThrottle verifies the refresh throttle: a
+// watcher-invalidated entry whose last git run is INSIDE the min-refresh
+// window serves its stale snapshot without launching anything — a
+// tree_changed storm costs no git run at all.
+func TestCachedGitStatus_MinRefreshThrottle(t *testing.T) {
+	ws := t.TempDir()
+	var calls atomic.Int32
+	f := newGitCacheTestAPI(ws)
+	f.gitStatusFn = genStatusSeam(&calls)
+
+	f.ensureGitCaches()
+	f.gitStatusCache.seed(gitCacheKey(ws), map[string]GitStatusEntry{"f0.txt": {Status: "A"}}, false)
+	f.gitStatusCache.markStale(gitCacheKey(ws))
+
+	st, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("throttled read: %v", err)
+	}
+	if _, ok := st["f0.txt"]; !ok {
+		t.Fatalf("throttled read must serve the snapshot, got %v", st)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("throttled read must not spawn git inside the min-refresh window, spawned %d", got)
+	}
+	f.ensureGitCaches()
+	f.gitStatusCache.mu.Lock()
+	e := f.gitStatusCache.entries[gitCacheKey(ws)]
+	refreshing := e != nil && e.refreshing
+	f.gitStatusCache.mu.Unlock()
+	if refreshing {
+		t.Fatal("throttled read must not launch a background refresh")
+	}
+}
+
+// TestListDirectory_GitIgnoredFlagsCachedOnce verifies that two back-to-back
+// ListDirectory calls on a git repo run the batched check-ignore once: the
+// second listing is served from the per-directory flags cache.
+func TestListDirectory_GitIgnoredFlagsCachedOnce(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
 	ws := t.TempDir()
-	// ListDirectory only consults the ignored-path cache for a real git repo
+	// ListDirectory only consults the flags cache for a real git repo
 	// (isGitRepo), so the fixture must be one.
 	gitRepoFixture(t, ws)
 
 	var calls atomic.Int32
 	f := newGitCacheTestAPI(ws)
-	f.gitIgnoredFn = func(string) (map[string]bool, error) {
+	f.gitIgnoredFlagsFn = func(string, string, []string) (map[string]bool, error) {
 		calls.Add(1)
 		return map[string]bool{}, nil
 	}
@@ -107,65 +283,89 @@ func TestListDirectory_GitIgnoredPathsCachedOnce(t *testing.T) {
 		t.Fatalf("ListDirectory #2: %v", err)
 	}
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("GitIgnoredPaths ran %d times across two ListDirectory calls, want 1", got)
+		t.Fatalf("check-ignore ran %d times across two ListDirectory calls, want 1", got)
 	}
 }
 
-// TestInvalidateGitCachesOnWatcher covers the debounced watcher invalidation
-// policy: any tree change stales the status snapshot, while only an
-// ignore-rule file (.gitignore/.aiignore/.ignore) additionally stales the
-// ignored-path snapshot.
+// TestInvalidateGitCachesOnWatcher covers the debounced watcher policy: any
+// tree change only MARKS the status snapshots stale (the next read serves the
+// last snapshot and throttles its refresh), while an ignore-rule edit
+// (.gitignore/.aiignore/.ignore) additionally stales the per-directory flags,
+// which revalidate synchronously on the next read.
 func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 	root := "/repo"
-	var statusCalls, ignoredCalls atomic.Int32
+	var statusCalls, flagsCalls atomic.Int32
+	settled := make(chan error, 4)
 	f := &FrontendAPI{
-		gitStatusFn: func(string) (map[string]GitStatusEntry, error) {
-			statusCalls.Add(1)
-			return map[string]GitStatusEntry{}, nil
-		},
-		gitIgnoredFn: func(string) (map[string]bool, error) {
-			ignoredCalls.Add(1)
+		gitStatusFn:       genStatusSeam(&statusCalls),
+		gitRefreshSettled: func(_ string, err error) { settled <- err },
+		gitIgnoredFlagsFn: func(string, string, []string) (map[string]bool, error) {
+			flagsCalls.Add(1)
 			return map[string]bool{}, nil
 		},
 	}
 	f.seedPublished.Store(true)
-	f.seedPublished.Store(true)
 
-	// Prime both caches.
+	// Prime both caches (one git run each).
 	if _, err := f.cachedGitStatus(root); err != nil {
 		t.Fatalf("prime status: %v", err)
 	}
-	if _, err := f.cachedGitIgnoredPaths(root); err != nil {
-		t.Fatalf("prime ignored: %v", err)
+	if _, err := f.cachedGitIgnoredFlags(root, root, []string{filepath.Join(root, "main.go")}); err != nil {
+		t.Fatalf("prime flags: %v", err)
 	}
 
-	// A regular file change stales only the status snapshot.
+	// A regular file change stales the status snapshot WITHOUT spawning git:
+	// the next read serves the last snapshot (still inside the min-refresh
+	// window) and the flags stay fresh entirely.
 	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, "main.go")})
-	if _, err := f.cachedGitStatus(root); err != nil {
+	st, err := f.cachedGitStatus(root)
+	if err != nil {
 		t.Fatalf("status after regular change: %v", err)
 	}
-	if _, err := f.cachedGitIgnoredPaths(root); err != nil {
-		t.Fatalf("ignored after regular change: %v", err)
+	if _, ok := st["f1.txt"]; !ok {
+		t.Fatalf("stale read must serve the primed snapshot, got %v", st)
 	}
-	if got := statusCalls.Load(); got != 2 {
-		t.Fatalf("status must recompute after a tree change: spawned %d, want 2", got)
+	if got := statusCalls.Load(); got != 1 {
+		t.Fatalf("watcher batch must not spawn git by itself: spawned %d, want 1", got)
 	}
-	if got := ignoredCalls.Load(); got != 1 {
-		t.Fatalf("ignored must stay cached after a regular change: spawned %d, want 1", got)
+	if _, err := f.cachedGitIgnoredFlags(root, root, []string{filepath.Join(root, "main.go")}); err != nil {
+		t.Fatalf("flags after regular change: %v", err)
+	}
+	if got := flagsCalls.Load(); got != 1 {
+		t.Fatalf("flags must stay cached after a regular change: spawned %d, want 1", got)
 	}
 
-	// An ignore-rule edit stales the ignored snapshot too.
-	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, ".gitignore")})
-	if _, err := f.cachedGitIgnoredPaths(root); err != nil {
-		t.Fatalf("ignored after .gitignore change: %v", err)
+	// Past the min-refresh window the same stale read launches exactly one
+	// background refresh; the test awaits its settle instead of racing it.
+	backdateStatusLastRefresh(t, f, root)
+	if _, err := f.cachedGitStatus(root); err != nil {
+		t.Fatalf("status after backdate: %v", err)
 	}
-	if got := ignoredCalls.Load(); got != 2 {
-		t.Fatalf("ignored must recompute after a .gitignore change: spawned %d, want 2", got)
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatalf("background refresh failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background refresh never settled")
+	}
+	if got := statusCalls.Load(); got != 2 {
+		t.Fatalf("stale read past the window must revalidate: spawned %d, want 2", got)
+	}
+
+	// An ignore-rule edit stales the flags too; the flags read revalidates
+	// synchronously (the batch is cheap by design).
+	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, ".gitignore")})
+	if _, err := f.cachedGitIgnoredFlags(root, root, []string{filepath.Join(root, "main.go")}); err != nil {
+		t.Fatalf("flags after .gitignore change: %v", err)
+	}
+	if got := flagsCalls.Load(); got != 2 {
+		t.Fatalf("flags must revalidate after a .gitignore change: spawned %d, want 2", got)
 	}
 }
 
 // TestSwitchProject_InvalidatesGitCaches verifies that switching projects drops
-// both per-repo caches wholesale, so no snapshot from the previous workspace
+// the per-repo caches wholesale, so no snapshot from the previous workspace
 // can be served against the new one.
 func TestSwitchProject_InvalidatesGitCaches(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -179,37 +379,31 @@ func TestSwitchProject_InvalidatesGitCaches(t *testing.T) {
 	prepareAtomicSwitchHarness(t, h)
 	defer h.close(t)
 
-	// Seed both caches with stale entries.
-	h.api.gitStatusCacheMu.Lock()
-	h.api.gitStatusCache = map[string]gitStatusCacheEntry{"stale": {}}
-	h.api.gitStatusCacheMu.Unlock()
-	h.api.gitIgnoredCacheMu.Lock()
-	h.api.gitIgnoredCache = map[string]gitIgnoredCacheEntry{"stale": {}}
-	h.api.gitIgnoredCacheMu.Unlock()
+	// Seed all three caches with stale entries.
+	h.api.ensureGitCaches()
+	h.api.gitStatusCache.seed("stale", map[string]GitStatusEntry{"x": {}}, true)
+	h.api.gitStatusLiteCache.seed("stale", map[string]GitStatusEntry{"x": {}}, true)
+	h.api.gitIgnoredFlagsCache.seed("stale", map[string]bool{"x": true}, true)
 
 	if err := h.api.SwitchProject(h.projectID); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 
-	h.api.gitStatusCacheMu.Lock()
-	statusCleared := h.api.gitStatusCache == nil
-	h.api.gitStatusCacheMu.Unlock()
-	h.api.gitIgnoredCacheMu.Lock()
-	ignoredCleared := h.api.gitIgnoredCache == nil
-	h.api.gitIgnoredCacheMu.Unlock()
-
-	if !statusCleared || !ignoredCleared {
-		t.Fatalf("SwitchProject must drop both git caches: status cleared=%v, ignored cleared=%v", statusCleared, ignoredCleared)
+	statusCleared := gitCacheEntryCount(h.api.gitStatusCache) == 0
+	liteCleared := gitCacheEntryCount(h.api.gitStatusLiteCache) == 0
+	flagsCleared := gitCacheEntryCount(h.api.gitIgnoredFlagsCache) == 0
+	if !statusCleared || !liteCleared || !flagsCleared {
+		t.Fatalf("SwitchProject must drop the git caches: status cleared=%v, lite cleared=%v, flags cleared=%v",
+			statusCleared, liteCleared, flagsCleared)
 	}
 }
 
 // TestGitCaches_NoProjectUntouched pins the No Project contract: with the No
 // Project pseudo-project active, isGitRepo reports "not a repo" without writing
-// to the git-repo cache (and, by extension, neither git-status nor ignored
-// cache is ever populated for a session workspace).
+// to the git-repo cache (and, by extension, no git snapshot cache is ever
+// populated for a session workspace).
 func TestGitCaches_NoProjectUntouched(t *testing.T) {
 	f := &FrontendAPI{}
-	f.seedPublished.Store(true)
 	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = project.NoProjectID
@@ -218,9 +412,9 @@ func TestGitCaches_NoProjectUntouched(t *testing.T) {
 	if f.isGitRepo(t.TempDir()) {
 		t.Fatal("No Project must never be treated as a git repo")
 	}
-	if f.gitRepoCache != nil || f.gitStatusCache != nil || f.gitIgnoredCache != nil {
-		t.Fatalf("No Project must not populate git caches: repo=%v status=%v ignored=%v",
-			f.gitRepoCache, f.gitStatusCache, f.gitIgnoredCache)
+	if f.gitRepoCache != nil || f.gitStatusCache != nil || f.gitStatusLiteCache != nil || f.gitIgnoredFlagsCache != nil {
+		t.Fatalf("No Project must not populate git caches: repo=%v status=%v lite=%v flags=%v",
+			f.gitRepoCache, f.gitStatusCache, f.gitStatusLiteCache, f.gitIgnoredFlagsCache)
 	}
 }
 
@@ -230,15 +424,16 @@ func TestGitCaches_NoProjectUntouched(t *testing.T) {
 // served to other readers within the TTL.
 func TestCachedGitMaps_AreCallerOwned(t *testing.T) {
 	ws := t.TempDir()
-	var statusCalls, ignoredCalls atomic.Int32
+	var statusCalls, flagsCalls atomic.Int32
+	ignoredKey := filepath.Join(ws, "ignored.txt")
 	f := newGitCacheTestAPI(ws)
 	f.gitStatusFn = func(string) (map[string]GitStatusEntry, error) {
 		statusCalls.Add(1)
 		return map[string]GitStatusEntry{"a.txt": {Status: "M"}}, nil
 	}
-	f.gitIgnoredFn = func(string) (map[string]bool, error) {
-		ignoredCalls.Add(1)
-		return map[string]bool{"build/": true}, nil
+	f.gitIgnoredFlagsFn = func(string, string, []string) (map[string]bool, error) {
+		flagsCalls.Add(1)
+		return map[string]bool{ignoredKey: true}, nil
 	}
 
 	// Miss path: the freshly computed snapshot is stored, the caller gets a copy.
@@ -264,25 +459,25 @@ func TestCachedGitMaps_AreCallerOwned(t *testing.T) {
 		t.Fatalf("second status call must be a cache hit: spawned %d, want 1", got)
 	}
 
-	// Same contract for the ignored-path cache.
-	ignoredFirst, err := f.cachedGitIgnoredPaths(ws)
+	// Same contract for the ignore-flags cache.
+	flagsFirst, err := f.cachedGitIgnoredFlags(ws, ws, []string{ignoredKey})
 	if err != nil {
-		t.Fatalf("cachedGitIgnoredPaths #1: %v", err)
+		t.Fatalf("cachedGitIgnoredFlags #1: %v", err)
 	}
-	ignoredFirst["caller-added/"] = true
-	delete(ignoredFirst, "build/")
+	flagsFirst["caller-added/"] = true
+	delete(flagsFirst, ignoredKey)
 
-	ignoredSecond, err := f.cachedGitIgnoredPaths(ws)
+	flagsSecond, err := f.cachedGitIgnoredFlags(ws, ws, []string{ignoredKey})
 	if err != nil {
-		t.Fatalf("cachedGitIgnoredPaths #2: %v", err)
+		t.Fatalf("cachedGitIgnoredFlags #2: %v", err)
 	}
-	if _, polluted := ignoredSecond["caller-added/"]; polluted {
-		t.Error("ignored-path cache polluted by caller mutation of a previously returned map")
+	if _, polluted := flagsSecond["caller-added/"]; polluted {
+		t.Error("flags cache polluted by caller mutation of a previously returned map")
 	}
-	if !ignoredSecond["build/"] {
-		t.Error("cached ignored-path entry lost through caller mutation of a previously returned map")
+	if !flagsSecond[ignoredKey] {
+		t.Error("cached flags entry lost through caller mutation of a previously returned map")
 	}
-	if got := ignoredCalls.Load(); got != 1 {
-		t.Fatalf("second ignored call must be a cache hit: spawned %d, want 1", got)
+	if got := flagsCalls.Load(); got != 1 {
+		t.Fatalf("second flags call must be a cache hit: spawned %d, want 1", got)
 	}
 }
