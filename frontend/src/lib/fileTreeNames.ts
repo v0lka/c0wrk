@@ -7,8 +7,9 @@
 
 /** Platform path separator — Windows uses `\`, POSIX uses `/`. Derived
  *  lazily per call, never at module scope: a module-scope `navigator` read
- *  crashes test collection (the vitest environment has no `navigator`),
- *  taking down every importing test file with it. */
+ *  would bake the host platform in at import time (Node >= 21 test runners
+ *  expose the host's navigator), leaving tests unable to pin a different
+ *  separator. */
 export function treePathSep(): string {
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform
   return platform.includes('Win') ? '\\' : '/'
