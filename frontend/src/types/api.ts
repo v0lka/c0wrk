@@ -53,6 +53,7 @@ export interface WorkspaceAPI {
   getSessionWorkspace(sessionId: string): Promise<string>
   listDirectory(path: string, recursive?: boolean): Promise<FileEntry[]>
   getGitStatus(path: string): Promise<Record<string, GitStatusEntry>>
+  getGitStatusLite(path: string): Promise<Record<string, GitStatusEntry>>
   watchDirectory(path: string): Promise<void>
   unwatchDirectory(path: string): Promise<void>
   readFile(filePath: string): Promise<string>

@@ -11,6 +11,7 @@ import { createRoot, type Root } from 'react-dom/client'
 vi.mock('@/api/workspace', () => ({
   listDirectory: vi.fn(),
   getGitStatus: vi.fn(async () => ({})),
+  getGitStatusLite: vi.fn(async () => ({})),
   watchDirectory: vi.fn(async () => undefined),
   unwatchDirectory: vi.fn(async () => undefined),
   getSessionWorkspace: vi.fn(),

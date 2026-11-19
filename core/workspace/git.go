@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -248,6 +249,21 @@ func IsGitTracked(ctx context.Context, dir, relPath string) bool {
 // absolute file paths to entries carrying both index and work-tree status;
 // legacy Status/Staged prefer the index side when set.
 func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
+	return gitStatus(ctx, repoPath, "-uall")
+}
+
+// GitStatusLite is GitStatus with untracked directories left collapsed
+// (`-unormal`): git never enumerates every untracked file beneath them — the
+// untracked directory itself arrives as a `dir/` entry carrying '?' on the
+// work-tree axis. This is the file tree's badge source (the panel keeps the
+// full enumeration): the tree inherits the untracked verdict down to the
+// entries it already lists.
+func GitStatusLite(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
+	return gitStatus(ctx, repoPath, "-unormal")
+}
+
+// gitStatus parses porcelain v1 output; untrackedMode selects the -u flag.
+func gitStatus(ctx context.Context, repoPath, untrackedMode string) (map[string]GitStatusEntry, error) {
 	// Porcelain v1 paths are relative to the REPOSITORY ROOT, so joining them
 	// onto repoPath is only correct at the work-tree root — from a subdirectory
 	// workspace entries would key onto non-existent paths and a colliding root-
@@ -257,7 +273,7 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 	if r := ResolveWorkTreeRoot(repoPath); r != "" {
 		root = r
 	}
-	cmd, err := GitCmdInRepo(ctx, root, "status", "--porcelain", "-uall")
+	cmd, err := GitCmdInRepo(ctx, root, "status", "--porcelain", untrackedMode)
 	if err != nil {
 		return nil, err
 	}
@@ -552,6 +568,64 @@ func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 		result[filepath.Join(dir, rel)] = true
 	}
 	return result, nil
+}
+
+// FilterGitIgnoredPaths runs one batch `git check-ignore -z --stdin` over the
+// given paths and reports which of them git's ignore rules exclude. The cost
+// is O(len(paths)) — pure pattern evaluation, no worktree walk — which is
+// what lets ListDirectory flag a handful of listed entries instead of paying
+// the repo-wide enumeration GitIgnoredPaths performs. Paths are echoed back
+// verbatim, so the returned set keys on the input strings. Unlike the
+// ls-files enumeration this is pattern-only: a TRACKED path that matches an
+// ignore rule is reported too (specs/domains/workspace.md, ignore flags).
+// A non-repo root and a "none ignored" run (exit 1) both yield an empty map.
+func FilterGitIgnoredPaths(ctx context.Context, root string, paths []string) (map[string]bool, error) {
+	if len(paths) == 0 {
+		return map[string]bool{}, nil
+	}
+	cmd, err := GitCmdInRepo(ctx, root, "check-ignore", "-z", "--stdin")
+	if err != nil {
+		return nil, err
+	}
+	cmd.Dir = root
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.Stdin = pathsReader(paths)
+
+	runErr := cmd.Run()
+	if runErr != nil && !isCheckIgnoreNoneIgnored(runErr) {
+		if errNotGitRepo(runErr, stderr.String()) {
+			return map[string]bool{}, nil // non-git workspace: no filtering
+		}
+		return nil, fmt.Errorf("git check-ignore failed: %w", runErr)
+	}
+
+	result := make(map[string]bool)
+	for _, entry := range bytes.Split(stdout.Bytes(), []byte{'\x00'}) {
+		if len(entry) > 0 {
+			result[string(entry)] = true
+		}
+	}
+	return result, nil
+}
+
+// pathsReader feeds paths NUL-separated over stdin (check-ignore -z input
+// convention, same as its output separator).
+func pathsReader(paths []string) io.Reader {
+	var buf bytes.Buffer
+	for _, p := range paths {
+		buf.WriteString(p)
+		buf.WriteByte('\x00')
+	}
+	return bytes.NewReader(buf.Bytes())
+}
+
+// isCheckIgnoreNoneIgnored reports git check-ignore's "no path is ignored"
+// exit code (1) — a successful answer, not a failure.
+func isCheckIgnoreNoneIgnored(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }
 
 // reviewHunkHeaderRe matches a unified-diff hunk header, capturing the

@@ -4,7 +4,7 @@ import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { selectionPersisted } from '@/stores/sessionStore'
-import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory } from '@/api/workspace'
+import { listDirectory, getGitStatusLite, watchDirectory, unwatchDirectory } from '@/api/workspace'
 import { useWorkspaceRootState } from '@/hooks/useWorkspacePath'
 import { subscribe } from '@/api/runtime'
 import { FilterBar } from '@/components/ui/FilterBar'
@@ -18,16 +18,28 @@ import type { FileEntry, GitStatusEntry } from '@/types/models'
 /** Propagate git status up to parent directories so folders show change indicators.
  *  A directory inherits a uniform status if all nested files share the same (status, staged)
  *  pair; otherwise it falls back to modified (M).
+ *
+ *  The status map comes from the LITE source: untracked directories arrive as
+ *  one collapsed entry (worktree_status '?') instead of a per-file enumeration,
+ *  so the directories carrying an untracked verdict are returned separately —
+ *  the tree inherits that verdict down to the entries it actually lists (a
+ *  fresh untracked module keeps its green badges without paying the
+ *  untracked-file enumeration on the git side).
  */
 function propagateGitStatus(gitStatus: Record<string, GitStatusEntry>): {
   status: Record<string, GitStatusEntry>
   propagated: Set<string>
+  untrackedDirs: Set<string>
 } {
   const result: Record<string, GitStatusEntry> = { ...gitStatus }
   const propagated = new Set<string>()
+  const untrackedDirs = new Set<string>()
   const dirSignatures = new Map<string, Set<string>>()
 
   for (const [filePath, entry] of Object.entries(gitStatus)) {
+    if (entry.worktree_status === '?') {
+      untrackedDirs.add(filePath)
+    }
     let dir = filePath
     while ((dir = dir.substring(0, dir.lastIndexOf('/'))) && dir) {
       let sigs = dirSignatures.get(dir)
@@ -55,7 +67,27 @@ function propagateGitStatus(gitStatus: Record<string, GitStatusEntry>): {
     }
   }
 
-  return { status: result, propagated }
+  return { status: result, propagated, untrackedDirs }
+}
+
+/** Status lookup for one tree entry: the exact map entry, or — when the entry
+ *  sits beneath a collapsed untracked directory — the inherited untracked
+ *  verdict. Nothing nests beneath a file path, so a '?' on a file entry can
+ *  never match a descendant and the prefix walk stays exact. */
+function lookupGitStatus(
+  path: string,
+  gitStatus: Record<string, GitStatusEntry>,
+  untrackedDirs: Set<string>,
+): GitStatusEntry | undefined {
+  const exact = gitStatus[path]
+  if (exact) return exact
+  let dir = path
+  while ((dir = dir.substring(0, dir.lastIndexOf('/'))) && dir) {
+    if (untrackedDirs.has(dir)) {
+      return { status: 'A', staged: false, index_status: '', worktree_status: '?' }
+    }
+  }
+  return undefined
 }
 
 interface TreeNodeProps {
@@ -63,6 +95,7 @@ interface TreeNodeProps {
   depth: number
   gitStatus: Record<string, GitStatusEntry>
   propagatedPaths: Set<string>
+  untrackedDirs: Set<string>
   onContextMenu: (entry: FileEntry, x: number, y: number) => void
 }
 
@@ -100,15 +133,16 @@ export function describeListError(err: unknown): string {
 
 /**
  * Reload the root directory and every expanded subdirectory from the current
- * store state, then refresh git status. Shared by the `workspace:tree_changed`
- * subscription, the error-state Retry action and the manual Refresh button so
- * all three paths behave identically. A root listing failure is surfaced via
- * `rootLoadError` (with the message) instead of being cached as an empty
- * entry list — the old behavior rendered a silently "empty" workspace that
- * never recovered, because a static workspace emits no tree_changed events.
+ * store state. Shared by `workspace:tree_changed` (via reloadWorkspaceTree),
+ * `workspace:ignore_ready` (flags arrived without a tree change — listings
+ * only, no git status), the error-state Retry action and the manual Refresh
+ * button. A root listing failure is surfaced via `rootLoadError` (with the
+ * message) instead of being cached as an empty entry list — the old behavior
+ * rendered a silently "empty" workspace that never recovered, because a
+ * static workspace emits no tree_changed events.
  */
 // eslint-disable-next-line react-refresh/only-export-components
-export async function reloadWorkspaceTree(): Promise<void> {
+export async function reloadExpandedDirs(): Promise<void> {
   const state = useFileTreeStore.getState()
   const rootPath = state.rootPath
   if (!rootPath) return
@@ -127,16 +161,23 @@ export async function reloadWorkspaceTree(): Promise<void> {
         }),
     ),
   )
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export async function reloadWorkspaceTree(): Promise<void> {
+  await reloadExpandedDirs()
+  const rootPath = useFileTreeStore.getState().rootPath
+  if (!rootPath) return
   const projectState = useProjectStore.getState()
   const activeProject = projectState.projects?.find((p) => p.id === projectState.activeProjectId)
   if (activeProject?.is_no_project !== true) {
-    getGitStatus(rootPath)
+    getGitStatusLite(rootPath)
       .then(useFileTreeStore.getState().setGitStatus)
       .catch(() => { })
   }
 }
 
-function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: TreeNodeProps) {
+function TreeNode({ entry, depth, gitStatus, propagatedPaths, untrackedDirs, onContextMenu }: TreeNodeProps) {
   const expanded = useFileTreeStore((s) => s.expandedDirs[entry.path] === true)
   const loading = useFileTreeStore((s) => s.loadingDirs[entry.path] === true)
   const children = useFileTreeStore((s) => s.tree[entry.path])
@@ -191,7 +232,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
     [entry, onContextMenu],
   )
 
-  const statusEntry = gitStatus[entry.path]
+  const statusEntry = lookupGitStatus(entry.path, gitStatus, untrackedDirs)
   const colorCls = gitColorClass(statusEntry)
   const isPropagated = statusEntry ? propagatedPaths.has(entry.path) : false
   const isMuted = !colorCls && (entry.hidden || entry.gitignored)
@@ -235,7 +276,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
       {entry.is_dir && expanded && children && (
         <div role="group">
           {children.map((child) => (
-            <TreeNode key={child.path} entry={child} depth={depth + 1} gitStatus={gitStatus} propagatedPaths={propagatedPaths} onContextMenu={onContextMenu} />
+            <TreeNode key={child.path} entry={child} depth={depth + 1} gitStatus={gitStatus} propagatedPaths={propagatedPaths} untrackedDirs={untrackedDirs} onContextMenu={onContextMenu} />
           ))}
         </div>
       )}
@@ -267,7 +308,7 @@ export function FileTreePanel() {
 
   const { filterText, filterMode, isInvalidFilter, handleFilterChange, toggleFilterMode } = useFileSearch()
 
-  const { status: gitStatus, propagated: propagatedPaths } = useMemo(() => propagateGitStatus(gitStatusRaw), [gitStatusRaw])
+  const { status: gitStatus, propagated: propagatedPaths, untrackedDirs } = useMemo(() => propagateGitStatus(gitStatusRaw), [gitStatusRaw])
 
   const isNoProject = useMemo(() => {
     return projects?.find((p) => p.id === activeProjectId)?.is_no_project === true
@@ -330,7 +371,7 @@ export function FileTreePanel() {
     ops.push(selectionPersisted(activeProjectId).then(() => watchDirectory(workspacePath)))
     // Skip git status for No Project
     if (!isNoProject) {
-      ops.push(getGitStatus(workspacePath).then((status) => { if (!cancelled) setGitStatus(status) }))
+      ops.push(getGitStatusLite(workspacePath).then((status) => { if (!cancelled) setGitStatus(status) }))
     } else {
       setGitStatus({})
     }
@@ -354,6 +395,20 @@ export function FileTreePanel() {
     return unsub
   }, [])
 
+  // Ignore flags may arrive AFTER the listing that needs them: a not-yet-built
+  // ignore resolver ships .aiignore flags empty and the backend delivers this
+  // event once the walk lands. Reload the listings (no git status — the flags
+  // are the only delta), but only for the root the event names: a stale event
+  // from a previous project must not refetch the current tree.
+  useEffect(() => {
+    const unsub = subscribe('workspace:ignore_ready', (root: unknown) => {
+      const state = useFileTreeStore.getState()
+      if (typeof root === 'string' && state.rootPath && !state.rootPath.startsWith(root)) return
+      void reloadExpandedDirs()
+    })
+    return unsub
+  }, [])
+
   const isFiltering = filterText.trim().length > 0
   const displayEntries = isFiltering ? searchEntries : rootEntries
 
@@ -371,7 +426,7 @@ export function FileTreePanel() {
       ) : displayEntries && displayEntries.length > 0 ? (
         <div className="custom-scrollbar flex-1 overflow-y-auto py-1" role="tree">
           {displayEntries.map((entry) => (
-            <TreeNode key={entry.path} entry={entry} depth={0} gitStatus={gitStatus} propagatedPaths={propagatedPaths} onContextMenu={handleContextMenu} />
+            <TreeNode key={entry.path} entry={entry} depth={0} gitStatus={gitStatus} propagatedPaths={propagatedPaths} untrackedDirs={untrackedDirs} onContextMenu={handleContextMenu} />
           ))}
         </div>
       ) : isFiltering ? (

@@ -1021,6 +1021,11 @@ export interface GlobalEventMap {
    *  research-only files in the batch are covered by the incremental
    *  research:file_changed path); consumers use it to defer to that path. */
   readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
+  /** A workspace root's ignore resolver build landed after a listing shipped
+   *  without .aiignore flags (the bounded resolver join gave up on a
+   *  still-running walk). Payload: the workspace root the flags are ready
+   *  for — consumers reload only when it matches their active root. */
+  readonly 'workspace:ignore_ready': string
   /** RESEARCH mutation for a project: the active R-NNN switched
    *  (`SetActiveResearch`), a research project was deleted (`DeleteResearch`),
    *  or a pre-rename `<workspace>/.research` root was migrated to the

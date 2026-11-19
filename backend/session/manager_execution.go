@@ -417,21 +417,26 @@ func (m *Manager) detectCaseInsensitive(path string) bool {
 	return probe.ci
 }
 
-// startIgnoreBuild launches a background walk of root and caches its
-// ignore resolver, deduplicated via a LoadOrStore in-flight entry (a
-// concurrent or completed build makes this a no-op). The goroutine is
-// manager-tracked (background.go) so Shutdown joins it, and derives from the
-// manager's shutdown context: on a huge root (module cache / vendor tree) the
-// walk runs for minutes with no other cancellation, so shutdownCancel aborts
-// it BEFORE stopBackground joins instead of burning stopTimeout on the
-// quiescing main thread. Read-only walk: a straggler cannot add to a removed
-// directory. See specs/domains/workspace.md (per-root ignore resolver cache).
+// startIgnoreBuild launches the tracked background resolver walk for root,
+// deduplicated via a LoadOrStore in-flight entry (a concurrent or completed
+// build makes this a no-op). Goroutine mechanics live in spawnIgnoreBuild.
+// See specs/domains/workspace.md (per-root ignore resolver cache).
 func (m *Manager) startIgnoreBuild(root string) {
 	entry := &ignoreResolverEntry{done: make(chan struct{})}
 	if _, loaded := m.ignoreCache.LoadOrStore(root, entry); loaded {
 		return
 	}
+	m.spawnIgnoreBuild(root, entry)
+}
 
+// spawnIgnoreBuild runs the background walk for an already-stored entry. The
+// goroutine is manager-tracked (background.go) so Shutdown joins it, and
+// derives from the manager's shutdown context: on a huge root (module cache /
+// vendor tree) the walk runs for minutes with no other cancellation, so
+// shutdownCancel aborts it BEFORE stopBackground joins instead of burning
+// stopTimeout on the quiescing main thread. Read-only walk: a straggler
+// cannot add to a removed directory.
+func (m *Manager) spawnIgnoreBuild(root string, entry *ignoreResolverEntry) {
 	if !m.spawnBackgroundNamed("ignore-resolver-walk root="+root, func() {
 		r, err := m.ignoreResolverBuild(m.shutdownCtx, root)
 		if err != nil {
@@ -464,12 +469,14 @@ var errIgnoreBuildNotStarted = errors.New("ignore resolver build not started: ma
 
 // IgnoreResolverFor returns the ignore resolver for root, building it
 // synchronously on a miss and joining an in-flight build otherwise
-// (singleflight). It is the blocking entry point for the file tree's
-// ListDirectory; the agent path stays non-blocking (injectIgnoreChecker).
-// Build errors are not cached — the next call retries. A build whose slot was
-// evicted mid-flight (an ignore-file edit during the walk) is returned to its
-// caller but not stored. ctx bounds only the WAIT and a caller-owned build:
-// on shutdown the app context cancels the walk mid-way.
+// (singleflight). Blocking by design: the background-delivery joins and any
+// direct consumer go through here; the file tree instead uses the bounded
+// IgnoreResolverWithin and the agent path stays non-blocking
+// (injectIgnoreChecker). Build errors are not cached — the next call
+// retries. A build whose slot was evicted mid-flight (an ignore-file edit
+// during the walk) is returned to its caller but not stored. ctx bounds only
+// the WAIT and a caller-owned build: on shutdown the app context cancels the
+// walk mid-way.
 func (m *Manager) IgnoreResolverFor(ctx context.Context, root string) (*ignore.Resolver, error) {
 	if root == "" {
 		return nil, errors.New("session: empty ignore resolver root")
@@ -505,6 +512,57 @@ func (m *Manager) IgnoreResolverFor(ctx context.Context, root string) (*ignore.R
 		return nil, buildErr
 	}
 	return r, nil
+}
+
+// IgnoreResolverWithin returns root's cached ignore resolver, waiting at most
+// wait for an in-flight build to land, and reports ok=false when the resolver
+// is not ready in that window. It never blocks on a walk: a miss starts the
+// tracked background build (the same one every other surface joins) and the
+// caller proceeds without resolver-derived data. This is the file tree's
+// entry point — a huge-root walk (minutes) must never hold a
+// ListDirectory RPC open; the ready resolver reaches the tree through the
+// backend's workspace:ignore_ready delivery instead. A finished-but-failed
+// build (slot already dropped) also yields ok=false; the next call retries.
+func (m *Manager) IgnoreResolverWithin(root string, wait time.Duration) (*ignore.Resolver, bool) {
+	if root == "" {
+		return nil, false
+	}
+	key, err := ignoreCacheKey(root)
+	if err != nil {
+		m.log().Debug("ignore checker: root symlink resolution failed, using raw path", "path", root, "error", err)
+	}
+
+	join := func(e *ignoreResolverEntry) (*ignore.Resolver, bool) {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-e.done:
+			return e.r, e.r != nil
+		case <-timer.C:
+			return nil, false
+		}
+	}
+
+	if v, loaded := m.ignoreCache.Load(key); loaded {
+		e, ok := v.(*ignoreResolverEntry)
+		if !ok {
+			return nil, false
+		}
+		return join(e)
+	}
+
+	entry := &ignoreResolverEntry{done: make(chan struct{})}
+	if actual, loaded := m.ignoreCache.LoadOrStore(key, entry); loaded {
+		e, ok := actual.(*ignoreResolverEntry)
+		if !ok {
+			return nil, false
+		}
+		return join(e)
+	}
+	// We own the slot: hand the walk to the tracked background goroutine and
+	// give the caller the same bounded wait.
+	m.spawnIgnoreBuild(key, entry)
+	return join(entry)
 }
 
 // PrewarmIgnoreResolver starts the tracked background resolver build for root

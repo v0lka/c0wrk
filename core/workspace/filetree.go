@@ -22,10 +22,11 @@ func IsHidden(name string) bool {
 type IconResolver func(info fs.FileInfo) (icon string, color string)
 
 // ListDirFlat returns the immediate children of absDir, directories first,
-// each group alphabetical. Entries in ignoredPaths are included but flagged
-// GitIgnored=true; a non-nil IconResolver populates Icon/IconColor for
-// non-directory entries.
-func ListDirFlat(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error) {
+// each group alphabetical. Ignore flags are the caller's concern — apply
+// them after listing (the backend batches them through
+// workspace.FilterGitIgnoredPaths, which needs the listed paths). A non-nil
+// IconResolver populates Icon/IconColor for non-directory entries.
+func ListDirFlat(absDir string, opts ...ListDirOption) ([]FileNode, error) {
 	cfg := listDirConfig{}
 	for _, o := range opts {
 		o(&cfg)
@@ -43,9 +44,6 @@ func ListDirFlat(absDir string, ignoredPaths map[string]bool, opts ...ListDirOpt
 			Path:   filepath.Join(absDir, entry.Name()),
 			IsDir:  entry.IsDir(),
 			Hidden: IsHidden(entry.Name()),
-		}
-		if ignoredPaths != nil {
-			node.GitIgnored = ignoredPaths[node.Path]
 		}
 		if !entry.IsDir() && cfg.resolver != nil {
 			if info, infoErr := entry.Info(); infoErr == nil {
@@ -70,9 +68,10 @@ func ListDirFlat(absDir string, ignoredPaths map[string]bool, opts ...ListDirOpt
 
 // ListDirRecursive returns a flat list of everything found under absDir
 // (per level directories before files, both alphabetical; .git excluded).
-// Entries in ignoredPaths are included but flagged GitIgnored=true;
-// WithIconResolver fills icon/color, WithLogger logs unreadable paths.
-func ListDirRecursive(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error) {
+// Ignore flags are the caller's concern — apply them after listing (see
+// ListDirFlat). WithIconResolver fills icon/color, WithLogger logs
+// unreadable paths.
+func ListDirRecursive(absDir string, opts ...ListDirOption) ([]FileNode, error) {
 	cfg := listDirConfig{}
 	for _, o := range opts {
 		o(&cfg)
@@ -107,9 +106,6 @@ func ListDirRecursive(absDir string, ignoredPaths map[string]bool, opts ...ListD
 			Path:   path,
 			IsDir:  d.IsDir(),
 			Hidden: IsHidden(d.Name()),
-		}
-		if ignoredPaths != nil {
-			node.GitIgnored = ignoredPaths[path]
 		}
 		if !d.IsDir() && cfg.resolver != nil {
 			if info, infoErr := d.Info(); infoErr == nil {

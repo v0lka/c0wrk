@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/session"
 )
@@ -61,5 +62,51 @@ func TestListDirectory_SharesManagerIgnoreCache(t *testing.T) {
 	}
 	if flagged["normal.txt"] {
 		t.Error("normal.txt must not be flagged")
+	}
+}
+
+// TestIgnoreReadyDelivery_EmittedWhenResolverLands pins the background
+// delivery behind the bounded resolver join: scheduleIgnoreDelivery waits for
+// the root's build to land and emits workspace:ignore_ready with the root as
+// payload, so the file tree refetches with .aiignore flags applied. One
+// delivery per root at a time — a second schedule while one is pending is a
+// no-op.
+func TestIgnoreReadyDelivery_EmittedWhenResolverLands(t *testing.T) {
+	agentDir := t.TempDir()
+	ws := filepath.Join(agentDir, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".aiignore"), []byte("secret.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := session.NewManager(nil, func(session.Event) {}, agentDir)
+	f := &FrontendAPI{agentDir: agentDir, app: &Application{manager: mgr}}
+	f.seedPublished.Store(true)
+	events := make(chan string, 4)
+	f.emitEvent = func(name string, args ...any) {
+		if name != EventWorkspaceIgnoreReady || len(args) != 1 {
+			return
+		}
+		if root, ok := args[0].(string); ok {
+			events <- root
+		}
+	}
+
+	f.scheduleIgnoreDelivery(ws)
+	f.scheduleIgnoreDelivery(ws) // deduped: one delivery per root at a time
+	select {
+	case got := <-events:
+		if got != ws {
+			t.Fatalf("ignore_ready payload = %s, want %s", got, ws)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("workspace:ignore_ready never emitted after the build landed")
+	}
+	select {
+	case extra := <-events:
+		t.Fatalf("duplicate delivery emitted: %s", extra)
+	default:
 	}
 }
