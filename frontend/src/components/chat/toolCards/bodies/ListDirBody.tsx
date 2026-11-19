@@ -1,11 +1,23 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import type { ToolBodyProps } from '../toolCardRegistry'
 import { FileLink } from '../shared/FileLink'
+import { extractToolPathArg, makeWorkspacePathResolver } from '../shared/workspacePathResolver'
+import { parseListEntry } from '../shared/listDirEntry'
 
 const MAX_ENTRIES = 20
 
-export const ListDirBody = React.memo(function ListDirBody({ result, status }: ToolBodyProps) {
+export const ListDirBody = React.memo(function ListDirBody({ parsedArgs, args, result, status }: ToolBodyProps) {
   const [showAll, setShowAll] = useState(false)
+
+  // Entry names are relative to the LISTED directory, so clicks resolve each
+  // name against the call's own `path` argument (falling back to the chat
+  // workspace root) before the viewer opens. Computed unconditionally — hooks
+  // must not sit behind the early returns below.
+  const listedDir = extractToolPathArg(parsedArgs, args)
+  const resolveEntry = useMemo(
+    () => makeWorkspacePathResolver(listedDir),
+    [listedDir],
+  )
 
   if (status === 'running') {
     return (
@@ -24,14 +36,21 @@ export const ListDirBody = React.memo(function ListDirBody({ result, status }: T
   return (
     <div className="mt-2 border-l-2 border-border bg-muted/30 rounded p-3 min-w-0 space-y-0.5">
       {visible.map((entry) => {
-        const isDir = entry.endsWith('/')
+        const parsed = parseListEntry(entry)
+        if (!parsed || parsed.kind === 'dir') {
+          // Directories and unparsed lines (truncation markers) carry no
+          // link — the full raw line stays the display text.
+          return (
+            <div key={entry} className="text-xs truncate text-muted-foreground font-mono">
+              {entry}
+            </div>
+          )
+        }
+        // The kind/size columns stay part of the DISPLAY (the raw line) but
+        // never leak into the link: the click opens exactly the entry name.
         return (
           <div key={entry} className="text-xs truncate">
-            {isDir ? (
-              <span className="text-muted-foreground font-mono">{entry}</span>
-            ) : (
-              <FileLink path={entry} />
-            )}
+            <FileLink path={parsed.name} label={entry} resolve={resolveEntry} />
           </div>
         )
       })}
@@ -47,3 +66,4 @@ export const ListDirBody = React.memo(function ListDirBody({ result, status }: T
     </div>
   )
 })
+

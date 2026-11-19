@@ -36,6 +36,13 @@ export interface ToolBodyProps {
   result?: string
   resultLen?: number
   status: 'running' | 'success' | 'error' | 'awaiting_confirmation'
+  /**
+   * The call's base tool name with any cached/batched suffix already
+   * stripped (ToolCard's baseToolName). Bodies use it to pick a result
+   * parser (e.g. SearchBody's per-tool entry shapes) — parsedArgs carry the
+   * args, but never the tool identity.
+   */
+  toolName?: string
 }
 
 export interface CardConfig {

@@ -1,11 +1,21 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import type { ToolBodyProps } from '../toolCardRegistry'
 import { FileLink } from '../shared/FileLink'
+import { extractToolPathArg, makeWorkspacePathResolver } from '../shared/workspacePathResolver'
 
 const MAX_ENTRIES = 15
 
-export const SearchBody = React.memo(function SearchBody({ result, status, parsedArgs, args }: ToolBodyProps) {
+export const SearchBody = React.memo(function SearchBody({ toolName, parsedArgs, args, result, status }: ToolBodyProps) {
   const [showAll, setShowAll] = useState(false)
+
+  // glob entries are relative to the SEARCH ROOT (the call's own `path`
+  // argument); ripgrep emits absolute paths. The resolver joins the search
+  // root for the relative shapes and normalizes absolutes in place.
+  const searchDir = extractToolPathArg(parsedArgs, args)
+  const resolvePath = useMemo(
+    () => makeWorkspacePathResolver(searchDir),
+    [searchDir],
+  )
 
   if (status === 'running') {
     return (
@@ -17,9 +27,7 @@ export const SearchBody = React.memo(function SearchBody({ result, status, parse
 
   if (!result) return null
 
-  const parsed = parsedArgs ?? tryParse(args)
-  const toolName = getToolName(parsed)
-  const entries = parseEntries(result, toolName)
+  const entries = parseEntries(result, toolName ?? '')
   const visible = showAll ? entries : entries.slice(0, MAX_ENTRIES)
   const hasMore = entries.length > MAX_ENTRIES
 
@@ -28,7 +36,7 @@ export const SearchBody = React.memo(function SearchBody({ result, status, parse
       {visible.map((entry) => (
         <div key={entry.display} className="text-xs truncate">
           {entry.path ? (
-            <FileLink path={entry.path} line={entry.line} label={entry.display} />
+            <FileLink path={entry.path} line={entry.line} label={entry.display} resolve={resolvePath} />
           ) : (
             <span className="text-muted-foreground font-mono">{entry.display}</span>
           )}
@@ -51,24 +59,33 @@ interface Entry { path?: string; line?: number; display: string }
 
 function parseEntries(result: string, toolName: string): Entry[] {
   const lines = result.split('\n').filter(l => l.trim())
-  return lines.map(line => {
-    // ripgrep format: path:line:content or path:line-content
-    if (toolName === 'ripgrep') {
+  // ripgrep format: path:line:content or path-line-content (context lines).
+  // The tool resolves its search root to an absolute path before invoking
+  // rg, so the paths arrive absolute; anything that does not match the
+  // shape (the trailing "Found N matches…" summary, notice lines) renders
+  // as plain text.
+  if (toolName === 'ripgrep') {
+    return lines.map(line => {
       const match = line.match(/^(.+?):(\d+)[:-](.*)$/)
       if (match) return { path: match[1]!, line: parseInt(match[2]!, 10), display: line }
-    }
-    // glob/list format: just a path
-    if (line.startsWith('/') || line.startsWith('./')) {
-      return { path: line.replace(/\/$/, ''), display: line }
-    }
-    return { display: line }
-  })
+      return { display: line }
+    })
+  }
+  // glob format: one path per line, relative to the search root. A bounded
+  // walk appends "warning: …" lines after a blank separator — never linked.
+  if (toolName === 'glob') {
+    return lines.map(line =>
+      line.startsWith('warning:')
+        ? { display: line }
+        : { path: line.replace(/\/$/, ''), display: line },
+    )
+  }
+  // Unknown producers: keep the legacy heuristic — an absolute-looking line
+  // is a bare path; anything else renders as plain text.
+  return lines.map(line =>
+    line.startsWith('/') || line.startsWith('./')
+      ? { path: line.replace(/\/$/, ''), display: line }
+      : { display: line },
+  )
 }
 
-function getToolName(parsed: Record<string, unknown> | undefined): string {
-  return (parsed?._toolName as string) || ''
-}
-
-function tryParse(s: string): Record<string, unknown> | undefined {
-  try { return JSON.parse(s) } catch { return undefined }
-}

@@ -7,6 +7,7 @@ import {
   normalizePath,
   relativePath,
   resolveFileRefPath,
+  candidateLinkPaths,
 } from './localFileLink'
 
 describe('isLocalFileHref', () => {
@@ -395,5 +396,64 @@ describe('resolveFileRefPath', () => {
     expect(resolveFileRefPath(null, '/abs/dir/a.ts')).toBe('/abs/dir/a.ts')
     expect(resolveFileRefPath(null, 'C:\\Doc\\f.md')).toBe('C:/Doc/f.md')
     expect(resolveFileRefPath(undefined, '\\\\srv\\share\\f.md')).toBe('//srv/share/f.md')
+  })
+})
+
+describe('candidateLinkPaths', () => {
+  it('yields the single normalized candidate for absolute inputs (no joining)', () => {
+    expect(candidateLinkPaths('/repo/src/a.ts', '/repo/docs/readme.md', '/repo')).toEqual(['/repo/src/a.ts'])
+    expect(candidateLinkPaths('C:\\Doc\\f.md', '/repo/docs/r.md', 'C:\\ws')).toEqual(['C:/Doc/f.md'])
+    expect(candidateLinkPaths('\\\\srv\\share\\f.md', null, '/repo')).toEqual(['//srv/share/f.md'])
+  })
+
+  it('tries the document directory first, then the workspace root', () => {
+    expect(candidateLinkPaths('b.md', '/repo/docs/a.md', '/repo')).toEqual([
+      '/repo/docs/b.md',
+      '/repo/b.md',
+    ])
+  })
+
+  it('resolves a ../ href against the document directory, clamped at the anchor root', () => {
+    expect(candidateLinkPaths('../shared/x.ts', '/repo/src/feat/a.ts', '/repo')).toEqual([
+      '/repo/src/shared/x.ts',
+      // The root-join arm resolves .. above the workspace (normalizePath
+      // clamps at the filesystem anchor, never above it) — the viewer's own
+      // uncontained read path opens it.
+      '/shared/x.ts',
+    ])
+    // Both arms clamp .. at the filesystem anchor; equal candidates dedupe.
+    expect(candidateLinkPaths('../../outside.md', '/repo/docs/a.md', '/repo')).toEqual([
+      '/outside.md',
+    ])
+  })
+
+  it('dedupes when the document directory IS the workspace root', () => {
+    expect(candidateLinkPaths('b.md', '/repo/a.md', '/repo')).toEqual(['/repo/b.md'])
+  })
+
+  it('yields only the document candidate without a workspace root (papers)', () => {
+    expect(candidateLinkPaths('b.md', '/repo/docs/a.md', null)).toEqual(['/repo/docs/b.md'])
+    expect(candidateLinkPaths('b.md', '/repo/docs/a.md', undefined)).toEqual(['/repo/docs/b.md'])
+  })
+
+  it('yields only the workspace candidate without a document base (chat)', () => {
+    expect(candidateLinkPaths('src/a.ts', null, '/repo')).toEqual(['/repo/src/a.ts'])
+    expect(candidateLinkPaths('src/a.ts', undefined, '/repo')).toEqual(['/repo/src/a.ts'])
+  })
+
+  it('yields nothing when neither base is available (root-less chat stays inert)', () => {
+    expect(candidateLinkPaths('src/a.ts', null, null)).toEqual([])
+    expect(candidateLinkPaths('src/a.ts', null, undefined)).toEqual([])
+  })
+
+  it('yields nothing for an empty href', () => {
+    expect(candidateLinkPaths('', '/repo/docs/a.md', '/repo')).toEqual([])
+  })
+
+  it('normalizes backslash document paths and backslash hrefs (Windows)', () => {
+    expect(candidateLinkPaths('sub\\b.md', 'C:\\repo\\docs\\a.md', 'C:\\repo')).toEqual([
+      'C:/repo/docs/sub/b.md',
+      'C:/repo/sub/b.md',
+    ])
   })
 })

@@ -128,6 +128,25 @@ export async function readFile(filePath: string): Promise<string> {
 }
 
 /**
+ * Click-time existence probe for local-file link resolution. Reads through
+ * the workspace ReadFile RPC (so the payload is bounded by the viewer's
+ * file-size cap) and resolves false on ANY failure — a missing file, a
+ * directory, a read error or a missing Wails binding. Failures stay QUIET on
+ * purpose: the probe runs speculatively (one link click may test several
+ * candidate paths, several of which legitimately do not exist), so failure
+ * here is expected control flow, not an error worth logging.
+ */
+export async function checkFileExists(filePath: string): Promise<boolean> {
+  try {
+    const app = getApp()
+    await app.ReadFile(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Fetch a local file's bytes as a `data:` URL (base64-encoded). Used by the
  * markdown renderer to embed images that live on disk — the webview cannot
  * load file:// or project-root-relative URLs directly, so binary content is

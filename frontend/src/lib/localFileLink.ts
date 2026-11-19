@@ -181,6 +181,46 @@ export function resolveFileRefPath(rootPath: string | null | undefined, path: st
 }
 
 /**
+ * Builds the ordered list of absolute paths to try when resolving a clicked
+ * local-file link href. Absolute inputs — POSIX (`/...`), Windows drive
+ * (`C:\...`) and UNC (`\\srv\share\...`) — yield the single normalized
+ * candidate. Relative paths yield the containing document's directory first
+ * (markdown's own resolution semantics: a link resolves against the file it
+ * is written in), then the workspace root as a fallback — the same
+ * dir-first/root-fallback candidate order the image resolver uses, covering
+ * both the "next to the document" and "relative to the repo root"
+ * conventions. Duplicates collapse, so a document at the workspace root
+ * probes once. Returns an empty array when neither base is available, so a
+ * root-less chat stays inert instead of opening a CWD-relative guess.
+ */
+export function candidateLinkPaths(
+  path: string,
+  baseFilePath: string | null | undefined,
+  workspaceRoot: string | null | undefined,
+): string[] {
+  if (!path) return []
+
+  if (isAbsolutePath(path)) return [normalizePath('', path)]
+
+  const candidates: string[] = []
+  const push = (candidate: string): void => {
+    if (!candidates.includes(candidate)) candidates.push(candidate)
+  }
+
+  if (baseFilePath) {
+    // Windows document paths arrive with backslashes; the directory slice
+    // needs forward slashes to find the last separator (and so does the
+    // concatenation below).
+    const normalizedBase = baseFilePath.replace(/\\/g, '/')
+    const slash = normalizedBase.lastIndexOf('/')
+    const dir = slash >= 0 ? normalizedBase.slice(0, slash) : ''
+    if (dir) push(normalizePath('', dir + '/' + path))
+  }
+  if (workspaceRoot) push(normalizePath(workspaceRoot, path))
+  return candidates
+}
+
+/**
  * Computes a POSIX-style relative path by stripping the workspace root prefix
  * from an absolute path. Converts backslashes to forward slashes.
  * Returns '.' if the absolute path equals the workspace root.
