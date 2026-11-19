@@ -28,9 +28,11 @@ const modeIcon = {
 
 /**
  * The in-tree inline name input for create/rename (issue #60): Enter commits,
- * Escape cancels, blur cancels (unless a commit is in flight). Validation
- * runs client-side for a clear message; the backend stays authoritative and
- * its errors surface through `error`.
+ * Escape cancels, blur cancels (unless a commit is in flight). Key events
+ * during an active IME composition are ignored — Enter then confirms the
+ * conversion candidate, not the input (the chat-path convention,
+ * useChatEditor). Validation runs client-side for a clear message; the
+ * backend stays authoritative and its errors surface through `error`.
  */
 export function FileTreeInlineInput({
   mode,
@@ -67,6 +69,10 @@ export function FileTreeInlineInput({
   const Icon = modeIcon[mode]
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // An active IME composition (CJK input): Enter confirms the conversion
+    // candidate and Escape cancels it — neither may commit or tear down the
+    // input (matches the chat-path convention in useChatEditor).
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'Escape') {
       e.stopPropagation()
       onCancel()

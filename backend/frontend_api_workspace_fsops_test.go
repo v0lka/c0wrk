@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -102,6 +103,61 @@ func TestCreateFile_AlreadyExists(t *testing.T) {
 	data, err := os.ReadFile(p)
 	if err != nil || string(data) != "keep" {
 		t.Fatalf("existing file was disturbed: %v (%q)", err, string(data))
+	}
+}
+
+func TestCreateFile_ConcurrentWriters_ExclusiveCreate(t *testing.T) {
+	base := canonicalTempDir(t)
+	ws := filepath.Join(base, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := newFsopsTestAPI(t, base, "proj-1", ws)
+
+	// The exclusive create (O_CREATE|O_EXCL) is the kernel's atomic
+	// check-and-create: whichever writer wins lands the single empty file,
+	// every loser is refused with "already exists" — no writer can ever open
+	// another's file through the truncating write-open. Without O_EXCL every
+	// goroutine past the Lstat would succeed and silently truncate.
+	p := filepath.Join(ws, "race.txt")
+	const writers = 8
+	var entered, release sync.WaitGroup
+	entered.Add(writers)
+	release.Add(1)
+	errs := make([]error, writers)
+	var done sync.WaitGroup
+	done.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func(i int) {
+			defer done.Done()
+			entered.Done()
+			release.Wait() // entered/release barrier — no scheduler-guessing sleeps
+			errs[i] = f.CreateFile("sess-1", p)
+		}(i)
+	}
+	entered.Wait()
+	release.Done()
+	done.Wait()
+
+	created := 0
+	for i, err := range errs {
+		if err == nil {
+			created++
+			continue
+		}
+		if !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("writer %d: unexpected error: %v", i, err)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("exactly one writer must create the file, got %d (errs: %v)", created, errs)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("file not created: %v", err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("the created file must be empty, got %q", string(data))
 	}
 }
 

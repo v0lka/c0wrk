@@ -236,15 +236,20 @@ describe('FileTreePanel — tree mutations', () => {
     await renderPanel()
     await act(async () => { (requireMenuProps().onRequestDelete as (entry: FileEntry) => void)(entry('/ws/a.txt')) })
 
-    // Cancel: dialog closes, nothing is deleted.
-    buttonByText('Cancel')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    // Cancel: dialog closes, nothing is deleted. The click triggers a
+    // synchronous panel state update — dispatch inside act.
+    await act(async () => {
+      buttonByText('Cancel')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
     await act(async () => {})
     expect(deleteEntryMock).not.toHaveBeenCalled()
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
 
     // Re-open and confirm.
     await act(async () => { (requireMenuProps().onRequestDelete as (entry: FileEntry) => void)(entry('/ws/a.txt')) })
-    buttonByText('Delete')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await act(async () => {
+      buttonByText('Delete')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
     await act(async () => {})
 
     expect(deleteEntryMock).toHaveBeenCalledWith('s1', '/ws/a.txt')
@@ -256,7 +261,9 @@ describe('FileTreePanel — tree mutations', () => {
     await renderPanel()
     await act(async () => { (requireMenuProps().onRequestDelete as (entry: FileEntry) => void)(entry('/ws/a.txt')) })
 
-    buttonByText('Delete')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await act(async () => {
+      buttonByText('Delete')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
     await act(async () => {})
 
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()

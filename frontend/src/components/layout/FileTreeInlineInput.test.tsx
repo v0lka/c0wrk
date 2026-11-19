@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 //
 // Tests for the in-tree inline create/rename input (issue #60): Enter
-// commits, Escape and blur cancel, invalid names block the commit with a
+// commits, Escape and blur cancel, key events during an active IME
+// composition are ignored, invalid names block the commit with a
 // clear message, a busy commit locks the input, and a server-side error
 // surfaces through the error prop.
 
@@ -70,6 +71,16 @@ describe('FileTreeInlineInput', () => {
     })
   }
 
+  function pressComposing(key: string): void {
+    act(() => {
+      const evt = new KeyboardEvent('keydown', { key, bubbles: true })
+      // jsdom may not honor isComposing in the init dict — define the own
+      // property on the instance so the component's guard sees it either way.
+      Object.defineProperty(evt, 'isComposing', { value: true })
+      input().dispatchEvent(evt)
+    })
+  }
+
   it('commits the typed name on Enter', () => {
     const { onCommit, onCancel } = renderInput()
     type('new-file.ts')
@@ -83,6 +94,20 @@ describe('FileTreeInlineInput', () => {
     press('Escape')
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onCommit).not.toHaveBeenCalled()
+  })
+
+  it('ignores Enter and Escape during an active IME composition', () => {
+    // CJK input: Enter confirms the conversion candidate and Escape cancels
+    // it — neither may commit or tear down the input; after compositionend
+    // the keys work again.
+    const { onCommit, onCancel } = renderInput({ initialName: 'old.txt', mode: 'rename' })
+    pressComposing('Enter')
+    expect(onCommit).not.toHaveBeenCalled()
+    pressComposing('Escape')
+    expect(onCancel).not.toHaveBeenCalled()
+    press('Enter')
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith('old.txt')
   })
 
   it('cancels on blur', () => {

@@ -66,13 +66,21 @@ func (f *FrontendAPI) admitMutationPath(sessionID, path string) (absPath, absRoo
 }
 
 // CreateFile creates an empty file at the contained path, refusing an
-// existing target instead of truncating it. Parents are built out of real
-// directories only (the WriteFile symlink discipline).
+// existing target instead of truncating it. The refusal is ATOMIC: the empty
+// file lands through one exclusive open (O_CREATE|O_EXCL — the kernel's
+// check-and-create), so a target a competing writer slips between the Lstat
+// fast path and the open is refused with "already exists" and can never have
+// its bytes truncated by a write-open's O_TRUNC (the SECURITY.md TOCTOU rule;
+// c0wrk workspaces are written concurrently by agent sessions and UI RPCs).
+// Parents are built out of real directories only (the WriteFile symlink
+// discipline).
 func (f *FrontendAPI) CreateFile(sessionID, path string) error {
 	absPath, absRoot, err := f.admitMutationPath(sessionID, path)
 	if err != nil {
 		return err
 	}
+	// Fast path: a human-readable refusal before any directory work; the
+	// authoritative guarantee is the exclusive open below.
 	if _, err := os.Lstat(absPath); err == nil {
 		return fmt.Errorf("path %q already exists", path)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -85,7 +93,21 @@ func (f *FrontendAPI) CreateFile(sessionID, path string) error {
 	if err := safeio.CheckRealDirsBelow(absRoot, dir); err != nil {
 		return fmt.Errorf("path %q: %w", path, err)
 	}
-	return safeio.WriteFile(absPath, []byte{}, 0o644)
+	// Exclusive create: O_EXCL|O_CREATE fails with EEXIST when anything
+	// lands at the path inside the race window above — the target is never
+	// opened with O_TRUNC. OpenFileNoFollow keeps the final-component
+	// symlink discipline uniform with the write path.
+	file, err := safeio.OpenFileNoFollow(absPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("path %q already exists", path)
+		}
+		return fmt.Errorf("failed to create %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to create %q: %w", path, err)
+	}
+	return nil
 }
 
 // CreateDirectory creates the directory and any missing parents at the
@@ -111,6 +133,19 @@ func (f *FrontendAPI) CreateDirectory(sessionID, path string) error {
 // moves, which also keeps the rename on one filesystem. os.Rename operates on
 // the final component without following it, so an admitted in-root symlink is
 // moved as the link itself; the parents must be real directories.
+//
+// The destination-must-not-exist guarantee is ADVISORY, not atomic: rename(2)
+// silently replaces an existing target, and no portable no-replace rename
+// exists (renameat2 RENAME_NOREPLACE — Linux-only, renamex_np — macOS-only,
+// MoveFileEx without MOVEFILE_REPLACE_EXISTING — Windows-only). The Lstat
+// refusal shrinks the race window to the microseconds between the check and
+// the os.Rename — the safeio shrink-the-window discipline, as for the
+// MkdirAllReal + CheckRealDirsBelow pair — but a destination a competing
+// writer lands inside that window is still replaced (both entries lost).
+// This residual window is an ACCEPTED RISK under the single-user
+// concurrent-writer boundary SECURITY.md draws for a workspace; closing it
+// fully needs the platform-specific syscalls and is deliberately out of
+// scope (specs/domains/workspace.md, "Tree mutations and reveal").
 func (f *FrontendAPI) RenameEntry(sessionID, oldPath, newPath string) error {
 	oldAbs, oldRoot, err := f.admitMutationPath(sessionID, oldPath)
 	if err != nil {
