@@ -143,10 +143,17 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
             // the diff even when empty clears stale overlay state, matching
             // the old always-set GetFileDiff behavior on success.
             try {
+              // Record the epoch captured BEFORE the fetch: a git mutation
+              // landing mid-fetch must invalidate the result (its hunks may
+              // reflect pre-mutation index state), and stamping the
+              // completion-time epoch would label exactly such a result as
+              // current — stale hunks short-circuited until the next
+              // mutation.
+              const epochAtFetch = viewerDiffEpoch()
               const hunks = await getFileDiffHunks(path)
               setFileHunks(path, hunks)
               setFileDiff(path, assembleUnifiedDiff(hunks))
-              diffFetchedAtRef.current.set(path, viewerDiffEpoch())
+              diffFetchedAtRef.current.set(path, epochAtFetch)
             } catch {
               setFileHunks(path, [])
             }
