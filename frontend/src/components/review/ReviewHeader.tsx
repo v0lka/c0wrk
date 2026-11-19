@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown, Columns2, Rows3 } from 'lucide-react'
+import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
@@ -9,6 +8,7 @@ import * as reviewApi from '@/api/review'
 import { emit } from '@/api/runtime'
 import { useReviewActions } from './useReviewActions'
 import { HunkComboBox, type HunkEntry } from './HunkComboBox'
+import { DiffViewModeToggle } from '@/components/diff/DiffViewModeToggle'
 import { generateUUID } from '@/lib/ids'
 
 interface ReviewHeaderProps {
@@ -46,8 +46,6 @@ export function ReviewHeader({
   const [draft, setDraft] = useState('')
   const reviewState = useReviewStore((s) => s.bySession[sessionId])
   const setGeneralComment = useReviewStore((s) => s.setGeneralComment)
-  const diffViewMode = useReviewStore((s) => s.diffViewMode)
-  const setDiffViewMode = useReviewStore((s) => s.setDiffViewMode)
   const { hasComments, isStaging, isSubmitting, handleApprove, handleSubmit } = useReviewActions(sessionId)
 
   const generalComment = reviewState?.generalComment ?? ''
@@ -66,11 +64,7 @@ export function ReviewHeader({
           {commitSha && (
             <code className="text-xs text-info font-mono">{commitSha.slice(0, 7)}</code>
           )}
-          <DiffViewModeToggle
-            diffViewMode={diffViewMode}
-            setDiffViewMode={setDiffViewMode}
-            className="ml-auto"
-          />
+          <DiffViewModeToggle className="ml-auto" />
           <HunkComboBox
             className="ml-1"
             entries={hunkEntries ?? []}
@@ -133,10 +127,7 @@ export function ReviewHeader({
             currentIndex={currentHunk}
             onSelect={(i) => onSelectHunk?.(i)}
           />
-          <DiffViewModeToggle
-            diffViewMode={diffViewMode}
-            setDiffViewMode={setDiffViewMode}
-          />
+          <DiffViewModeToggle />
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -259,46 +250,5 @@ function HunkNavControls({
         <ChevronDown className="h-3 w-3" />
       </Button>
     </div>
-  )
-}
-
-interface DiffViewModeToggleProps {
-  diffViewMode: 'unified' | 'split'
-  setDiffViewMode: (mode: 'unified' | 'split') => void
-  className?: string
-}
-
-/**
- * Unified / split diff view-mode toggle. A global preference (no session
- * affinity): lives in the review store and is shared across the interactive
- * and read-only commit-review headers. Now the shared app-wide segmented
- * control (ARIA tabs, icon-only items with tooltips).
- */
-function DiffViewModeToggle({
-  diffViewMode,
-  setDiffViewMode,
-  className,
-}: DiffViewModeToggleProps) {
-  return (
-    <SegmentedControl
-      className={className}
-      items={[
-        {
-          value: 'unified',
-          icon: <Rows3 className="size-3.5" />,
-          title: 'Unified view',
-          testId: 'diff-view-unified',
-        },
-        {
-          value: 'split',
-          icon: <Columns2 className="size-3.5" />,
-          title: 'Split view',
-          testId: 'diff-view-split',
-        },
-      ]}
-      value={diffViewMode}
-      onValueChange={setDiffViewMode}
-      ariaLabel="Diff view mode"
-    />
   )
 }

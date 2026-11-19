@@ -6,6 +6,8 @@ import { DiffHunkNavBar } from '@/components/fileViewer/DiffHunkNavBar'
 import { ImageFileViewer } from '@/components/fileViewer/ImageFileViewer'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 import { ReviewPage } from '@/components/review/ReviewPage'
+import { GitGraphPage } from '@/components/gitGraph/GitGraphPage'
+import { GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { ResearchWorkspace } from '@/components/research/ResearchWorkspace'
 import { PaperWorkspace } from '@/components/papers/PaperWorkspace'
 import { isImageFilePath } from '@/lib/fileViewerUtils'
@@ -46,6 +48,14 @@ export function FileViewerContent() {
   if (activeFile.startsWith('c0wrk:commit:')) {
     const sha = activeFile.slice('c0wrk:commit:'.length)
     return <ReviewPage commitSha={sha} />
+  }
+
+  // Git graph: the synthetic pseudo-path renders the standalone commit-graph
+  // page (lane gutter + expandable commit cards) instead of a file. No active
+  // session is required — history comes straight from the active project's
+  // repository.
+  if (activeFile === GIT_GRAPH_TAB_PATH) {
+    return <GitGraphPage />
   }
 
   // Research workspace: synthetic pseudo-path renders the hypothesis DAG with

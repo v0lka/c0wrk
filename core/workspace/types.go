@@ -71,16 +71,28 @@ type StashEntry struct {
 	Message string `json:"message"`
 }
 
+// CommitStats counts the file changes of one commit, bucketed by the git
+// name-status letter: Added counts A entries, Deleted counts D entries,
+// any other letter (M/R/C/T/…) counts as Modified. Merge commits report
+// zeros (git records no per-file name-status for merges), matching
+// GetCommitFiles.
+type CommitStats struct {
+	Added    int `json:"added"`
+	Modified int `json:"modified"`
+	Deleted  int `json:"deleted"`
+}
+
 // GitHistoryCommit is one commit of the unified history+graph view: log
 // fields and graph topology (parents/refs) from a single source.
 type GitHistoryCommit struct {
-	SHA     string   `json:"sha"`
-	Parents []string `json:"parents"`
-	Author  string   `json:"author"`
-	Email   string   `json:"email"`
-	Date    string   `json:"date"`
-	Message string   `json:"message"`
-	Refs    []string `json:"refs"`
+	SHA     string      `json:"sha"`
+	Parents []string    `json:"parents"`
+	Author  string      `json:"author"`
+	Email   string      `json:"email"`
+	Date    string      `json:"date"`
+	Message string      `json:"message"`
+	Refs    []string    `json:"refs"`
+	Stats   CommitStats `json:"stats"`
 }
 
 // GitHistoryPage is one page of the unified commit history, loaded incrementally

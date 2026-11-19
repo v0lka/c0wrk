@@ -25,11 +25,23 @@ vi.mock('@/components/fileViewer/ImageFileViewer', () => ({
     <div data-testid="image-viewer" data-src={dataUrl} data-path={path} />
   ),
 }))
+vi.mock('@/components/gitGraph/GitGraphPage', () => ({
+  GitGraphPage: () => <div data-testid="git-graph-page" />,
+}))
+// The regular-file-path routing test mounts the REAL CodeMirrorFileViewer,
+// which renders FileViewerContextMenu → useIndexingSettings → a config RPC
+// that cannot resolve under jsdom (no Wails bindings). Intercept the fetch
+// at its source so the suite stays diagnostic-clean (the indexing state is
+// irrelevant to the routing assertions).
+vi.mock('@/hooks/useIndexingSettings', () => ({
+  useIndexingSettings: () => true,
+}))
 
 import { FileViewerContent } from './FileViewerContent'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
+import { GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { useExperimentalStore } from '@/stores/experimentalStore'
 
 let root: Root | null = null
@@ -137,5 +149,31 @@ describe('FileViewerContent — image routing', () => {
     renderContent()
     expect(document.querySelector('[data-testid="image-viewer"]')).toBeNull()
     expect(document.body.textContent).toContain('Unsupported file format')
+  })
+})
+
+describe('FileViewerContent — git graph tab routing', () => {
+  it('routes the git-graph pseudo-path to GitGraphPage (no session required)', () => {
+    act(() => {
+      useFileViewerStore.setState({
+        openTabs: [GIT_GRAPH_TAB_PATH],
+        activeFile: GIT_GRAPH_TAB_PATH,
+        files: {},
+      })
+    })
+    renderContent()
+    expect(document.querySelector('[data-testid="git-graph-page"]')).not.toBeNull()
+  })
+
+  it('does not route a regular file path to the git graph page', () => {
+    act(() => {
+      useFileViewerStore.setState({
+        openTabs: ['/ws/src/a.go'],
+        activeFile: '/ws/src/a.go',
+        files: { '/ws/src/a.go': { content: 'package main', loading: false } },
+      })
+    })
+    renderContent()
+    expect(document.querySelector('[data-testid="git-graph-page"]')).toBeNull()
   })
 })

@@ -1,14 +1,15 @@
 // File-filter logic for the git history tab.
 //
 // When a glob/regex filter is active, every loaded commit's changed files
-// must be known to decide which commits to keep. Files are fetched lazily
-// (GetCommitFiles) and cached per SHA; the cache is shared with the inline
-// commit expansion so expanding a filtered commit is instant. Matching
-// reuses the shared createPathMatcher so semantics match the file-tree
-// filter exactly.
+// must be known to decide which commits to keep. The files themselves are
+// fetched and cached by the shared useCommitFiles hook (one cache shared
+// with the inline commit expansion, so expanding a filtered commit is
+// instant); this hook only decides WHEN to fetch (all uncached commits once
+// a valid filter is active) and which commits match. Matching reuses the
+// shared createPathMatcher so semantics match the file-tree filter exactly.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getCommitFiles, getCommitFilesBatch } from '@/api/git'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCommitFiles } from './useCommitFiles'
 import { createPathMatcher, isInvalidRegex, type FilterMode } from '@/lib/pathFilter'
 import type { CommitFile, GitHistoryCommit } from '@/types/models'
 
@@ -36,88 +37,10 @@ interface UseGitHistoryFilterReturn {
 export function useGitHistoryFilter(commits: GitHistoryCommit[]): UseGitHistoryFilterReturn {
   const [filterText, setFilterText] = useState('')
   const [filterMode, setFilterMode] = useState<FilterMode>('glob')
-  const [filesBySha, setFilesBySha] = useState<Record<string, CommitFile[]>>({})
-  const [pendingShas, setPendingShas] = useState<ReadonlySet<string>>(new Set())
-
-  // Ref mirror of the cache so the stable fetchFiles callback can read the
-  // latest cached state without re-creating (and re-triggering effects).
-  const filesRef = useRef(filesBySha)
-  filesRef.current = filesBySha
-  // SHAs with an in-flight request; prevents duplicate concurrent fetches.
-  const requestedRef = useRef<Set<string>>(new Set())
+  const { filesBySha, fetchFiles, fetchMany, pendingShas } = useCommitFiles()
 
   const toggleFilterMode = useCallback(() => {
     setFilterMode((m) => (m === 'glob' ? 'regex' : 'glob'))
-  }, [])
-
-  const fetchFiles = useCallback(async (sha: string) => {
-    if (filesRef.current[sha] !== undefined) return
-    if (requestedRef.current.has(sha)) return
-    requestedRef.current.add(sha)
-    setPendingShas((prev) => new Set(prev).add(sha))
-    try {
-      const files = await getCommitFiles(sha)
-      setFilesBySha((prev) => ({ ...prev, [sha]: files }))
-    } catch {
-      setFilesBySha((prev) => ({ ...prev, [sha]: [] }))
-    } finally {
-      requestedRef.current.delete(sha)
-      setPendingShas((prev) => {
-        const next = new Set(prev)
-        next.delete(sha)
-        return next
-      })
-    }
-  }, [])
-
-  // Batch fetch: resolves all uncached SHAs in a single backend RPC
-  // (GetCommitFilesBatch) instead of N concurrent getCommitFiles calls.
-  // Dedupes against the cache and in-flight requests just like fetchFiles.
-  const fetchFilesBatch = useCallback(async (shas: string[]) => {
-    const toFetch: string[] = []
-    for (const sha of shas) {
-      if (filesRef.current[sha] === undefined && !requestedRef.current.has(sha)) {
-        toFetch.push(sha)
-      }
-    }
-    if (toFetch.length === 0) return
-
-    for (const sha of toFetch) {
-      requestedRef.current.add(sha)
-    }
-    setPendingShas((prev) => {
-      const next = new Set(prev)
-      for (const sha of toFetch) next.add(sha)
-      return next
-    })
-
-    try {
-      const result = await getCommitFilesBatch(toFetch)
-      setFilesBySha((prev) => {
-        const next = { ...prev }
-        for (const sha of toFetch) {
-          next[sha] = result[sha] ?? []
-        }
-        return next
-      })
-    } catch {
-      setFilesBySha((prev) => {
-        const next = { ...prev }
-        for (const sha of toFetch) {
-          next[sha] = []
-        }
-        return next
-      })
-    } finally {
-      for (const sha of toFetch) {
-        requestedRef.current.delete(sha)
-      }
-      setPendingShas((prev) => {
-        const next = new Set(prev)
-        for (const sha of toFetch) next.delete(sha)
-        return next
-      })
-    }
   }, [])
 
   const trimmed = filterText.trim()
@@ -129,17 +52,18 @@ export function useGitHistoryFilter(commits: GitHistoryCommit[]): UseGitHistoryF
   )
 
   // When filtering, ensure every loaded commit's files are fetched so the
-  // matcher can test them. Re-runs when the filter becomes valid;
-  // fetchFilesBatch dedupes per SHA.
+  // matcher can test them. Re-runs when the filter becomes valid (or the
+  // loaded window grows); fetchMany dedupes per SHA against the cache and
+  // in-flight requests, so the post-resolve re-runs below are no-ops.
   useEffect(() => {
     if (!isFiltering || matcher === null) return
     const uncached = commits
-      .filter((c) => filesRef.current[c.sha] === undefined)
+      .filter((c) => filesBySha[c.sha] === undefined)
       .map((c) => c.sha)
     if (uncached.length > 0) {
-      void fetchFilesBatch(uncached)
+      void fetchMany(uncached)
     }
-  }, [isFiltering, matcher, commits, fetchFilesBatch])
+  }, [isFiltering, matcher, commits, filesBySha, fetchMany])
 
   const filteredCommits = useMemo(() => {
     if (!isFiltering) return commits

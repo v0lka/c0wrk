@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -1635,6 +1636,50 @@ func (f *FrontendAPI) GetCommitFiles(sha string) ([]CommitFile, error) {
 	return parseCommitFiles(out), nil
 }
 
+// commitMessageMaxBytes caps GetCommitMessage's returned message so a
+// pathological commit message cannot flood the UI.
+const commitMessageMaxBytes = 64 << 10 // 64 KiB
+
+// GetCommitMessage returns the full commit message of the given commit
+// (git log -1 --format=%B <sha>: subject plus body, trailing whitespace
+// trimmed), capped at commitMessageMaxBytes with a rune-boundary-safe cut
+// so a torn multi-byte rune never reaches the UI. An unknown SHA is git's
+// error. See resolveGitRepoRoot for the shared error contract.
+func (f *FrontendAPI) GetCommitMessage(sha string) (string, error) {
+	commit := strings.TrimSpace(sha)
+	if commit == "" {
+		return "", errors.New("commit sha must not be empty")
+	}
+	if err := validateCommitSha(commit); err != nil {
+		return "", err
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	out, err := f.runGitCmd(repoPath, "log", "-1", "--format=%B", commit)
+	if err != nil {
+		return "", err
+	}
+
+	return clampCommitMessage(strings.TrimSpace(out)), nil
+}
+
+// clampCommitMessage cuts msg at commitMessageMaxBytes on a rune boundary,
+// appending an ellipsis when truncated.
+func clampCommitMessage(msg string) string {
+	if len(msg) <= commitMessageMaxBytes {
+		return msg
+	}
+	cut := commitMessageMaxBytes
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "…"
+}
+
 // GetCommitFilesBatch returns changed files for many commits in one
 // git invocation (git log --no-walk=unsorted --name-status -r -M),
 // replacing N GetCommitFiles calls for the history filter. SHAs are
@@ -2216,12 +2261,13 @@ func normalizeGitHistoryLimit(limit int) int {
 
 // GetGitHistory returns one page of the unified commit history for the
 // history+graph view — each commit carries both log fields
-// (author/email/date/message) and graph topology (parents/refs) — newest
-// first via `git log -n <limit> --skip <skip>`. limit<=0 →
-// gitHistoryDefaultLimit, above the cap clamped, skip<0 → 0; HasMore is
-// true when the page was saturated. See the GetGitHistory row in
-// specs/contracts/desktop-frontend.md and resolveGitRepoRoot for the
-// shared error contract.
+// (author/email/date/message), graph topology (parents/refs) and Stats,
+// the file-change buckets counted from the --name-status tree diff —
+// newest first via `git log -n <limit> --skip <skip> --name-status
+// --root`. limit<=0 → gitHistoryDefaultLimit, above the cap clamped,
+// skip<0 → 0; HasMore is true when the page was saturated. See the
+// GetGitHistory row in specs/contracts/desktop-frontend.md and
+// resolveGitRepoRoot for the shared error contract.
 func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
@@ -2234,13 +2280,20 @@ func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 	}
 
 	// Control-character separators so commit messages containing "|" or
-	// newlines cannot corrupt parsing: %x1f between fields, %x1e between
-	// commits. Fields: SHA, parents, author, email, date, subject, ref
-	// decorations.
+	// newlines cannot corrupt parsing: %x1f between fields, %x1e BEFORE
+	// each commit — a leading record separator makes every \x1e-delimited
+	// chunk self-contained (format line, then the commit's --name-status
+	// lines; the same convention as GetCommitFilesBatch's %x1e%H). Fields:
+	// SHA, parents, author, email, date, subject, ref decorations.
+	// --name-status (tree diff) appends the per-commit name-status lines
+	// parseGitHistory buckets into Stats; --root diffs the root commit
+	// against the empty tree so its files count too.
 	out, err := f.runGitCmd(repoPath, "log",
 		"-n", strconv.Itoa(limit),
 		"--skip="+strconv.Itoa(skip),
-		"--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d%x1e",
+		"--name-status",
+		"--root",
+		"--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d",
 	)
 	if err != nil {
 		return nil, err
@@ -2255,9 +2308,12 @@ func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 	}, nil
 }
 
-// parseGitHistory parses the %x1f/%x1e-separated git log format produced
-// by GetGitHistory (SHA, parents, author, email, date, subject, refs);
-// records with fewer than seven fields are skipped. Empty slice when
+// parseGitHistory parses the %x1f/%x1e-separated git log --name-status
+// --root format produced by GetGitHistory: per record a format line
+// (SHA, parents, author, email, date, subject, refs) followed by the
+// commit's name-status lines, which countCommitStats buckets into Stats
+// (merge commits always report zeros, matching GetCommitFiles). Records
+// with fewer than seven format fields are skipped. Empty slice when
 // output is empty.
 func parseGitHistory(output string) []GitHistoryCommit {
 	output = strings.TrimSpace(output)
@@ -2271,7 +2327,11 @@ func parseGitHistory(output string) []GitHistoryCommit {
 		if rec == "" {
 			continue
 		}
-		fields := strings.Split(rec, "\x1f")
+		// First line carries the %x1f-separated format fields; the
+		// remaining lines (after git's blank separator) are the
+		// --name-status entries.
+		lines := strings.Split(rec, "\n")
+		fields := strings.Split(lines[0], "\x1f")
 		if len(fields) < 7 {
 			continue
 		}
@@ -2281,6 +2341,12 @@ func parseGitHistory(output string) []GitHistoryCommit {
 		if p := strings.TrimSpace(fields[1]); p != "" {
 			parents = strings.Fields(p)
 		}
+		// Merges report zeros: git records no per-file name-status for
+		// them, matching GetCommitFiles.
+		var stats workspace.CommitStats
+		if len(parents) < 2 {
+			stats = countCommitStats(lines[1:])
+		}
 		commits = append(commits, GitHistoryCommit{
 			SHA:     fields[0],
 			Parents: parents,
@@ -2289,9 +2355,32 @@ func parseGitHistory(output string) []GitHistoryCommit {
 			Date:    fields[4],
 			Message: fields[5],
 			Refs:    parseGitRefs(fields[6]),
+			Stats:   stats,
 		})
 	}
 	return commits
+}
+
+// countCommitStats buckets git --name-status lines into the Added /
+// Modified / Deleted counts: A → Added, D → Deleted, any other status
+// letter (M, R, C, T, …) → Modified; a similarity score ("R100") buckets
+// by its leading letter, mirroring parseCommitFiles. Lines without a tab
+// (broken/truncated entries) and blank separators are ignored.
+func countCommitStats(lines []string) workspace.CommitStats {
+	var stats workspace.CommitStats
+	for _, line := range lines {
+		if tab := strings.IndexByte(line, '\t'); tab > 0 {
+			switch line[0] {
+			case 'A':
+				stats.Added++
+			case 'D':
+				stats.Deleted++
+			default:
+				stats.Modified++
+			}
+		}
+	}
+	return stats
 }
 
 // parseGitRefs parses the %d decoration field (" (HEAD -> main,

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff, FlaskConical } from "lucide-react";
+import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff, FlaskConical, GitGraph } from "lucide-react";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
 import { RESEARCH_TAB_PATH } from "@/stores/researchStore";
+import { GIT_GRAPH_TAB_PATH } from "@/stores/gitPanelStore";
 import { FileIcon } from "@/components/layout/FileIcon";
 import { useFileIcon } from "@/hooks/useFileIcon";
 import { Button } from "@/components/ui/button";
@@ -137,6 +138,8 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                       glyphs). */}
                   {path === RESEARCH_TAB_PATH ? (
                     <FlaskConical className="size-3.5 text-success" />
+                  ) : path === GIT_GRAPH_TAB_PATH ? (
+                    <GitGraph className="size-3.5 text-info" />
                   ) : (
                     <TabFileIcon path={path} />
                   )}

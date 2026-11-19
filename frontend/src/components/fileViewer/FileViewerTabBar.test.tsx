@@ -18,6 +18,7 @@ vi.mock('@/api/workspace', () => ({ getFileIcon: getFileIconMock }))
 import { FileViewerTabBar } from './FileViewerTabBar'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
+import { GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null
@@ -122,6 +123,22 @@ describe('FileViewerTabBar — research pseudo-path icon', () => {
     expect(getFileIconMock).toHaveBeenCalledWith('/ws/main.go')
     expect(getFileIconMock).not.toHaveBeenCalledWith(futureTab)
     expect(useFileViewerStore.getState().fileIcons[futureTab]).toBeUndefined()
+  })
+
+  it('renders the graph icon for the c0wrk:graph tab without any getFileIcon RPC for it', async () => {
+    // The commit-graph viewer tab (GIT_GRAPH_TAB_PATH) is special-cased at
+    // the call site like the research tab: its tinted GitGraph glyph renders
+    // directly and TabFileIcon never runs for it.
+    useFileViewerStore.setState({
+      openTabs: [GIT_GRAPH_TAB_PATH, '/ws/main.go'],
+      activeFile: GIT_GRAPH_TAB_PATH,
+    })
+    await renderBar()
+
+    expect(document.querySelector('svg.lucide-git-graph')).not.toBeNull()
+    expect(getFileIconMock).not.toHaveBeenCalledWith(GIT_GRAPH_TAB_PATH)
+    expect(getFileIconMock).toHaveBeenCalledWith('/ws/main.go')
+    expect(useFileViewerStore.getState().fileIcons[GIT_GRAPH_TAB_PATH]).toBeUndefined()
   })
 })
 

@@ -4,11 +4,9 @@
 // GitHistoryTab, its SVG gutter, and its commit rows share one source of
 // truth. No React/DOM dependencies — fully unit-testable in isolation.
 
-import type { CommitFile } from '@/types/models'
-
 // ── Graph grid geometry ────────────────────────────────────────────────
 
-/** Vertical pitch between commit rows (the collapsed two-line commit height). */
+/** Vertical pitch between commit rows (the two-line commit height). */
 export const ROW_SPACING = 32
 /**
  * Vertical offset from the top of a row to the center of the first (commit
@@ -25,19 +23,6 @@ export const LEFT_PAD = 12
 export const NODE_R = 4
 /** Radius of a merge commit node (drawn with a background-colored ring). */
 export const MERGE_R = 5
-
-// ── Inline expansion geometry ──────────────────────────────────────────
-
-/** Height of a single changed-file row inside an expanded commit. */
-export const FILE_LINE_HEIGHT = 16
-/** Padding above the expanded file list. */
-export const EXPANDED_TOP_PAD = 4
-/** Padding below the expanded file list. */
-export const EXPANDED_BOTTOM_PAD = 6
-/** Height of the "Loading files…" line while files are being fetched. */
-export const LOADING_LINE_HEIGHT = 19
-/** Height of the "No files" line when a commit changed nothing. */
-export const NO_FILES_HEIGHT = 19
 
 // ── Lane colors (cycled per lane from design-token CSS variables) ───────
 
@@ -71,38 +56,4 @@ export function refColor(ref: string): string {
   if (ref.startsWith('HEAD')) return 'text-highlight'
   if (ref.startsWith('tag:')) return 'text-warning'
   return 'text-info'
-}
-
-/** Map a single-letter commit-file status to a theme text color. */
-export function fileStatusColor(status: string): string {
-  switch (status) {
-    case 'A':
-      return 'text-success'
-    case 'D':
-      return 'text-destructive'
-    case 'R':
-    case 'C':
-      return 'text-info'
-    case 'M':
-      return 'text-warning'
-    default:
-      return 'text-muted-foreground'
-  }
-}
-
-/**
- * Pixel height of the expanded file list for a commit, given its load state
- * and fetched files. Deterministic (no DOM measurement) so the SVG lane
- * layout can route edges around the gap.
- */
-export function expandedContentHeight(
-  loading: boolean,
-  files: CommitFile[] | undefined,
-): number {
-  const body = loading
-    ? LOADING_LINE_HEIGHT
-    : files && files.length > 0
-      ? files.length * FILE_LINE_HEIGHT
-      : NO_FILES_HEIGHT
-  return EXPANDED_TOP_PAD + body + EXPANDED_BOTTOM_PAD
 }
