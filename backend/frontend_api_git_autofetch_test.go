@@ -52,7 +52,10 @@ func newAutoFetchAPI(projectPath, projectID string, cfg *config.Config) (*Fronte
 
 // setupAutoFetchRepo creates a local repository with a bare remote that
 // already carries its initial commit (origin/<branch> == HEAD after the
-// setup push), so a fetch is a cheap no-op network round trip.
+// setup push), so a fetch is a cheap no-op network round trip. The settling
+// fetch matters: a plain `push -u` does not create refs/remotes/origin/HEAD,
+// and the FIRST fetch opportunistically does — a movement the funnel's
+// emission gate would count. After it, a ref-stable fetch is a true no-op.
 func setupAutoFetchRepo(t *testing.T) (localDir string) {
 	t.Helper()
 	remoteDir := t.TempDir()
@@ -64,12 +67,15 @@ func setupAutoFetchRepo(t *testing.T) (localDir string) {
 	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
 	branch := gitDefaultBranch(t, localDir)
 	gitOut(t, localDir, "push", "-u", "origin", branch)
+	gitOut(t, localDir, "fetch", "origin")
 	return localDir
 }
 
-// advanceRemote pushes one extra commit to the bare remote (via a clone) so
-// the local repository falls behind and a subsequent fetch is observable.
-func advanceRemote(t *testing.T, localDir string) {
+// pushRemoteCommit advances the bare remote behind localDir with one commit
+// carrying the given file, via a throwaway clone. Each call must carry a
+// DISTINCT file: a byte-identical tree has nothing to commit (runGit skips
+// the empty commit) and pushing it would move no ref.
+func pushRemoteCommit(t *testing.T, localDir, name, content string) {
 	t.Helper()
 	remoteURL := gitOut(t, localDir, "remote", "get-url", "origin")
 	cloneParent := t.TempDir()
@@ -77,9 +83,16 @@ func advanceRemote(t *testing.T, localDir string) {
 	gitOut(t, cloneParent, "clone", remoteURL, cloneDir)
 	runGit(t, cloneDir, "config", "user.email", "test@test.com")
 	runGit(t, cloneDir, "config", "user.name", "Test")
-	commitFile(t, cloneDir, "b.txt", "b\n")
+	commitFile(t, cloneDir, name, content)
 	branch := gitDefaultBranch(t, cloneDir)
 	gitOut(t, cloneDir, "push", "origin", branch)
+}
+
+// advanceRemote pushes one extra commit to the bare remote (via a clone) so
+// the local repository falls behind and a subsequent fetch is observable.
+func advanceRemote(t *testing.T, localDir string) {
+	t.Helper()
+	pushRemoteCommit(t, localDir, "b.txt", "b\n")
 }
 
 // pollUntil waits for cond to become true, polling every 10ms up to the
@@ -200,9 +213,12 @@ func TestAutoFetchOnce_SilentSkipGates(t *testing.T) {
 
 // TestAutoFetchOnce_MinInterval verifies the shared 60s gate: an immediate
 // second trigger must not produce a second fetch, even though the first one
-// succeeded.
+// succeeded. The remote is advanced first: a ref-stable fetch emits nothing
+// (specs/domains/git-auto-fetch.md), so the movement is what makes the first
+// fetch observable.
 func TestAutoFetchOnce_MinInterval(t *testing.T) {
 	localDir := setupAutoFetchRepo(t)
+	advanceRemote(t, localDir)
 
 	f, rec := newAutoFetchAPI(localDir, "proj-1", &config.Config{})
 
@@ -220,9 +236,11 @@ func TestAutoFetchOnce_MinInterval(t *testing.T) {
 // TestAutoFetchOnce_MinIntervalSharedAcrossTriggers verifies the timestamp
 // is shared across triggers (a "ticker" fetch reserves the slot; a "focus"
 // fetch right after is skipped) — the gate is per app instance, not per
-// trigger source.
+// trigger source. The remote is advanced first so the first fetch is
+// observable (a ref-stable fetch emits nothing).
 func TestAutoFetchOnce_MinIntervalSharedAcrossTriggers(t *testing.T) {
 	localDir := setupAutoFetchRepo(t)
+	advanceRemote(t, localDir)
 
 	f, rec := newAutoFetchAPI(localDir, "proj-1", &config.Config{})
 
@@ -234,9 +252,11 @@ func TestAutoFetchOnce_MinIntervalSharedAcrossTriggers(t *testing.T) {
 }
 
 // TestAutoFetchOnce_AfterMinInterval verifies the gate reopens once the
-// interval has elapsed.
+// interval has elapsed. Each fetch is made observable by advancing the
+// remote first (a ref-stable fetch emits nothing).
 func TestAutoFetchOnce_AfterMinInterval(t *testing.T) {
 	localDir := setupAutoFetchRepo(t)
+	advanceRemote(t, localDir)
 
 	f, rec := newAutoFetchAPI(localDir, "proj-1", &config.Config{})
 
@@ -247,9 +267,62 @@ func TestAutoFetchOnce_AfterMinInterval(t *testing.T) {
 	f.lastAutoFetchAt = time.Now().Add(-autoFetchMinInterval - time.Second)
 	f.autoFetchMu.Unlock()
 
+	// A distinct file: an identical advance would push nothing and move no
+	// ref, and a ref-stable fetch emits nothing by contract.
+	pushRemoteCommit(t, localDir, "c.txt", "c\n")
 	f.autoFetchOnce("focus")
 	if n := rec.count(EventGitStatusChanged); n != 2 {
 		t.Errorf("auto-fetch after min interval: git:status_changed count = %d, want 2", n)
+	}
+}
+
+// TestAutoFetchOnce_RefStableFetch_StaysSilent pins the movement gate on the
+// emission: status, viewer hunks and ahead/behind all derive from the
+// worktree, the index or refs, so a fetch that moves no remote-tracking ref
+// and no tag has nothing fresh to deliver — emitting would drop the cached
+// snapshots and re-read/re-diff every open viewer tab every tick for
+// byte-identical output. A fetch that DOES move a ref (new remote tip, or an
+// auto-followed tag) must still emit exactly once.
+func TestAutoFetchOnce_RefStableFetch_StaysSilent(t *testing.T) {
+	localDir := setupAutoFetchRepo(t)
+
+	f, rec := newAutoFetchAPI(localDir, "proj-1", &config.Config{})
+
+	// Ref-stable fetch: origin already matches — nothing may emit.
+	f.autoFetchOnce("focus")
+	if n := rec.count(EventGitStatusChanged); n != 0 {
+		t.Fatalf("ref-stable fetch emitted git:status_changed %d times, want 0", n)
+	}
+
+	// The remote moves; the next fetch (past the min-interval stamp the
+	// skipped attempt took) must emit exactly once.
+	advanceRemote(t, localDir)
+	resetAutoFetchStamp(f)
+	f.autoFetchOnce("focus")
+	if n := rec.count(EventGitStatusChanged); n != 1 {
+		t.Fatalf("fetch after remote move: git:status_changed count = %d, want 1", n)
+	}
+
+	// An auto-followed tag is a ref a fetch can move too — the History tab's
+	// tag state rides the same event.
+	remoteURL := gitOut(t, localDir, "remote", "get-url", "origin")
+	cloneParent := t.TempDir()
+	cloneDir := cloneParent + "/clone"
+	gitOut(t, cloneParent, "clone", remoteURL, cloneDir)
+	gitOut(t, cloneDir, "tag", "v9.9")
+	gitOut(t, cloneDir, "push", "origin", "v9.9")
+
+	resetAutoFetchStamp(f)
+	f.autoFetchOnce("focus")
+	if n := rec.count(EventGitStatusChanged); n != 2 {
+		t.Fatalf("fetch carrying an auto-followed tag: git:status_changed count = %d, want 2", n)
+	}
+
+	// And a following ref-stable fetch stays silent again.
+	resetAutoFetchStamp(f)
+	f.autoFetchOnce("focus")
+	if n := rec.count(EventGitStatusChanged); n != 2 {
+		t.Fatalf("post-tag ref-stable fetch emitted git:status_changed %d times, want 2", n)
 	}
 }
 

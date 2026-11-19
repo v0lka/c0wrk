@@ -37,7 +37,7 @@ vi.mock('./FileTreeContextMenu', () => ({ FileTreeContextMenu: () => null }))
 vi.mock('./FileIcon', () => ({ FileIcon: () => null }))
 
 import { FileTreePanel } from './FileTreePanel'
-import { getGitStatusLite, listDirectory } from '@/api/workspace'
+import { getGitStatusLite, getSessionWorkspace, listDirectory } from '@/api/workspace'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -45,6 +45,7 @@ import type { FileEntry, ProjectInfo } from '@/types/models'
 
 const listDirectoryMock = vi.mocked(listDirectory)
 const getGitStatusLiteMock = vi.mocked(getGitStatusLite)
+const getSessionWorkspaceMock = vi.mocked(getSessionWorkspace)
 
 function makeProject(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
   return {
@@ -143,6 +144,58 @@ describe('FileTreePanel — lite git status and ignore_ready delivery', () => {
       (r) => r.textContent?.includes('a.txt') ?? false,
     )
     expect(childRow?.textContent).toContain('A')
+  })
+
+  it('normalizes Windows separators: the untracked verdict inherits over backslash paths', async () => {
+    // The Go backend builds lite status keys AND tree entry paths with
+    // filepath.Join — on Windows both carry backslashes, while the status
+    // helpers walk parents by '/'. Regression: before normalization the
+    // walk died on the first backslash path and children of a collapsed
+    // untracked directory lost their badge.
+    const wsRoot = 'C:\\ws'
+    getSessionWorkspaceMock.mockResolvedValue(wsRoot)
+    try {
+      listDirectoryMock.mockImplementation(async (dir: string) => {
+        if (dir === wsRoot) {
+          return [entry('tracked.txt', 'C:\\ws\\tracked.txt', false), entry('newmod', 'C:\\ws\\newmod', true)]
+        }
+        if (dir === 'C:\\ws\\newmod') return [entry('a.txt', 'C:\\ws\\newmod\\a.txt', false)]
+        return []
+      })
+
+      await renderPanel()
+      await act(async () => {})
+
+      act(() => {
+        useFileTreeStore.getState().setGitStatus({
+          'C:\\ws\\tracked.txt': { status: 'M', staged: false, index_status: '', worktree_status: 'M' },
+          'C:\\ws\\newmod': { status: 'A', staged: false, index_status: '', worktree_status: '?' },
+        })
+      })
+      await act(async () => {})
+
+      // Exact hits: normalized lookup over backslash keys and tree paths.
+      expect(nameSpanFor('tracked.txt')?.className).toContain('text-warning')
+      expect(nameSpanFor('newmod')?.className).toContain('text-success')
+
+      // Expand the collapsed untracked dir: the child is not in the lite
+      // map and must inherit the verdict across the backslash parent walk.
+      const newmodRow = Array.from(container.querySelectorAll<HTMLDivElement>('div[role="treeitem"]')).find(
+        (r) => r.textContent?.includes('newmod') ?? false,
+      )
+      await act(async () => {
+        newmodRow!.click()
+      })
+      await act(async () => {})
+      const child = nameSpanFor('a.txt')
+      expect(child?.className).toContain('text-success')
+      const childRow = Array.from(container.querySelectorAll<HTMLDivElement>('div[role="treeitem"]')).find(
+        (r) => r.textContent?.includes('a.txt') ?? false,
+      )
+      expect(childRow?.textContent).toContain('A')
+    } finally {
+      getSessionWorkspaceMock.mockResolvedValue('/ws')
+    }
   })
 
   it('reloads listings (no git status) on workspace:ignore_ready for the active root', async () => {

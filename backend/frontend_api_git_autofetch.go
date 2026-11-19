@@ -53,7 +53,11 @@ const (
 // single funnel every trigger goes through (gates and their order:
 // specs/domains/git-auto-fetch.md). Fire-and-forget by contract: never blocks
 // long, never returns an error to a user, emits nothing except the single
-// git:status_changed on success. Every failure path is a quiet Debug log.
+// git:status_changed on a successful fetch that actually moved a ref —
+// status, viewer hunks and ahead/behind derive from the worktree, the index
+// or refs, so a ref-stable fetch has nothing fresh to deliver and emitting
+// would only drop the caches and re-read/re-diff every open viewer tab for
+// byte-identical output. Every failure path is a quiet Debug log.
 func (f *FrontendAPI) autoFetchOnce(trigger string) {
 	if !f.autoFetchEnabled() {
 		f.log().Debug("auto-fetch disabled by config", "trigger", trigger)
@@ -102,11 +106,51 @@ func (f *FrontendAPI) autoFetchOnce(trigger string) {
 	}
 	defer f.remoteOpMu.Unlock()
 
+	// Movement baseline: status, viewer hunks and ahead/behind all derive
+	// from the worktree, the index or refs, so only a remote-tracking ref or
+	// an auto-followed tag that actually moved can make the git:status_changed
+	// consumers observe anything new. A ref-stable fetch would otherwise drop
+	// the cached snapshots and re-read/re-diff every open viewer tab on every
+	// tick (every 2m on the default config) for byte-identical output. An
+	// uncertain comparison (snapshot read failed) falls back to the
+	// unconditional emit: an undecidable state must never swallow a real
+	// update.
+	before, beforeOK := "", false
+	if snapshot, snapErr := f.remoteRefsSnapshot(repoPath); snapErr != nil {
+		f.log().Debug("auto-fetch: remote-ref baseline read failed; will emit unconditionally",
+			"trigger", trigger, "repo", repoPath, "error", snapErr)
+	} else {
+		before, beforeOK = snapshot, true
+	}
+
 	if err := f.runAutoFetch(repoPath); err != nil {
 		f.log().Debug("auto-fetch failed", "trigger", trigger, "repo", repoPath, "error", err)
 		return
 	}
+
+	after, err := f.remoteRefsSnapshot(repoPath)
+	if err != nil {
+		f.log().Debug("auto-fetch: post-fetch remote-ref read failed; emitting unconditionally",
+			"trigger", trigger, "repo", repoPath, "error", err)
+		f.emitGitStatusChanged(repoPath)
+		return
+	}
+	if beforeOK && after == before {
+		f.log().Debug("auto-fetch: no remote-tracking ref moved; suppressing git:status_changed",
+			"trigger", trigger, "repo", repoPath)
+		return
+	}
 	f.emitGitStatusChanged(repoPath)
+}
+
+// remoteRefsSnapshot returns every ref a fetch can move (remote-tracking
+// branches and auto-followed tags) as a comparable newline-joined
+// "refname objectname" listing — the movement baseline for the funnel's
+// git:status_changed emission. Local refs and the worktree are unreachable
+// to a fetch and never enter the comparison. Bounded like every local git
+// read (runGitCmd's gitCmdTimeout).
+func (f *FrontendAPI) remoteRefsSnapshot(repoPath string) (string, error) {
+	return f.runGitCmd(repoPath, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes", "refs/tags")
 }
 
 // autoFetchEnabled reports whether the git.auto_fetch master gate allows

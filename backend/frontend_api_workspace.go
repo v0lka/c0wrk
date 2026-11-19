@@ -251,6 +251,15 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 // untracked directories left collapsed (-unormal): git skips the per-file
 // enumeration beneath them, which is what keeps a huge-repo expand cheap.
 // The tree inherits the untracked verdict down to the entries it lists.
+//
+// The status runs in the repository that OWNS dirPath (ResolveWorkTreeRoot —
+// the same re-rooting the ignore flags and the viewer diffs apply), NOT the
+// Git-panel focus target: a managed-worktree session's tree root is its own
+// repository, and the checkout's status never names the tree's files (a
+// linked worktree has an independent index and /.worktrees/ is
+// info/excluded), so the focus-based root would silently blank every badge.
+// The Git panel keeps its focus semantics through GetGitStatus; containment
+// (checkout ∨ external focus ∨ managed tree) stays shared.
 func (f *FrontendAPI) GetGitStatusLite(dirPath string) (map[string]GitStatusEntry, error) {
 	root, haveRoot, err := f.resolveGitStatusRoot(dirPath)
 	if err != nil {
@@ -258,6 +267,13 @@ func (f *FrontendAPI) GetGitStatusLite(dirPath string) (map[string]GitStatusEntr
 	}
 	if !haveRoot {
 		return map[string]GitStatusEntry{}, nil
+	}
+	absDir, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+	if owner := workspace.ResolveWorkTreeRoot(absDir); owner != "" {
+		root = owner
 	}
 	return f.cachedGitStatusLite(root)
 }

@@ -62,7 +62,16 @@ trigger ──┐
           │  runAutoFetch: hardened `git fetch` via workspace.GitCmdInRepo
           │     + GIT_TERMINAL_PROMPT=0 pin, ≤ remoteGitCmdTimeout (2 min), ctx = f.ctx()
           │     ▼
-          └─  success → emitGitStatusChanged(repoPath)   [the ONLY emission]
+          │  remoteRefsSnapshot: `git for-each-ref refs/remotes refs/tags`
+          │     (the movement baseline; a failed read → emit unconditionally)
+          │     ▼
+          └─  success + a ref moved (remote-tracking branch or auto-followed
+              tag) → emitGitStatusChanged(repoPath)   [the ONLY emission]
+              success + nothing moved → Debug log         [silence: status,
+              viewer hunks and ahead/behind derive from the worktree, the
+              index or refs — a ref-stable fetch has nothing fresh to
+              deliver, and emitting would drop the caches and re-read and
+              re-diff every open viewer tab every tick for identical output]
               failure/skip → Debug log                    [silence]
 ```
 
@@ -73,7 +82,7 @@ Focus path: `window focus` → `useGitFocusRefresh` (armed through `armWhenRunti
 ## Invariants
 
 - Every automatic fetch goes through `autoFetchOnce` — no trigger spawns git directly; adding a trigger cannot bypass the gates.
-- The background path is silent: every skip and every failure (network, auth, timeout, unscannable config) is a Debug log — no events, no error toasts, no RPC errors. Only a successful fetch emits, exactly once, `git:status_changed` with the repo path (existing event; the catalog is unchanged).
+- The background path is silent: every skip and every failure (network, auth, timeout, unscannable config) is a Debug log — no events, no error toasts, no RPC errors. Only a successful fetch that actually MOVED a ref (a remote-tracking branch or an auto-followed tag; compared via a `git for-each-ref` snapshot before/after, falling back to the unconditional emit when a snapshot read fails) emits, exactly once, `git:status_changed` with the repo path (existing event; the catalog is unchanged). A ref-stable fetch emits nothing: status, viewer hunks and ahead/behind all derive from the worktree, the index or refs, so the event would only drop the cached snapshots and make every open viewer tab re-read and re-diff for byte-identical output — the same doctrine the watcher funnel applies when it skips `refs/remotes` writes.
 - The min-interval (60s) is shared by all triggers and stamped on every attempt that reaches the gate — success, network failure, and busy-lock attempts alike — so a flapping network or a burst of triggers can never hammer the remote.
 - Auto-fetch never queues behind a user operation: `remoteOpMu` is taken with `TryLock`; when a manual pull/push/fetch holds it, the attempt skips instantly. Conversely, manual remote ops keep their blocking `Lock` in `runSerializedRemoteOp` — only one network git operation runs at a time per app instance.
 - `GIT_TERMINAL_PROMPT=0` is pinned exactly once via strip-then-append (glibc `getenv` resolves duplicate names to the FIRST entry, so an inherited `=1` would silently void an appended `=0` — same rationale as the `GIT_EDITOR` strip). On the trusted-repo path (`GitCmdRaw` leaves `cmd.Env` nil) the environment is first materialized from `os.Environ()` — the pin is additive and never wipes the inherited environment.
