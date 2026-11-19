@@ -394,6 +394,91 @@ func TestGitSnapshotCache_DropDiscardsStaleBackgroundRefresh(t *testing.T) {
 	}
 }
 
+// TestGitSnapshotCache_UnrelatedDropKeepsRefreshLaunchable pins the
+// per-entry launch guard: repo A's background refresh must survive an
+// unrelated repo B's cache-wide generation bump — its result still refreshes
+// A's entry and the refreshing guard never strands. A cache-wide guard alone
+// would discard the refresh without releasing the guard, freezing
+// stale-while-revalidate for A until A's own next hard drop.
+func TestGitSnapshotCache_UnrelatedDropKeepsRefreshLaunchable(t *testing.T) {
+	ws := t.TempDir()
+	const repoA, repoB = "/repo-a", "/repo-b"
+	var calls atomic.Int32
+	var held atomic.Bool
+	release := make(chan struct{})
+	started := make(chan struct{})
+	settled := make(chan error, 4)
+	f := newGitCacheTestAPI(ws)
+	f.gitRefreshSettled = func(_ string, err error) { settled <- err }
+	f.gitStatusFn = func(root string) (map[string]GitStatusEntry, error) {
+		calls.Add(1)
+		if root == repoA && held.CompareAndSwap(false, true) {
+			close(started)
+			<-release // hold A's refresh open while repo B drops
+		}
+		return map[string]GitStatusEntry{root + "-f.txt": {Status: "M"}}, nil
+	}
+	f.ensureGitCaches()
+
+	// Seed repo A launch-eligible stale; the read serves the seed and
+	// launches its background refresh (call 1, held).
+	keyA := gitCacheKey(repoA)
+	f.gitStatusCache.seed(keyA, map[string]GitStatusEntry{"a-old.txt": {Status: "A"}}, false)
+	f.gitStatusCache.mu.Lock()
+	e := f.gitStatusCache.entries[keyA]
+	e.expiry = time.Time{}
+	e.lastRefresh = time.Now().Add(-gitRefreshMinInterval)
+	f.gitStatusCache.mu.Unlock()
+	if _, err := f.cachedGitStatus(repoA); err != nil {
+		t.Fatalf("stale read A: %v", err)
+	}
+	<-started
+
+	// Repo B's watcher batch drops B and bumps the cache-wide generation
+	// while A's entry SURVIVES the scoped drop.
+	f.invalidateGitCachesOnWatcher(repoB, []string{filepath.Join(repoB, "b.txt")})
+
+	// A's refresh settles and must still refresh A's entry.
+	close(release)
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatalf("background refresh failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background refresh never settled")
+	}
+	fresh, err := f.cachedGitStatus(repoA)
+	if err != nil {
+		t.Fatalf("read A after refresh: %v", err)
+	}
+	if _, ok := fresh[repoA+"-f.txt"]; !ok {
+		t.Fatalf("unrelated repo's drop must not discard A's refresh, got %v", fresh)
+	}
+
+	// The refreshing guard must not be stranded: re-stale A and the next
+	// read must launch a fresh background refresh again.
+	f.gitStatusCache.mu.Lock()
+	e = f.gitStatusCache.entries[keyA]
+	e.expiry = time.Time{}
+	e.lastRefresh = time.Now().Add(-gitRefreshMinInterval)
+	f.gitStatusCache.mu.Unlock()
+	if _, err := f.cachedGitStatus(repoA); err != nil {
+		t.Fatalf("re-staled read A: %v", err)
+	}
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatalf("second background refresh failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stranded refreshing guard: second refresh never launched")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("second refresh must have run: %d calls, want 2", got)
+	}
+}
+
 // TestListDirectory_GitIgnoredFlagsCachedOnce verifies that two back-to-back
 // ListDirectory calls on a git repo run the batched check-ignore once: the
 // second listing is served from the per-directory flags cache.
