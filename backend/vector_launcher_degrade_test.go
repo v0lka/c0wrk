@@ -379,6 +379,18 @@ func TestVectorLauncher_GPUErrorChain_HonestStatusThroughDegradeAndBackoff(t *te
 	// pinned on virtual time in core. What this seam must guarantee is that
 	// the poll payload carries the manager's real state AND the slid
 	// requested/effective pair — one coherent story.
+	//
+	// The call counter above proves the backed-off pass STARTED, not that
+	// it finished: the counter bumps inside the embedder call, while the
+	// terminal report (this pass's honest "ready") lands only when the pass
+	// returns. Read the status only after that terminal state is visible —
+	// an immediate read races the pass's in-flight "reindexing" window
+	// (single-pass-at-a-time is guaranteed by the manager, so the first
+	// ready after the bump IS this pass's terminal report; this exact race
+	// failed the macos CI leg while linux/windows passed).
+	pollUntil(t, 10*time.Second, func() bool {
+		return mgr.GetIndexStatus().State == vectorindex.IndexStateReady
+	}, "the backed-off pass never reported its terminal state")
 	st = api.vectorIndexStatusFromManager(mgr)
 	api.applyEmbedderInfo(&st)
 	if st.State != string(vectorindex.IndexStateReady) {
