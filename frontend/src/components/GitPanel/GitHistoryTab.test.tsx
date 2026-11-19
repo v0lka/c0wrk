@@ -16,11 +16,13 @@ const { gitMocks } = vi.hoisted(() => ({
 vi.mock('@/api/git', () => gitMocks)
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
-// Mock the file viewer store so we can assert that clicking a commit SHA
-// opens the read-only commit-review page via a synthetic pseudo-path.
+// Mock the file viewer store so we can assert how pseudo-path tabs are
+// opened: the SHA click goes through openFile (pre-existing), the graph
+// button through openVirtualFile (virtual — never backed by a disk file).
 const { fileViewerMocks } = vi.hoisted(() => ({
   fileViewerMocks: {
     openFile: vi.fn(),
+    openVirtualFile: vi.fn(),
     setCollapsed: vi.fn(),
   },
 }))
@@ -28,6 +30,7 @@ vi.mock('@/stores/fileViewerStore', () => ({
   useFileViewerStore: {
     getState: () => ({
       openFile: fileViewerMocks.openFile,
+      openVirtualFile: fileViewerMocks.openVirtualFile,
       setCollapsed: fileViewerMocks.setCollapsed,
     }),
   },
@@ -109,6 +112,7 @@ beforeEach(() => {
     ),
   )
   fileViewerMocks.openFile.mockReset()
+  fileViewerMocks.openVirtualFile.mockReset()
   fileViewerMocks.setCollapsed.mockReset()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -294,6 +298,7 @@ describe('GitHistoryTab commit SHA click', () => {
     // Clicking the row body (not the SHA) must not open anything.
     await act(async () => { (rows[0] as HTMLElement).click() })
     expect(fileViewerMocks.openFile).not.toHaveBeenCalled()
+    expect(fileViewerMocks.openVirtualFile).not.toHaveBeenCalled()
     expect(fileViewerMocks.setCollapsed).not.toHaveBeenCalled()
   })
 })
@@ -312,9 +317,14 @@ describe('GitHistoryTab commit graph button', () => {
 
     await act(async () => { graphButton.click() })
 
-    // The viewer is asked to open the synthetic graph pseudo-path and
-    // expand so the graph is visible.
-    expect(fileViewerMocks.openFile).toHaveBeenCalledWith('c0wrk:graph')
+    // The viewer is asked to open the synthetic graph pseudo-path as a
+    // VIRTUAL file (openVirtualFile — the canonical openResearch/openPaper
+    // pattern) and expand, so the graph is visible. It must NOT go through
+    // openFile: a non-virtual entry would make the viewer's data loader fire
+    // a guaranteed-failing ReadFile RPC for the pseudo-path, repeat it on
+    // every pathless tree_changed burst, and persist the tab across restarts.
+    expect(fileViewerMocks.openVirtualFile).toHaveBeenCalledWith('c0wrk:graph')
+    expect(fileViewerMocks.openFile).not.toHaveBeenCalled()
     expect(fileViewerMocks.setCollapsed).toHaveBeenCalledWith(false)
   })
 })

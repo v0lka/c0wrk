@@ -108,12 +108,14 @@ export function GitHistoryTab() {
     [nodes],
   )
 
-  // Open the commit-graph tab in the file viewer (same synthetic pseudo-path
-  // mechanism as the SHA-click review below). The viewer is expanded so the
-  // graph is visible.
+  // Open the commit-graph tab in the file viewer. The pseudo-path is opened
+  // as a VIRTUAL file (the canonical openResearch/openPaper pattern): the
+  // virtual flag keeps the viewer's data loader, the tree_changed reload and
+  // persistence from ever treating the tab as an on-disk file. The viewer is
+  // expanded so the graph is visible.
   const handleOpenGraph = useCallback(() => {
-    const { openFile, setCollapsed } = useFileViewerStore.getState()
-    openFile(GIT_GRAPH_TAB_PATH)
+    const { openVirtualFile, setCollapsed } = useFileViewerStore.getState()
+    openVirtualFile(GIT_GRAPH_TAB_PATH)
     setCollapsed(false)
   }, [])
 

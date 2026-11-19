@@ -2264,10 +2264,13 @@ func normalizeGitHistoryLimit(limit int) int {
 // (author/email/date/message), graph topology (parents/refs) and Stats,
 // the file-change buckets counted from the --name-status tree diff —
 // newest first via `git log -n <limit> --skip <skip> --name-status
-// --root`. limit<=0 → gitHistoryDefaultLimit, above the cap clamped,
-// skip<0 → 0; HasMore is true when the page was saturated. See the
-// GetGitHistory row in specs/contracts/desktop-frontend.md and
-// resolveGitRepoRoot for the shared error contract.
+// --root -M` (an explicit -M reports a rename as a single "R" entry →
+// Modified, keeping Stats independent of the ambient diff.renames
+// config and matching GetCommitFiles). limit<=0 → gitHistoryDefaultLimit,
+// above the cap clamped, skip<0 → 0; HasMore is true when the page was
+// saturated. See the GetGitHistory row in
+// specs/contracts/desktop-frontend.md and resolveGitRepoRoot for the
+// shared error contract.
 func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
@@ -2287,12 +2290,15 @@ func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 	// SHA, parents, author, email, date, subject, ref decorations.
 	// --name-status (tree diff) appends the per-commit name-status lines
 	// parseGitHistory buckets into Stats; --root diffs the root commit
-	// against the empty tree so its files count too.
+	// against the empty tree so its files count too; -M pins rename
+	// detection independently of the ambient diff.renames config — a
+	// rename reports one R line → Modified, matching GetCommitFiles.
 	out, err := f.runGitCmd(repoPath, "log",
 		"-n", strconv.Itoa(limit),
 		"--skip="+strconv.Itoa(skip),
 		"--name-status",
 		"--root",
+		"-M",
 		"--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d",
 	)
 	if err != nil {
