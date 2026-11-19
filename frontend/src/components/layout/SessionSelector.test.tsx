@@ -361,7 +361,7 @@ describe('SessionSelector — mode toggle', () => {
     const container = await render(<SessionSelector />)
     const menu = await openMenu(container)
 
-    expect(menu.querySelector('[role="menuitem"][title="Group sessions by branch"]')).not.toBeNull()
+    expect(menu.querySelector('[role="menuitem"][title="Group sessions by Git branch"]')).not.toBeNull()
     expect(menu.querySelector('input')).toBeNull()
   })
 
@@ -373,7 +373,7 @@ describe('SessionSelector — mode toggle', () => {
     const container = await render(<SessionSelector />)
     const menu = await openMenu(container)
 
-    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by branch"]')!)
+    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')!)
 
     // The menu is still open and now renders the branch group.
     expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
@@ -1010,7 +1010,7 @@ describe('SessionSelector — archived section (branch groups + flat local)', ()
 
     // Toggle grouped ON: the archived branch row appears (members start
     // expanded) and the menu stays open.
-    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by branch"]')!)
+    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')!)
     expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
     const branchRow = archivedBranchToggle(menu, 'feat-a')
     expect(branchRow.getAttribute('aria-expanded')).toBe('true')
