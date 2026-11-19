@@ -21,6 +21,19 @@ import { isTreeChangedPayload } from '@/types/events'
 export const TREE_CHANGED_DEBOUNCE_MS = 400
 
 /**
+ * True when path equals a changed path or lives under one (path-boundary
+ * aware). Watcher batches can name a DIRECTORY — fsnotify reports
+ * rename/move/create at the dir level — so a tab under a changed path must
+ * refresh too; the same rule the SPECS relevance filter applies.
+ */
+function isPathCovered(path: string, changed: ReadonlySet<string>): boolean {
+  for (const p of changed) {
+    if (path === p || path.startsWith(p.endsWith('/') ? p : p + '/')) return true
+  }
+  return false
+}
+
+/**
  * useFileViewerData centralizes the file-loading and tree-change subscription
  * logic for the file viewer. It exposes a single `loadFile(path, silent)`
  * function that updates the file-viewer store, and subscribes to
@@ -207,7 +220,7 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
       for (const path of openTabsRef.current) {
         // Virtual files have no on-disk counterpart to reload.
         if (useFileViewerStore.getState().files[path]?.virtual) continue
-        if (!all && !paths.has(path)) continue
+        if (!all && !isPathCovered(path, paths)) continue
         void loadFileRef.current(path, true)
       }
     }

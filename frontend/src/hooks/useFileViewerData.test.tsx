@@ -168,6 +168,29 @@ describe('useFileViewerData — virtual pseudo-path tabs', () => {
   })
 })
 
+describe('useFileViewerData — tree_changed scoping', () => {
+  it('refreshes tabs under a changed DIRECTORY (watcher batches name dirs, not leaves)', async () => {
+    const a = '/ws/src/a.ts'
+    const b = '/ws/other/b.ts'
+    await mountWith(a, [a, b], {
+      [a]: { content: 'a-content', loading: false },
+      [b]: { content: 'b-content', loading: false },
+    })
+    expect(readFileMock).not.toHaveBeenCalled()
+    readFileMock.mockImplementation(async (p: string) => (p === a ? 'a-new' : 'b-new'))
+
+    // An external rename/move surfaces as a dir-level watcher path; the tab
+    // living under it must refresh, while a sibling outside it must not.
+    act(() => {
+      fire('workspace:tree_changed', { paths: ['/ws/src'] })
+    })
+    await flushDebounce()
+
+    expect(readFileMock).toHaveBeenCalledWith(a)
+    expect(readFileMock).not.toHaveBeenCalledWith(b)
+  })
+})
+
 describe('useFileViewerData — diff pipeline', () => {
   it('assembles the overlay diff from the hunks RPC and never calls getFileDiff', async () => {
     const path = '/ws/src/main.ts'
