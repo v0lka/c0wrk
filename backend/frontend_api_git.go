@@ -265,11 +265,14 @@ func (f *FrontendAPI) resolveGitRepoRoot() (string, error) {
 // any worktree under the project, and a managed-worktree file must diff
 // against its own baseline (the checkout's info/exclude hides .worktrees, so
 // focus-root resolution would return empty hunks there and the untracked
-// fallback would misrender the whole file as added). The error contract stays
-// resolveGitPath's — missing/inactive project, No Project, and a path outside
-// the workspace (managed worktrees included) surface as errors — this is the
-// viewer's auto-refresh path, where a silent degradation would strand a stale
-// overlay.
+// fallback would misrender the whole file as added). Containment admits the
+// location set resolveGitStatusRoot admits — the project workspace, the
+// externally focused linked tree, and managed worktrees — so a file of the
+// focused tree keeps rendering (the focus reach resolveGitPath granted).
+// The error contract stays resolveGitPath's — missing/inactive project, No
+// Project, and a path outside all admitted locations surface as errors —
+// this is the viewer's auto-refresh path, where a silent degradation would
+// strand a stale overlay.
 func (f *FrontendAPI) resolveDiffRepoPath(filePath string) (repoPath, relPath string, err error) {
 	projectPath, _, err := f.activeGitProjectRoot()
 	if err != nil {
@@ -286,6 +289,16 @@ func (f *FrontendAPI) resolveDiffRepoPath(filePath string) (repoPath, relPath st
 	ok, err := config.IsWithinPath(absRoot, absPath)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to check path containment: %w", err)
+	}
+	if !ok {
+		// An external linked-tree focus lies outside the project workspace;
+		// containment against the focus root keeps it reachable.
+		if absFocus, focusErr := filepath.Abs(f.resolveGitFocusRoot(absRoot)); focusErr == nil {
+			if focusWithin, fwErr := config.IsWithinPath(absFocus, absPath); fwErr == nil && focusWithin {
+				ok = true
+				absRoot = absFocus
+			}
+		}
 	}
 	if !ok {
 		if tree, managed := config.ManagedWorktreeRootForPath(absRoot, absPath); managed {
