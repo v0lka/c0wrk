@@ -551,6 +551,16 @@ func TestInvalidateGitCachesOnWatcher_ExternalGitMutation(t *testing.T) {
 	if got := statusCalls.Load(); got != 3 {
 		t.Fatalf("regular change must still drop the status caches: spawned %d, want 3", got)
 	}
+
+	// Remote-tracking ref writes (an external fetch) cannot move local
+	// status or hunks — the funnel stays event-silent for them too.
+	events = nil
+	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, ".git", "refs", "remotes", "origin", "main")})
+	for _, e := range events {
+		if e.name == EventGitStatusChanged {
+			t.Fatalf("remote-tracking ref write must not emit git:status_changed, got %+v", e)
+		}
+	}
 }
 
 // TestListDirectory_GitIgnoredFlagsCachedOnce verifies that two back-to-back

@@ -92,6 +92,12 @@ var gitMutationFiles = map[string]struct{}{
 func hasGitMutationChange(changedPaths []string) bool {
 	for _, p := range changedPaths {
 		slash := filepath.ToSlash(p)
+		// Remote-tracking ref writes (an external fetch) cannot move local
+		// hunks, local status or HEAD — not a mutation for this funnel;
+		// local refs, HEAD and the index are.
+		if strings.Contains(slash, "/.git/refs/remotes/") {
+			continue
+		}
 		if _, ok := gitMutationFiles[filepath.Base(p)]; ok && strings.Contains(slash, "/.git/") {
 			return true
 		}
