@@ -160,7 +160,12 @@ ONNX_STAMP := $(APP_BUNDLE_DIR)/.onnxruntime-version
 # `make fetch-onnx-gpu` after every `make build` to keep the GPU flavor.
 #
 # Digests pinned trust-on-first-use exactly like the CPU ones above; on an
-# ONNX_VERSION bump recompute all four:
+# ONNX_VERSION bump recompute all four, ALWAYS from the archive of this exact
+# ONNX_VERSION (recomputing the library digests from a neighboring version's
+# gpu_cuda13 archive — 1.28.0 instead of 1.28.1 happened on 2026-11-18 —
+# yields honest-looking digests of the wrong artifact; providers_shared.so is
+# byte-identical across those two versions, so only some pins visibly break,
+# which makes the mistake easy to miss):
 #   curl -LO <ONNX_GPU_URL> && shasum -a 256 <archive>
 #   tar -xzf <archive> && shasum -a 256 <archive-top>/lib/{libonnxruntime.so,libonnxruntime_providers_cuda.so,libonnxruntime_providers_shared.so}
 # Windows is out of scope: scripts/fetch-onnx.ps1 keeps fetching the CPU build.
@@ -190,8 +195,8 @@ ONNX_GPU_STAMP := $(APP_BUNDLE_DIR)/.onnxruntime-gpu-version
 ONNX_GPU_LIB := libonnxruntime.so
 ONNX_GPU_CUDA_LIB := libonnxruntime_providers_cuda.so
 ONNX_GPU_SHARED_LIB := libonnxruntime_providers_shared.so
-ONNX_GPU_LIB_SHA256 := 87097979b341c4df9c1bf71b14f7376f84a91206fbc64c0ccc4733dcbbab9e40
-ONNX_GPU_CUDA_LIB_SHA256 := 051136fa473e255634421b8e1cd61379fc3ed72c34918a60edc5ac15e792f6c0
+ONNX_GPU_LIB_SHA256 := 4680895afc920629c16fd4aea9d04e1b40cf6d66cbb1495dead4953de9377e6c
+ONNX_GPU_CUDA_LIB_SHA256 := a3a9e9d3d99b8292e9a472176367fd5e03a0dfd07762150f2a8a6c93bdd97e31
 ONNX_GPU_SHARED_LIB_SHA256 := c6a12593396095f5670160e284c35d1700b7708cf3037b7042e2a5200ccae772
 
 # --- ONNX Runtime OpenVINO EP flavor (Intel GPU/NPU/CPU, Linux x64 only) ---------
