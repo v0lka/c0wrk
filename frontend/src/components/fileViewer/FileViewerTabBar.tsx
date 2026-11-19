@@ -196,7 +196,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
             size="icon-xs"
             className="shrink-0"
             onClick={() => setPinned(!pinned)}
-            title={pinned ? "Unpin file viewer (float over chat)" : "Pin file viewer (dock in place)"}
+            title={pinned ? "Unpin viewer (float over chat)" : "Pin viewer (dock in place)"}
           >
             {pinned ? <Pin className="size-4" /> : <PinOff className="size-4 text-primary" />}
           </Button>
@@ -206,7 +206,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
             size="icon-xs"
             className="shrink-0"
             onClick={onToggleCollapse}
-            title={collapsed ? "Expand file viewer" : "Collapse file viewer"}
+            title={collapsed ? "Expand file viewer" : "Collapse viewer"}
           >
             {collapsed ? <PanelRightOpen className="size-4" /> : <PanelRightClose className="size-4" />}
           </Button>
