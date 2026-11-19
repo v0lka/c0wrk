@@ -794,6 +794,67 @@ func TestListDirectory_ManagedWorktreeNotFlagged(t *testing.T) {
 	}
 }
 
+// TestGetGitStatusLite_ManagedTreeResolvesOwningRepo pins the badge-source
+// re-rooting: a managed-worktree session's file tree is rooted at the TREE,
+// and the lite status must run in the tree's OWN repository — the checkout's
+// status never names the tree's files (a linked worktree has an independent
+// index and /.worktrees/ is info/excluded), so a checkout- or focus-rooted
+// lite status would silently blank every badge in the tree. The Git panel's
+// GetGitStatus deliberately keeps the focus (checkout) resolution: the two
+// status variants disagree on purpose, and a checkout-rooted tree still
+// resolves its lite status to the checkout.
+func TestGetGitStatusLite_ManagedTreeResolvesOwningRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	checkout := t.TempDir()
+	gitInit(t, checkout)
+	commitFile(t, checkout, "base.txt", "v1\n")
+
+	tree := filepath.Join(checkout, ".worktrees", "wt")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", checkout, "worktree", "add", "-q", "-b", "wt", tree)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "tree-file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write tree file: %v", err)
+	}
+
+	api := newGitCacheTestAPI(checkout)
+	var liteRoots, panelRoots []string
+	api.gitStatusLiteFn = func(root string) (map[string]GitStatusEntry, error) {
+		liteRoots = append(liteRoots, root)
+		return map[string]GitStatusEntry{}, nil
+	}
+	api.gitStatusFn = func(root string) (map[string]GitStatusEntry, error) {
+		panelRoots = append(panelRoots, root)
+		return map[string]GitStatusEntry{}, nil
+	}
+
+	if _, err := api.GetGitStatusLite(tree); err != nil {
+		t.Fatalf("GetGitStatusLite(tree): %v", err)
+	}
+	if len(liteRoots) != 1 || liteRoots[0] != tree {
+		t.Fatalf("lite status must run in the tree's own repository, got roots %v", liteRoots)
+	}
+
+	// The Git panel keeps the focus semantics: the checkout.
+	if _, err := api.GetGitStatus(tree); err != nil {
+		t.Fatalf("GetGitStatus(tree): %v", err)
+	}
+	if len(panelRoots) != 1 || panelRoots[0] != checkout {
+		t.Fatalf("panel status must keep the focus (checkout) root, got roots %v", panelRoots)
+	}
+
+	// A checkout-rooted tree still resolves its lite status to the checkout.
+	if _, err := api.GetGitStatusLite(checkout); err != nil {
+		t.Fatalf("GetGitStatusLite(checkout): %v", err)
+	}
+	if len(liteRoots) != 2 || liteRoots[1] != checkout {
+		t.Fatalf("checkout-rooted lite status must stay checkout-rooted, got roots %v", liteRoots)
+	}
+}
+
 // TestSwitchProject_InvalidatesGitCaches verifies that switching projects drops
 // the per-repo caches wholesale, so no snapshot from the previous workspace
 // can be served against the new one.

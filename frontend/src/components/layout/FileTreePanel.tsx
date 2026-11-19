@@ -15,6 +15,12 @@ import { ChevronRight, Loader2, FolderTree, RotateCw, TriangleAlert } from 'luci
 import { useFileSearch } from '@/hooks/useFileSearch'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
+/** Windows separator normalization shared by the lite-status helpers below:
+ *  both sides of every lookup are normalized to slash form before compare. */
+function normalizeStatusPath(p: string): string {
+  return p.replace(/\\/g, '/')
+}
+
 /** Propagate git status up to parent directories so folders show change indicators.
  *  A directory inherits a uniform status if all nested files share the same (status, staged)
  *  pair; otherwise it falls back to modified (M).
@@ -25,18 +31,26 @@ import type { FileEntry, GitStatusEntry } from '@/types/models'
  *  the tree inherits that verdict down to the entries it actually lists (a
  *  fresh untracked module keeps its green badges without paying the
  *  untracked-file enumeration on the git side).
+ *
+ *  Both the lite status keys and the tree entry paths are built with Go
+ *  filepath.Join on the backend, so on Windows they carry backslash
+ *  separators while every parent walk and map lookup below is slash-based —
+ *  keys are normalized once here (mirroring isPathCovered in
+ *  useFileViewerData.ts) so lookups and the walk meet in slash form.
  */
 function propagateGitStatus(gitStatus: Record<string, GitStatusEntry>): {
   status: Record<string, GitStatusEntry>
   propagated: Set<string>
   untrackedDirs: Set<string>
 } {
-  const result: Record<string, GitStatusEntry> = { ...gitStatus }
+  const result: Record<string, GitStatusEntry> = {}
   const propagated = new Set<string>()
   const untrackedDirs = new Set<string>()
   const dirSignatures = new Map<string, Set<string>>()
 
-  for (const [filePath, entry] of Object.entries(gitStatus)) {
+  for (const [rawPath, entry] of Object.entries(gitStatus)) {
+    const filePath = normalizeStatusPath(rawPath)
+    result[filePath] = entry
     if (entry.worktree_status === '?') {
       untrackedDirs.add(filePath)
     }
@@ -75,10 +89,11 @@ function propagateGitStatus(gitStatus: Record<string, GitStatusEntry>): {
  *  verdict. Nothing nests beneath a file path, so a '?' on a file entry can
  *  never match a descendant and the prefix walk stays exact. */
 function lookupGitStatus(
-  path: string,
+  rawPath: string,
   gitStatus: Record<string, GitStatusEntry>,
   untrackedDirs: Set<string>,
 ): GitStatusEntry | undefined {
+  const path = normalizeStatusPath(rawPath)
   const exact = gitStatus[path]
   if (exact) return exact
   let dir = path
@@ -232,9 +247,10 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, untrackedDirs, onC
     [entry, onContextMenu],
   )
 
-  const statusEntry = lookupGitStatus(entry.path, gitStatus, untrackedDirs)
+  const pathKey = normalizeStatusPath(entry.path)
+  const statusEntry = lookupGitStatus(pathKey, gitStatus, untrackedDirs)
   const colorCls = gitColorClass(statusEntry)
-  const isPropagated = statusEntry ? propagatedPaths.has(entry.path) : false
+  const isPropagated = statusEntry ? propagatedPaths.has(pathKey) : false
   const isMuted = !colorCls && (entry.hidden || entry.gitignored)
   const mutedCls = isMuted ? 'text-hljs-comment' : ''
 
