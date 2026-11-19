@@ -74,6 +74,34 @@ func hasIgnoreRuleChange(changedPaths []string) bool {
 	return false
 }
 
+// gitMutationFiles marks a watcher change as a git-mutation signal: the index
+// (stage/unstage/commit/stash) and HEAD plus the pending-operation heads
+// (checkout, merge, rebase, cherry-pick). An EXTERNAL git mutation — a
+// terminal command, another tool — reaches no backend RPC, so without this
+// funnel nothing would move the viewer-diff epoch and the Git panel would
+// rely on the status TTL alone, even though the watcher sees the .git write.
+// Refs updates (commit, branch, fetch of remote-tracking refs) match by path.
+var gitMutationFiles = map[string]struct{}{
+	"index":            {},
+	"HEAD":             {},
+	"MERGE_HEAD":       {},
+	"REBASE_HEAD":      {},
+	"CHERRY_PICK_HEAD": {},
+}
+
+func hasGitMutationChange(changedPaths []string) bool {
+	for _, p := range changedPaths {
+		slash := filepath.ToSlash(p)
+		if _, ok := gitMutationFiles[filepath.Base(p)]; ok && strings.Contains(slash, "/.git/") {
+			return true
+		}
+		if strings.Contains(slash, "/.git/refs/") {
+			return true
+		}
+	}
+	return false
+}
+
 // evictOldestGitEntries bounds a repo-keyed cache by dropping the earliest-
 // expiry entries once the map exceeds max. The caller holds the map's mutex.
 func evictOldestGitEntries[V any](m map[string]V, expiry func(V) time.Time, maxSize int) {
@@ -515,14 +543,22 @@ func (f *FrontendAPI) statusCacheDropWhere(keep func(key string) bool) {
 // change drops the status snapshots so the consumers' own refetch (one
 // GetGitStatus / listing per workspace:tree_changed, with no trailing read)
 // is a synchronous cold fetch — a mark would leave that read serving
-// pre-change status until the next event. An ignore-rule edit additionally
-// stales the per-directory ignore flags, which revalidate synchronously on
-// read.
+// pre-change status until the next event. A git-internal write (.git index,
+// HEAD, refs — a mutation NO backend RPC performed, e.g. a terminal git
+// command) additionally funnels through emitGitStatusChanged, so the
+// frontend's viewer-diff epoch moves and an externally staged/committed
+// overlay heals like a UI-initiated one. An ignore-rule edit stales the
+// per-directory ignore flags, which revalidate synchronously on read.
 func (f *FrontendAPI) invalidateGitCachesOnWatcher(repoRoot string, changedPaths []string) {
 	if repoRoot == "" {
 		return
 	}
-	f.invalidateGitCaches(repoRoot)
+	if hasGitMutationChange(changedPaths) {
+		// emitGitStatusChanged drops the status snapshots itself.
+		f.emitGitStatusChanged(repoRoot)
+	} else {
+		f.invalidateGitCaches(repoRoot)
+	}
 	if hasIgnoreRuleChange(changedPaths) {
 		f.markGitFlagsStaleUnderRoot(repoRoot)
 	}

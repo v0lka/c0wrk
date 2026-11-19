@@ -41,8 +41,9 @@ is a backend ViewModel concern (see `FrontendAPI.isGitRepo`).
 | `GetFileDiffInRepo` | `(ctx context.Context, repoPath, relPath string) (string, error)` | Diff for git repos (caller guarantees repo) |
 | `GetFileDiffNoRepo` | `(ctx context.Context, repoPath, relPath string) (string, error)` | Diff for non-repo workspaces (caller guarantees non-repo) |
 | `GitIgnoredPaths` | `(ctx context.Context, dir string) (map[string]bool, error)` | Set of git-ignored absolute paths |
-| `ListDirFlat` | `(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error)` | Immediate children listing |
-| `ListDirRecursive` | `(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error)` | Recursive flat listing |
+| `FilterGitIgnoredPaths` | `(ctx context.Context, repoPath string, paths []string) (map[string]bool, error)` | Batched `git check-ignore -z --stdin` verdicts for the listed paths (O(entries), pattern-only — a tracked path matching a rule is flagged too, since check-ignore never consults the index); exit 1 ("differences exist") is success, a non-repo degrades to no flags |
+| `ListDirFlat` | `(absDir string, opts ...ListDirOption) ([]FileNode, error)` | Immediate children listing; ignore flags are applied by the caller via `FilterGitIgnoredPaths` |
+| `ListDirRecursive` | `(absDir string, opts ...ListDirOption) ([]FileNode, error)` | Recursive flat listing; ignore flags are applied by the caller via `FilterGitIgnoredPaths` |
 | `ListWorktrees` | `(ctx context.Context, repoRoot string) ([]WorktreeInfo, error)` | Structured worktree list (main/managed/external, locked/prunable state); fail-closed on malformed porcelain output |
 | `AddWorktree` | `(ctx, repoRoot, target string, opts AddWorktreeOptions) (WorktreeInfo, error)` | Serialized linked-worktree creation with branch-occupancy and structural path validation; installs the `/.worktrees/` exclude for managed targets |
 | `RecreateWorktree` | `(ctx, repoRoot, target, branch string) (WorktreeInfo, error)` | Session-restore guarantee: tree exists on the pinned branch (no-op / mismatch-refused / stale-metadata pruned); never creates branches |
