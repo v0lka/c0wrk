@@ -111,6 +111,13 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
         }
         const content = await readFile(path)
         if (isBinaryContent(content)) { setFileBinary(path); return }
+        // Capture the PREVIOUS cached content before the store overwrite: the
+        // short-circuit below must compare the re-read against what the tab
+        // was DISPLAYING. (Reading the cached entry after setFileContent made
+        // the byte-identical leg vacuous — the fresh bytes were compared
+        // against themselves — so every refresh skipped the diff RPCs while
+        // the epoch stood still, pinning pre-edit hunks to post-edit content.)
+        const prevContent = useFileViewerStore.getState().files[path]?.content
         setFileContent(path, content, detectLanguageFromPath(path))
         // Skip diff for No Project (no git operations)
         const activeProject = useProjectStore.getState().projects?.find(
@@ -121,11 +128,9 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
           // fetched at the CURRENT git-mutation epoch is known-current —
           // skip the hunks RPC. The epoch guard is what keeps a staged
           // change (hunks move, bytes do not) from being skipped over.
-          const cached = useFileViewerStore.getState().files[path]
           const fetchedAt = diffFetchedAtRef.current.get(path)
           const diffCurrent =
-            cached !== undefined &&
-            cached.content === content &&
+            prevContent === content &&
             fetchedAt !== undefined &&
             fetchedAt === viewerDiffEpoch()
           if (!diffCurrent) {
