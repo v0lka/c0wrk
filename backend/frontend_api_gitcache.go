@@ -103,6 +103,13 @@ type gitSnapshotEntry[V any] struct {
 	expiry      time.Time
 	lastRefresh time.Time
 	refreshing  bool
+	// launchGen records the cache generation the entry's data was stored
+	// under, re-stamped by every background-refresh launch: finalize matches
+	// a refresh run against it, so an unrelated repo's cache-wide generation
+	// bump can neither discard — nor strand the refreshing guard of — this
+	// entry's refresh, while a same-key drop that re-created the entry under
+	// a newer generation invalidates the stale run outright.
+	launchGen uint64
 }
 
 // gitSnapshotCache memoizes one heavy git result family under derived keys.
@@ -127,7 +134,10 @@ type gitSnapshotCache[M ~map[string]V2, V2 any] struct {
 	// instead of re-caching (or clobbering a fresher entry with) a snapshot
 	// the drop declared obsolete. The singleflight key is generation-scoped
 	// too — a post-drop reader starts its own fetch instead of joining, and
-	// receiving, a pre-drop result.
+	// receiving, a pre-drop result. Synchronous fetches compare against this
+	// cache-wide counter; background refreshes match per-entry (the entry's
+	// launchGen), so an unrelated repo's drop can neither discard nor strand
+	// them.
 	gen uint64
 	// spawn runs a background refresh goroutine (tracked upstream so Shutdown
 	// joins it); nil means no background path is wired — stale entries then
@@ -161,6 +171,7 @@ func (c *gitSnapshotCache[M, V2]) snapshot(base context.Context, key string, fet
 		gen := c.gen
 		if launch {
 			e.refreshing = true
+			e.launchGen = gen
 		}
 		c.mu.Unlock()
 		if launch {
@@ -216,7 +227,7 @@ func (c *gitSnapshotCache[M, V2]) seed(key string, data M, stale bool) {
 	if c.entries == nil {
 		c.entries = make(map[string]*gitSnapshotEntry[M])
 	}
-	e := &gitSnapshotEntry[M]{data: data, lastRefresh: now}
+	e := &gitSnapshotEntry[M]{data: data, lastRefresh: now, launchGen: c.gen}
 	if stale {
 		e.expiry = time.Time{}
 		e.lastRefresh = now.Add(-c.minRefresh)
@@ -299,30 +310,36 @@ func (c *gitSnapshotCache[M, V2]) fetchNowDetached(key string, gen uint64, fetch
 	return out, nil
 }
 
-// finalize records a finished run. Success stores/refreshes the entry when
-// create allows it (a synchronous cold fetch creates; a background refresh
-// only refreshes an entry that still exists) and the fetch stayed within its
-// generation — a run that spanned a drop is discarded. Failure never touches
-// data — it releases the refreshing guard and backdates lastRefresh, so a
-// persistently failing git retries at most once per minRefresh. Caller holds
-// no locks; the flight singleton guarantees one finalize per key per run.
+// finalize records a finished run. A synchronous cold fetch creates the
+// entry only when its generation still matches the cache's — a run spanning
+// a drop of its own key observed pre-drop state and must never be created
+// (or overwrite a fresher post-drop entry). A background refresh stores only
+// into the entry it was launched for, matched by the entry's recorded launch
+// generation: a same-key drop deleted it or re-created it under a newer
+// launch, while an unrelated repo's cache-wide bump says nothing about this
+// entry's data. Failure never touches data — it releases the launching
+// entry's refreshing guard and backdates lastRefresh, so a persistently
+// failing git retries at most once per minRefresh. Caller holds no locks;
+// the flight singleton guarantees one finalize per key per run.
 func (c *gitSnapshotCache[M, V2]) finalize(key string, data M, err error, now time.Time, create bool, gen uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
 	if err != nil {
-		if ok {
+		if ok && (create || e.launchGen == gen) {
 			e.refreshing = false
 			e.lastRefresh = now
 		}
 		return
 	}
-	// The fetch spanned a drop and observed pre-drop state: discard the
-	// result. Storing it would re-cache — or clobber a fresher post-drop
-	// entry with — a snapshot the drop declared obsolete; the next read
-	// cold-fetches post-drop state instead.
-	if gen != c.gen {
-		return
+	if create {
+		if gen != c.gen {
+			return
+		}
+	} else {
+		if !ok || gen != e.launchGen {
+			return
+		}
 	}
 	if !ok {
 		if !create {
@@ -335,7 +352,7 @@ func (c *gitSnapshotCache[M, V2]) finalize(key string, data M, err error, now ti
 			evictOldestGitEntries(c.entries, func(e *gitSnapshotEntry[M]) time.Time { return e.expiry }, c.max)
 		}
 	}
-	c.entries[key] = &gitSnapshotEntry[M]{data: data, expiry: now.Add(c.ttl), lastRefresh: now}
+	c.entries[key] = &gitSnapshotEntry[M]{data: data, expiry: now.Add(c.ttl), lastRefresh: now, launchGen: gen}
 }
 
 // --- FrontendAPI wiring -----------------------------------------------------

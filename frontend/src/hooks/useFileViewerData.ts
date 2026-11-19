@@ -155,7 +155,12 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
               setFileDiff(path, assembleUnifiedDiff(hunks))
               diffFetchedAtRef.current.set(path, epochAtFetch)
             } catch {
+              // The hunks RPC also fails where GetFileDiff used to degrade to
+              // ("", nil) — a path that left the workspace or lost its git
+              // baseline — so clear the overlay here too: a previous repo's
+              // or pre-move diff must not stay rendered over unrelated bytes.
               setFileHunks(path, [])
+              setFileDiff(path, '')
             }
           }
         }
