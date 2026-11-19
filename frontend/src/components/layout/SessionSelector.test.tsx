@@ -292,7 +292,7 @@ describe('SessionSelector — flat mode (default)', () => {
     expect(text).toContain('Feat A two')
     expect(text).toContain('Checkout work')
     // The mode toggle is present and advertises the switch to grouped mode.
-    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by branch"]')
+    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')
     expect(toggle).not.toBeNull()
     expect(useUIStore.getState().sessionListGrouped).toBe(false)
     void container
@@ -337,7 +337,7 @@ describe('SessionSelector — mode toggle', () => {
     const container = await render(<SessionSelector />)
     const menu = await openMenu(container)
 
-    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by branch"]')!
+    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')!
     expect(toggle).not.toBeNull()
     // Hover affordance (the user requirement) + a bigger hit area aligned
     // with the h-7 search input and the larger size-4 glyph.

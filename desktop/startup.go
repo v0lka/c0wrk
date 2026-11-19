@@ -534,8 +534,8 @@ func (a *App) Shutdown(ctx context.Context) {
 
 	// Stop admitting and drain in-flight background git refreshes /
 	// ignore-ready deliveries before the backend teardown (see
-	// backend/frontend_api_gitcache.go joinGitBackground).
-	a.frontendAPI().JoinGitBackground(backend.GitShutdownJoinBudget)
+	// backend/frontend_api_gitcache.go JoinGitBackground).
+	backend.JoinGitBackground(a.frontendAPI(), backend.GitShutdownJoinBudget)
 	shutdownStep("joinGitBackground")
 
 	// Drain all pending confirmation/ask-user/step-limit channels so that

@@ -318,10 +318,14 @@ func gitCacheKey(repoRoot string) string {
 }
 
 // gitFlagsCacheKey keys the ignore-flags cache: one entry per (repo root,
-// listed directory) — the flags are computed over that directory's listed
-// entries, not the whole repo.
-func gitFlagsCacheKey(repoRoot, dir string) string {
-	return gitCacheKey(repoRoot) + "\x00" + gitCacheKey(dir)
+// listed directory, listing scope). The scope discriminator keeps one
+// listing's verdict set from being served to a differently-shaped listing of
+// the SAME directory: a flat listing caches its immediate children, a
+// recursive one (file search, @-completions) its descendants — served
+// cross-scope, every path the cached set never covered would silently lose
+// its flag.
+func gitFlagsCacheKey(repoRoot, dir, scope string) string {
+	return gitCacheKey(repoRoot) + "\x00" + gitCacheKey(dir) + "\x00" + scope
 }
 
 // ensureGitCaches lazily builds the three snapshot caches; the constructor
@@ -333,14 +337,7 @@ func (f *FrontendAPI) ensureGitCaches() {
 		return
 	}
 	spawn := func(fn func()) {
-		if f.gitBgStopped.Load() {
-			return
-		}
-		f.gitBgWG.Add(1)
-		go func() {
-			defer f.gitBgWG.Done()
-			fn()
-		}()
+		f.trackGitBg(fn)
 	}
 	f.gitStatusCache = &gitSnapshotCache[map[string]GitStatusEntry, GitStatusEntry]{
 		entries:     make(map[string]*gitSnapshotEntry[map[string]GitStatusEntry]),
@@ -393,10 +390,11 @@ func (f *FrontendAPI) runGitStatusLite(repoRoot string) (map[string]GitStatusEnt
 }
 
 // runGitIgnoredFlags delegates to the injectable gitIgnoredFlagsFn test seam,
-// falling back to the batched check-ignore over paths in production.
-func (f *FrontendAPI) runGitIgnoredFlags(repoRoot, dir string, paths []string) (map[string]bool, error) {
+// falling back to the batched check-ignore over paths in production. The
+// scope only shapes the cache key; the git batch itself is scope-agnostic.
+func (f *FrontendAPI) runGitIgnoredFlags(repoRoot, dir, scope string, paths []string) (map[string]bool, error) {
 	if f.gitIgnoredFlagsFn != nil {
-		return f.gitIgnoredFlagsFn(repoRoot, dir, paths)
+		return f.gitIgnoredFlagsFn(repoRoot, dir, scope, paths)
 	}
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
@@ -430,16 +428,17 @@ func (f *FrontendAPI) cachedGitStatusLite(repoRoot string) (map[string]GitStatus
 }
 
 // cachedGitIgnoredFlags returns which of the paths listed under dir (a child
-// of repoRoot) git's ignore rules exclude. The entry is keyed per (root, dir)
-// and revalidates synchronously when stale: the batched check-ignore is a few
-// milliseconds, so the listing always carries current-cycle flags.
-func (f *FrontendAPI) cachedGitIgnoredFlags(repoRoot, dir string, paths []string) (map[string]bool, error) {
+// of repoRoot) git's ignore rules exclude. The entry is keyed per (root, dir,
+// listing scope — flat vs recursive, see gitFlagsCacheKey) and revalidates
+// synchronously when stale: the batched check-ignore is a few milliseconds,
+// so the listing always carries current-cycle flags.
+func (f *FrontendAPI) cachedGitIgnoredFlags(repoRoot, dir, scope string, paths []string) (map[string]bool, error) {
 	if repoRoot == "" || dir == "" {
 		return nil, errors.New("empty repo root or dir")
 	}
 	f.ensureGitCaches()
-	return f.gitIgnoredFlagsCache.snapshot(f.ctx(), gitFlagsCacheKey(repoRoot, dir), func(ctx context.Context) (map[string]bool, error) {
-		return f.runGitIgnoredFlags(repoRoot, dir, paths)
+	return f.gitIgnoredFlagsCache.snapshot(f.ctx(), gitFlagsCacheKey(repoRoot, dir, scope), func(ctx context.Context) (map[string]bool, error) {
+		return f.runGitIgnoredFlags(repoRoot, dir, scope, paths)
 	})
 }
 
@@ -527,15 +526,41 @@ func (f *FrontendAPI) invalidateAllGitCaches() {
 	f.setGitFocusPath("")
 }
 
-// JoinGitBackground waits up to budget for in-flight background git refreshes
-// (stale-while-revalidate) and ignore-ready deliveries, then stops admitting
-// new ones. The bounded wait keeps a wedged git from stalling teardown past
-// the shutdown watchdog's patience.
-func (f *FrontendAPI) JoinGitBackground(budget time.Duration) {
-	f.gitBgStopped.Store(true)
+// trackGitBg admits fn as a tracked background goroutine unless admission is
+// closed. The stopped check and the WaitGroup.Add happen under gitBgMu, so an
+// admission can never run concurrently with (or after) JoinGitBackground's
+// Wait — a bare check-then-Add could Add once the counter was already
+// observed zero by Wait, violating the WaitGroup contract and leaking the
+// goroutine past the bounded shutdown join. Reports whether fn was admitted.
+func (f *FrontendAPI) trackGitBg(fn func()) bool {
+	f.gitBgMu.Lock()
+	defer f.gitBgMu.Unlock()
+	if f.gitBgStopped.Load() {
+		return false
+	}
+	f.gitBgWG.Add(1)
+	go func() {
+		defer f.gitBgWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// JoinGitBackground waits up to budget for in-flight background git work
+// (stale-while-revalidate refreshes and ignore-ready deliveries) on api, then
+// stops admitting new ones. The bounded wait keeps a wedged git from stalling
+// teardown past the shutdown watchdog's patience. Package-level on purpose:
+// an exported FrontendAPI METHOD would be promoted onto the Wails binding
+// surface as a renderer-callable RPC (it is a shutdown-internal step, not an
+// API — an arbitrary caller-supplied budget would wedge an RPC goroutine and
+// permanently disable background refresh admission).
+func JoinGitBackground(api *FrontendAPI, budget time.Duration) {
+	api.gitBgMu.Lock()
+	api.gitBgStopped.Store(true)
+	api.gitBgMu.Unlock()
 	done := make(chan struct{})
 	go func() {
-		f.gitBgWG.Wait()
+		api.gitBgWG.Wait()
 		close(done)
 	}()
 	select {

@@ -302,7 +302,7 @@ describe('useFileViewerData — tree_changed refresh cycle', () => {
     expect(readFileMock).toHaveBeenCalledTimes(1)
   })
 
-  it('joins an in-flight load instead of stacking a second chain for the same path', async () => {
+  it('defers a refresh racing an in-flight load to one fresh follow-up read', async () => {
     const path = '/ws/src/main.ts'
     let release: ((v: string) => void) | null = null
     readFileMock.mockImplementation(
@@ -316,19 +316,31 @@ describe('useFileViewerData — tree_changed refresh cycle', () => {
     expect(readFileMock).toHaveBeenCalledTimes(1)
 
     // A refresh cycle firing while the initial load is still in flight must
-    // join it, not start a second parallel read.
+    // NOT join it — the chain may predate the change that scheduled the
+    // refresh — and must not stack a second parallel read either: the cycle
+    // leaves readFile untouched until the in-flight chain settles.
     act(() => {
       fire('workspace:tree_changed')
     })
     await flushDebounce()
     expect(readFileMock).toHaveBeenCalledTimes(1)
 
+    // The settled chain applies its (possibly stale) bytes, then the queued
+    // follow-up starts — exactly one fresh read, never a parallel stack.
     await act(async () => {
-      release?.('content\n')
+      release?.('stale-content\n')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(readFileMock).toHaveBeenCalledTimes(2)
+
+    // The follow-up is a fresh read that postdates the change: resolving it
+    // lands the fresh bytes (not the settled chain's stale ones).
+    await act(async () => {
+      release?.('fresh-content\n')
       await vi.advanceTimersByTimeAsync(0)
     })
     const file = useFileViewerStore.getState().files[path]
-    expect(file?.content).toBe('content\n')
+    expect(file?.content).toBe('fresh-content\n')
     expect(file?.loading).toBe(false)
   })
 })

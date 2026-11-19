@@ -7,7 +7,6 @@ import {workspace} from '../models';
 import {config} from '../models';
 import {desktop} from '../models';
 import {review} from '../models';
-import {time} from '../models';
 import {fs} from '../models';
 
 export function AbortMerge():Promise<void>;
@@ -273,8 +272,6 @@ export function HasDefaultModel():Promise<boolean>;
 export function InitNotifications():Promise<void>;
 
 export function InstallEmbeddedLLM():Promise<void>;
-
-export function JoinGitBackground(arg1:time.Duration):Promise<void>;
 
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 

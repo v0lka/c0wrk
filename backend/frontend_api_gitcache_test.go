@@ -271,7 +271,7 @@ func TestListDirectory_GitIgnoredFlagsCachedOnce(t *testing.T) {
 
 	var calls atomic.Int32
 	f := newGitCacheTestAPI(ws)
-	f.gitIgnoredFlagsFn = func(string, string, []string) (map[string]bool, error) {
+	f.gitIgnoredFlagsFn = func(string, string, string, []string) (map[string]bool, error) {
 		calls.Add(1)
 		return map[string]bool{}, nil
 	}
@@ -287,6 +287,61 @@ func TestListDirectory_GitIgnoredFlagsCachedOnce(t *testing.T) {
 	}
 }
 
+// TestCachedGitIgnoredFlags_ScopesAreSeparate pins the scope discriminator in
+// the flags cache key: a flat and a recursive listing of the SAME directory
+// cache their verdicts separately, so a recursive listing (file search,
+// @-completions) never receives the flat listing's child-only set (and vice
+// versa) — every requested path the cached set did not cover would silently
+// lose its flag.
+func TestCachedGitIgnoredFlags_ScopesAreSeparate(t *testing.T) {
+	ws := t.TempDir()
+	var calls atomic.Int32
+	f := newGitCacheTestAPI(ws)
+	f.gitIgnoredFlagsFn = func(_, _, scope string, paths []string) (map[string]bool, error) {
+		calls.Add(1)
+		flags := make(map[string]bool, len(paths))
+		for _, p := range paths {
+			flags[p] = scope == ignoreScopeRecursive
+		}
+		return flags, nil
+	}
+
+	flatPath := filepath.Join(ws, "child.txt")
+	flat, err := f.cachedGitIgnoredFlags(ws, ws, ignoreScopeFlat, []string{flatPath})
+	if err != nil {
+		t.Fatalf("flat flags: %v", err)
+	}
+	if flat[flatPath] {
+		t.Fatalf("flat scope must serve the flat verdict set, got %v", flat)
+	}
+
+	// Same directory, different scope: a distinct cache entry recomputed over
+	// the recursive path set — the flat entry's set is not served here.
+	deepPath := filepath.Join(ws, "deep", "leaf.txt")
+	deep, err := f.cachedGitIgnoredFlags(ws, ws, ignoreScopeRecursive, []string{deepPath})
+	if err != nil {
+		t.Fatalf("recursive flags: %v", err)
+	}
+	if !deep[deepPath] {
+		t.Fatalf("recursive scope must serve its own verdict set, got %v", deep)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("scopes must not share an entry: %d seam calls, want 2", got)
+	}
+
+	// Both entries survive and still serve their own scope.
+	flatAgain, err := f.cachedGitIgnoredFlags(ws, ws, ignoreScopeFlat, []string{flatPath})
+	if err != nil {
+		t.Fatalf("flat flags again: %v", err)
+	}
+	if flatAgain[flatPath] {
+		t.Fatalf("flat entry must stay separate after a recursive read, got %v", flatAgain)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("repeated same-scope reads must stay cached: %d seam calls, want 2", got)
+	}
+}
+
 // TestInvalidateGitCachesOnWatcher covers the debounced watcher policy: any
 // tree change only MARKS the status snapshots stale (the next read serves the
 // last snapshot and throttles its refresh), while an ignore-rule edit
@@ -299,7 +354,7 @@ func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 	f := &FrontendAPI{
 		gitStatusFn:       genStatusSeam(&statusCalls),
 		gitRefreshSettled: func(_ string, err error) { settled <- err },
-		gitIgnoredFlagsFn: func(string, string, []string) (map[string]bool, error) {
+		gitIgnoredFlagsFn: func(string, string, string, []string) (map[string]bool, error) {
 			flagsCalls.Add(1)
 			return map[string]bool{}, nil
 		},
@@ -310,7 +365,7 @@ func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 	if _, err := f.cachedGitStatus(root); err != nil {
 		t.Fatalf("prime status: %v", err)
 	}
-	if _, err := f.cachedGitIgnoredFlags(root, root, []string{filepath.Join(root, "main.go")}); err != nil {
+	if _, err := f.cachedGitIgnoredFlags(root, root, ignoreScopeFlat, []string{filepath.Join(root, "main.go")}); err != nil {
 		t.Fatalf("prime flags: %v", err)
 	}
 
@@ -328,7 +383,7 @@ func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 	if got := statusCalls.Load(); got != 1 {
 		t.Fatalf("watcher batch must not spawn git by itself: spawned %d, want 1", got)
 	}
-	if _, err := f.cachedGitIgnoredFlags(root, root, []string{filepath.Join(root, "main.go")}); err != nil {
+	if _, err := f.cachedGitIgnoredFlags(root, root, ignoreScopeFlat, []string{filepath.Join(root, "main.go")}); err != nil {
 		t.Fatalf("flags after regular change: %v", err)
 	}
 	if got := flagsCalls.Load(); got != 1 {
@@ -356,7 +411,7 @@ func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 	// An ignore-rule edit stales the flags too; the flags read revalidates
 	// synchronously (the batch is cheap by design).
 	f.invalidateGitCachesOnWatcher(root, []string{filepath.Join(root, ".gitignore")})
-	if _, err := f.cachedGitIgnoredFlags(root, root, []string{filepath.Join(root, "main.go")}); err != nil {
+	if _, err := f.cachedGitIgnoredFlags(root, root, ignoreScopeFlat, []string{filepath.Join(root, "main.go")}); err != nil {
 		t.Fatalf("flags after .gitignore change: %v", err)
 	}
 	if got := flagsCalls.Load(); got != 2 {
@@ -431,7 +486,7 @@ func TestCachedGitMaps_AreCallerOwned(t *testing.T) {
 		statusCalls.Add(1)
 		return map[string]GitStatusEntry{"a.txt": {Status: "M"}}, nil
 	}
-	f.gitIgnoredFlagsFn = func(string, string, []string) (map[string]bool, error) {
+	f.gitIgnoredFlagsFn = func(string, string, string, []string) (map[string]bool, error) {
 		flagsCalls.Add(1)
 		return map[string]bool{ignoredKey: true}, nil
 	}
@@ -460,14 +515,14 @@ func TestCachedGitMaps_AreCallerOwned(t *testing.T) {
 	}
 
 	// Same contract for the ignore-flags cache.
-	flagsFirst, err := f.cachedGitIgnoredFlags(ws, ws, []string{ignoredKey})
+	flagsFirst, err := f.cachedGitIgnoredFlags(ws, ws, ignoreScopeFlat, []string{ignoredKey})
 	if err != nil {
 		t.Fatalf("cachedGitIgnoredFlags #1: %v", err)
 	}
 	flagsFirst["caller-added/"] = true
 	delete(flagsFirst, ignoredKey)
 
-	flagsSecond, err := f.cachedGitIgnoredFlags(ws, ws, []string{ignoredKey})
+	flagsSecond, err := f.cachedGitIgnoredFlags(ws, ws, ignoreScopeFlat, []string{ignoredKey})
 	if err != nil {
 		t.Fatalf("cachedGitIgnoredFlags #2: %v", err)
 	}
