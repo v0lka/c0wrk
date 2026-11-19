@@ -114,6 +114,12 @@ type mockBuilder struct {
 	generateCommitMsgErr           error
 	generateCommitMsgDiff          string
 
+	// serviceModelPins, when non-nil, is what ServiceModelPin reports — the
+	// llm.service_models resolution a test wants the embedded service gates
+	// to observe (a nil map = no pin resolves, so the gates fall back to the
+	// default-model predicate).
+	serviceModelPins map[string]core.ServiceModelOverride
+
 	// rebuildProxyHook, when non-nil, runs inside RebuildProxy. Tests use it
 	// to hold the propagation phase open and assert that readers/writers are
 	// not convoyed behind it. It must not call back into mockBuilder methods
@@ -375,6 +381,15 @@ func (m *mockBuilder) GenerateCommitMessage(_ context.Context, diff string) (str
 	m.mu.Unlock()
 	return m.generateCommitMsgRes, m.generateCommitMsgErr
 }
+
+// ServiceModelPin mirrors the real builder's pin lookup against the
+// test-configured map (nil map = nothing resolves — the gates' fallback path).
+func (m *mockBuilder) ServiceModelPin(kind string) (core.ServiceModelOverride, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pin, ok := m.serviceModelPins[kind]
+	return pin, ok
+}
 func (m *mockBuilder) GetBaseSkillDirs() []string {
 	m.mu.Lock()
 	m.getBaseSkillDirsCalls++
@@ -626,6 +641,160 @@ func TestUpdateLLMConfig_MaskedKeyNotOverwritten(t *testing.T) {
 	}
 	if f.config.LLM.Anthropic.APIKey != original {
 		t.Errorf("API key was overwritten by masked value: got %q", f.config.LLM.Anthropic.APIKey)
+	}
+}
+
+// TestUpdateLLMConfig_PreservesServiceModels pins the section-safety rule for
+// llm.service_models: the UI draft carries no service_models field (the
+// request replaces providers, never the pins), so a save must carry the
+// previously configured section through the candidate := previous copy — in
+// memory AND in the persisted YAML. A save that dropped the section would
+// silently unpin every one-shot service call until the next hand-edit.
+func TestUpdateLLMConfig_PreservesServiceModels(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+	pins := map[string]string{
+		config.ServiceModelTitle:         "openai/gpt-4o",
+		config.ServiceModelCommitMessage: "local-llm/qwen/qwen3-coder-30b",
+	}
+	f.configMu.Lock()
+	f.config.LLM.ServiceModels = pins
+	f.configMu.Unlock()
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "anthropic/claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	f.configMu.RLock()
+	got := f.config.LLM.ServiceModels
+	f.configMu.RUnlock()
+	if len(got) != len(pins) || got[config.ServiceModelTitle] != pins[config.ServiceModelTitle] ||
+		got[config.ServiceModelCommitMessage] != pins[config.ServiceModelCommitMessage] {
+		t.Errorf("service_models = %v, want %v preserved verbatim by the UI draft", got, pins)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	for _, want := range []string{"service_models:", "title: openai/gpt-4o", "commit_message: local-llm/qwen/qwen3-coder-30b"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("persisted config is missing %q:\n%s", want, data)
+		}
+	}
+}
+
+// TestUpdateLLMConfig_ReplacesServiceModels pins the UI-draft contract for
+// llm.service_models (ADR-131): a non-nil request field REPLACES the whole
+// section ({} clears it — the empty map survives serialization because the
+// request field carries no omitempty), entries are cleaned with the load
+// pipeline's format rule (invalid drop fail-soft, valid persist), and a nil
+// field keeps the preserved-verbatim behavior of the test above.
+func TestUpdateLLMConfig_ReplacesServiceModels(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+	persistedDefault := func() LLMFullConfigRequest {
+		return LLMFullConfigRequest{
+			DefaultModel: "anthropic/claude-3-sonnet",
+			Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+		}
+	}
+	readPins := func() map[string]string {
+		f.configMu.RLock()
+		defer f.configMu.RUnlock()
+		return f.config.LLM.ServiceModels
+	}
+
+	t.Run("replaces the section with the request map", func(t *testing.T) {
+		f.configMu.Lock()
+		f.config.LLM.ServiceModels = map[string]string{config.ServiceModelTitle: "openai/gpt-4o"}
+		f.configMu.Unlock()
+
+		req := persistedDefault()
+		req.ServiceModels = map[string]string{config.ServiceModelJudge: "anthropic/claude-3-haiku"}
+		if err := f.UpdateLLMConfig(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := readPins()
+		if len(got) != 1 || got[config.ServiceModelJudge] != "anthropic/claude-3-haiku" {
+			t.Errorf("service_models = %v, want the section replaced wholesale", got)
+		}
+	})
+
+	t.Run("clears the section with an explicitly empty map", func(t *testing.T) {
+		req := persistedDefault()
+		req.ServiceModels = map[string]string{}
+		if err := f.UpdateLLMConfig(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := readPins(); got != nil {
+			t.Errorf("service_models = %v, want nil after the explicit clear", got)
+		}
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatalf("read persisted config: %v", err)
+		}
+		if strings.Contains(string(data), "service_models:") {
+			t.Errorf("persisted config still carries service_models after the clear:\n%s", data)
+		}
+	})
+
+	t.Run("drops invalid entries fail-soft and keeps valid ones", func(t *testing.T) {
+		req := persistedDefault()
+		req.ServiceModels = map[string]string{
+			config.ServiceModelTitle: "openai/gpt-4o",            // valid
+			"future_thing":           "anthropic/claude-3-haiku", // unknown key
+			config.ServiceModelJudge: "no-slash",                 // malformed value
+		}
+		if err := f.UpdateLLMConfig(req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := readPins()
+		if len(got) != 1 || got[config.ServiceModelTitle] != "openai/gpt-4o" {
+			t.Errorf("service_models = %v, want only the valid title entry", got)
+		}
+	})
+
+	t.Run("nil field still preserves (the pre-UI contract)", func(t *testing.T) {
+		f.configMu.Lock()
+		f.config.LLM.ServiceModels = map[string]string{config.ServiceModelTitle: "openai/gpt-4o"}
+		f.configMu.Unlock()
+
+		if err := f.UpdateLLMConfig(persistedDefault()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := readPins()
+		if len(got) != 1 || got[config.ServiceModelTitle] != "openai/gpt-4o" {
+			t.Errorf("service_models = %v, want preserved by the nil field", got)
+		}
+	})
+}
+
+// TestGetConfig_ExposesServiceModels pins the GetConfig half of the UI
+// round-trip: the sanitized LLM response carries the persisted section so the
+// settings draft can load hand-edited pins, and the response map is a CLONE —
+// mutating it must never alias the live config.
+func TestGetConfig_ExposesServiceModels(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.configMu.Lock()
+	f.config.LLM.ServiceModels = map[string]string{
+		config.ServiceModelCommitMessage: "local-llm/qwen/qwen3-coder-30b",
+	}
+	f.configMu.Unlock()
+
+	resp := f.GetConfig()
+	got := resp.LLM.ServiceModels
+	if len(got) != 1 || got[config.ServiceModelCommitMessage] != "local-llm/qwen/qwen3-coder-30b" {
+		t.Errorf("GetConfig service_models = %v, want the persisted commit_message pin", got)
+	}
+	got[config.ServiceModelCommitMessage] = "mutated"
+	f.configMu.RLock()
+	live := f.config.LLM.ServiceModels[config.ServiceModelCommitMessage]
+	f.configMu.RUnlock()
+	if live != "local-llm/qwen/qwen3-coder-30b" {
+		t.Errorf("GetConfig aliases the live map: pin mutated to %q", live)
 	}
 }
 

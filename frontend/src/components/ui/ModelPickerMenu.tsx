@@ -150,6 +150,14 @@ interface ModelPickerMenuProps {
    * in the settings context). Renders nothing when omitted.
    */
   menuHeading?: string
+  /**
+   * Replaces the unset-state wording when an empty value does NOT mean the
+   * global default. The service-model pickers use it: an unset pin rides the
+   * session's CURRENT model, which a `Default: <name>` trigger would
+   * misreport as pinned to the global default. Applies to both the trigger
+   * label and the menu's unset entry; omit for the default semantics.
+   */
+  unsetLabel?: string
 }
 
 /**
@@ -188,7 +196,9 @@ interface ModelPickerMenuProps {
  * Selection display contract: `value` selects an entry by composite id; the
  * trigger shows the bare model name. When `value` is null/'' the trigger
  * shows `Default: <name>` (the global default resolved to a listed entry), or
- * "Select model…" when even that cannot be resolved.
+ * "Select model…" when even that cannot be resolved. A caller whose empty
+ * value means something other than the global default (the service-model
+ * pins: the session's current model) replaces the wording via `unsetLabel`.
  */
 export function ModelPickerMenu({
   models,
@@ -201,6 +211,7 @@ export function ModelPickerMenu({
   className,
   hideDefaultOption = false,
   menuHeading,
+  unsetLabel,
 }: ModelPickerMenuProps) {
   const allModels = useMemo(() => toModelPickerEntries(models), [models])
 
@@ -221,7 +232,9 @@ export function ModelPickerMenu({
   const displayLabel = selected
     ? bareModel(selected)
     : effectiveDefaultId
-      ? `Default: ${bareModel(defaultModel)}`
+      ? (unsetLabel ?? `Default: ${bareModel(defaultModel)}`)
+      // A default that no longer resolves to a listed entry must stay honest
+      // in every consumer: prompt for a pick rather than advertise a target.
       : 'Select model…'
 
   // The trigger label shows the bare model name; the title adds the provider
@@ -286,7 +299,7 @@ export function ModelPickerMenu({
                 onSelect={() => onSelect(null)}
               >
                 <span className="flex-1 text-left">
-                  Default{effectiveDefaultId ? ` (${bareModel(defaultModel)})` : ''}
+                  {unsetLabel ?? `Default${effectiveDefaultId ? ` (${bareModel(defaultModel)})` : ''}`}
                 </span>
                 {!selected && (
                   <span className="text-xs text-primary">active</span>

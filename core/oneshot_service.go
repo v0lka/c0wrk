@@ -1,9 +1,14 @@
 package core
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"strings"
 
+	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/oneshot"
 )
 
 // serviceOutputTokenBudget raises a sub-2048 positive output ceiling to 2048
@@ -52,16 +57,21 @@ const (
 // serviceReasoningEffort resolves a service tier into the model's native wire
 // spelling: catalog-first family detection (llm.ResolveBuiltInModel, then
 // llm.DetectFamily) → llm.ReasoningForCall; "" sends no reasoning field.
-// See specs/domains/model-profiles.md (oneshot service calls).
+// A service-model override hands the pin down as its full composite
+// "provider/model" id (that is what the telemetry log reports), so family
+// resolution always reads llm.BareModel — a no-op for the bare ids the
+// un-overridden sites pass. See specs/domains/model-profiles.md (oneshot
+// service calls).
 func serviceReasoningEffort(model string, tier llm.ReasoningTier) string {
 	if model == "" || tier == "" {
 		return ""
 	}
-	family := string(llm.DetectFamily(model))
-	if meta, ok := llm.ResolveBuiltInModel(model); ok && meta.Family != "" {
+	bare := llm.BareModel(model)
+	family := string(llm.DetectFamily(bare))
+	if meta, ok := llm.ResolveBuiltInModel(bare); ok && meta.Family != "" {
 		family = meta.Family
 	}
-	return llm.ReasoningForCall(family, model, tier)
+	return llm.ReasoningForCall(family, bare, tier)
 }
 
 // bareActiveModel returns the router's active model with any provider prefix
@@ -71,6 +81,37 @@ func bareActiveModel(router *llm.Router) string {
 		return ""
 	}
 	return llm.BareModel(router.ActiveModel())
+}
+
+// compactionSummarizeWithCaller issues the compaction-summarize one-shot for
+// one block — the shared seam of BOTH compaction sites (the builder context
+// factory closure and the orchestrator's manual-compaction deps), kept separate
+// so tests can inject a mock caller and verify the request shape, the
+// llm.service_models pin (compaction_summarize key, applied here before the
+// request is built so the reasoning tier resolves from the pin) and the error
+// wrap deterministically.
+func compactionSummarizeWithCaller(ctx context.Context, set *ServiceModelOverrides, caller oneshot.Caller, metrics *ServiceMetrics, logger *slog.Logger, model, blockText string) (string, error) {
+	model, caller = applyServiceModelOverride(set, ServiceKindCompactionSummary, model, caller)
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: coreprompts.CompactionSummarize},
+			{Role: "user", Content: blockText},
+		},
+		// Oneshot service policy: reasoning tier minimal, resolved from the
+		// effective model — the session router's ACTIVE model (model switches
+		// ride along) or the compaction_summarize override pin; the Model
+		// Profiles seed does not reach service calls. Temperature pinned to
+		// the family-safe floor (deterministic summaries).
+		ReasoningEffort: serviceReasoningEffort(model, oneshotTierCompaction),
+		// Compaction summaries are deterministic calls: no vendor
+		// preset, temperature pinned to the family-safe floor.
+		CallPurpose: llm.CallPurposeCompaction,
+	}
+	summary, err := serviceCall(ctx, metrics, logger, ServiceKindCompactionSummary, model, caller, req, compactionSummarizeContent, oneshot.Options[string]{})
+	if err != nil {
+		return "", fmt.Errorf("compaction summarize: %w", err)
+	}
+	return summary, nil
 }
 
 // compactionSummarizeContent passes the summary through unchanged — the

@@ -1364,8 +1364,10 @@ func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 	// while an agent task runs it DEFERS first (a different prompt would
 	// evict the task's prompt cache). The whole wait is outside the
 	// service timeout by design; each bound is derived once, on its
-	// constant. See specs/domains/embedded-llm.md.
-	if err := f.serviceEmbeddedGateInteractive(f.ctx()); err != nil {
+	// constant. The gate is advised by the commit_message service key: a
+	// pin routing the message to another provider keeps the gate inert.
+	// See specs/domains/embedded-llm.md.
+	if err := f.serviceEmbeddedGateInteractive(f.ctx(), config.ServiceModelCommitMessage); err != nil {
 		f.log().Warn("GenerateCommitMessage: the embedded service gate refused the request", "err", err)
 		return "", err
 	}

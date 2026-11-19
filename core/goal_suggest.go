@@ -89,16 +89,20 @@ func goalSuggestRoutingContext(routing *router.RoutingDecision) string {
 // suggestGoalModeWithCaller is the production classifier pass: one one-shot
 // service call (ServiceKindGoalSuggest) over the embedded goal_suggest prompt.
 // Errors are returned to the caller, which fails OPEN — the feature can never
-// break a send.
+// break a send. set carries the per-build llm.service_models resolution (nil =
+// unconfigured — the session model); the goal_suggest pin is applied before the
+// request is built, so the reasoning tier resolves from the pin.
 func suggestGoalModeWithCaller(
 	ctx context.Context,
 	caller oneshot.Caller,
 	metrics *ServiceMetrics,
 	logger *slog.Logger,
 	model string,
+	set *ServiceModelOverrides,
 	message string,
 	routing *router.RoutingDecision,
 ) (GoalSuggestion, error) {
+	model, caller = applyServiceModelOverride(set, ServiceKindGoalSuggest, model, caller)
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: prompts.GoalSuggest},
@@ -126,7 +130,7 @@ func (o *Orchestrator) SuggestGoalMode(ctx context.Context, message string, rout
 	if o.llm == nil {
 		return GoalSuggestion{}, errGoalSuggestNoCaller
 	}
-	return suggestGoalModeWithCaller(ctx, o.llm, o.serviceMetrics, o.logger, bareActiveModel(o.modelSwitcher), message, routing)
+	return suggestGoalModeWithCaller(ctx, o.llm, o.serviceMetrics, o.logger, bareActiveModel(o.modelSwitcher), o.serviceModels, message, routing)
 }
 
 // goalSuggestionApplicable reports the cheap, LLM-free preconditions of the

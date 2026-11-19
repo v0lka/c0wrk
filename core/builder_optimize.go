@@ -109,7 +109,10 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 }
 
 // optimizeExtract is a separate method so tests can inject a mock caller.
+// The optimize_extract service-model pin (if resolved) is applied before the
+// request is built, so the reasoning tier resolves from the pin.
 func (b *OrchestratorBuilder) optimizeExtract(ctx context.Context, caller oneshot.Caller, model, userPrompt string) (extractResult, error) {
+	model, caller = b.applyServiceModelOverride(ServiceKindOptimizeExtract, model, caller)
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: coreprompts.PromptOptimizeExtract},
@@ -129,8 +132,11 @@ func (b *OrchestratorBuilder) optimizeExtract(ctx context.Context, caller onesho
 
 // optimizeRewrite issues the rewrite one-shot; the final parse refusal is
 // re-surfaced with operator-facing advice, transport errors wrapped as
-// "optimize prompt: rewrite".
+// "optimize prompt: rewrite". The optimize_rewrite service-model pin (if
+// resolved) is applied before the request is built, so the reasoning tier
+// resolves from the pin.
 func (b *OrchestratorBuilder) optimizeRewrite(ctx context.Context, caller oneshot.Caller, model, userPrompt string) (string, error) {
+	model, caller = b.applyServiceModelOverride(ServiceKindOptimizeRewrite, model, caller)
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: coreprompts.PromptOptimizeRewrite},

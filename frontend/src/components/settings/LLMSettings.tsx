@@ -11,6 +11,7 @@ import { ModelPickerMenu } from '@/components/ui/ModelPickerMenu'
 import { FixedProviderForms } from './providers/FixedProviderForms'
 import { CompatibleProviderGroup } from './providers/CompatibleProviderGroup'
 import { EmbeddedLLMSettings } from './EmbeddedLLMSettings'
+import { ServiceModelsSettings } from './ServiceModelsSettings'
 
 // ---------------------------------------------------------------------------
 // Provider name validation
@@ -65,6 +66,7 @@ export function LLMSettings({
     autoRetryMaxSeconds,
     openaiCompatibleProviderNames,
     anthropicCompatibleProviderNames,
+    serviceModels,
     isLoading,
     flushPendingSave,
     setDefaultModel,
@@ -72,6 +74,7 @@ export function LLMSettings({
     toggleModel,
     addProvider,
     deleteProvider,
+    setServiceModel,
   } = useLLMConfig(onSettingsSaved, onDefaultModelChange)
 
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
@@ -238,6 +241,21 @@ export function LLMSettings({
           block is not mounted and the model's entries stay out of the
           default-model picker above. */}
       {experimentalEnabled && <EmbeddedLLMSettings />}
+
+      {/* Service-model overrides (ADR-131) — the SAME experimental gate as the
+          embedded block above. Honest end-to-end: while the switch is off the
+          backend adapter drops llm.service_models from every BuilderConfig,
+          so a block rendered then would advertise pins that resolve nothing.
+          The pins are part of the useLLMConfig draft, so edits save through
+          the standard debounced full-form save. */}
+      {experimentalEnabled && (
+        <ServiceModelsSettings
+          models={allEnabledModels}
+          defaultModel={defaultModel}
+          value={serviceModels}
+          onChange={setServiceModel}
+        />
+      )}
 
       {/* Add compatible provider — kept BELOW the Embedded block (and above the
           accordions it creates) so the "add a remote endpoint" action still

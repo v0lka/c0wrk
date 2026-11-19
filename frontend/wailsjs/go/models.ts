@@ -485,6 +485,7 @@ export namespace backend {
 	    kimi: ConfigProviderFull;
 	    all_models: ModelInfo[];
 	    models_ready: boolean;
+	    service_models?: Record<string, string>;
 	    auto_retry_max_seconds: number;
 	
 	    static createFrom(source: any = {}) {
@@ -501,6 +502,7 @@ export namespace backend {
 	        this.kimi = this.convertValues(source["kimi"], ConfigProviderFull);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
 	        this.models_ready = source["models_ready"];
+	        this.service_models = source["service_models"];
 	        this.auto_retry_max_seconds = source["auto_retry_max_seconds"];
 	    }
 	
@@ -1418,6 +1420,7 @@ export namespace backend {
 	    anthropic_compatible?: Record<string, ProviderConfigRequest>;
 	    chatgpt?: ProviderConfigRequest;
 	    kimi?: ProviderConfigRequest;
+	    service_models: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new LLMFullConfigRequest(source);
@@ -1431,6 +1434,7 @@ export namespace backend {
 	        this.anthropic_compatible = this.convertValues(source["anthropic_compatible"], ProviderConfigRequest, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ProviderConfigRequest);
 	        this.kimi = this.convertValues(source["kimi"], ProviderConfigRequest);
+	        this.service_models = source["service_models"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

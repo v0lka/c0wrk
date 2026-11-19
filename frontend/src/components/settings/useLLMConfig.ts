@@ -47,6 +47,18 @@ interface UseLLMConfigResult {
      *  fails the load loudly instead of silently clamping against a stale
      *  constant. Undefined only until the first successful load. */
     autoRetryMaxSeconds: number | undefined
+    /** The persisted llm.service_models section (ADR-131) as loaded from
+     *  GetConfig: composite "provider/model" pins per fixed one-shot call
+     *  key. {} = no pins (the backend omits the section). The draft OWNS
+     *  the section — every full-form save transmits it, so hand-edited
+     *  entries round-trip a UI save instead of being silently dropped.
+     *  Edited only through the experimental-gated ServiceModelsSettings
+     *  block. */
+    serviceModels: Record<string, string>
+    /** Set or clear one service-model pin; null removes the pin so the
+     *  call falls back to the session default. Persists through the same
+     *  debounced full-form save as every other LLM field. */
+    setServiceModel: (key: string, model: string | null) => void
     /** Names of providers loaded from the openai_compatible map (non-fixed
      *  providers) that the settings dialog may EDIT. Backend-owned generated
      *  records (`embedded`) are absent: they stay in `providerConfigs` as a
@@ -146,6 +158,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const [autoRetryMaxSeconds, setAutoRetryMaxSeconds] = useState<number | undefined>(undefined)
     const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
+    const [serviceModels, setServiceModelState] = useState<Record<string, string>>({})
     const [isLoading, setIsLoading] = useState(true)
 
     // The per-provider pin gate lives in proxyDraftStore and is read by
@@ -160,6 +173,12 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const configsRef = useRef(providerConfigs)
     configsRef.current = providerConfigs
 
+    // Mutable ref for serviceModels so the persist helpers and setServiceModel
+    // always transmit the latest section without re-creating their callbacks
+    // (same pattern as configsRef).
+    const serviceModelsRef = useRef(serviceModels)
+    serviceModelsRef.current = serviceModels
+
     // Mutable ref for the onDefaultModelChange callback so loadConfig (and the
     // provider mutators below) stay stable while still reporting the effective
     // default to the parent on every change — including load, delete, and toggle.
@@ -168,7 +187,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
 
     const { saveFullConfig, debouncedSave, cancelDebouncedSave, flushPendingSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
 
-    const persistWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
+    const persistWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>, pins: Record<string, string> = serviceModelsRef.current) => {
         if (!defaultModelIsValid(model, configs)) {
             // Keep the edited provider list locally until the user selects an
             // enabled replacement default. This also cancels a timer queued
@@ -176,7 +195,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             cancelDebouncedSave()
             return
         }
-        debouncedSave(model, configs)
+        debouncedSave(model, configs, pins)
     }, [cancelDebouncedSave, debouncedSave])
 
     /**
@@ -189,7 +208,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
      * timer so its stale pre-mutation snapshot cannot land after this save,
      * and hold the change locally (no RPC) until a valid default exists.
      */
-    const persistImmediatelyWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
+    const persistImmediatelyWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>, pins: Record<string, string> = serviceModelsRef.current) => {
         // Cancel any queued debounce timer on BOTH branches. The timer
         // captures its (model, configs) arguments when it is queued, so a
         // timer queued by an edit within the previous 300 ms holds the
@@ -202,7 +221,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         if (!defaultModelIsValid(model, configs)) {
             return
         }
-        void saveFullConfig(model, configs).catch(() => undefined)
+        void saveFullConfig(model, configs, pins).catch(() => undefined)
     }, [cancelDebouncedSave, saveFullConfig])
 
     const loadConfig = useCallback(async () => {
@@ -288,12 +307,16 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 setProviderConfigs(configs)
                 setOpenaiCompatibleProviderNames(openaiNames)
                 setAnthropicCompatibleProviderNames(anthropicNames)
+                // The service-model pins ride the same payload (ADR-131);
+                // absence = no pins — the backend omits the empty section.
+                setServiceModelState(llm.service_models ? { ...llm.service_models } : {})
                 onDefaultModelChangeRef.current?.(effective)
             } else {
                 setDefaultModelState('')
                 setProviderConfigs({ ...defaultProviderConfigs })
                 setOpenaiCompatibleProviderNames(new Set())
                 setAnthropicCompatibleProviderNames(new Set())
+                setServiceModelState({})
                 onDefaultModelChangeRef.current?.('')
             }
         } catch (error) {
@@ -417,12 +440,30 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         })
     }, [defaultModel, persistImmediatelyWhenDefaultIsValid])
 
+    const setServiceModel = useCallback((key: string, model: string | null) => {
+        // Compute the next section outside the setState updater so the save
+        // RPC is not invoked during render (StrictMode may run updaters
+        // twice, duplicating the RPC — same rationale as the mutators above).
+        const next = { ...serviceModelsRef.current }
+        if (model) {
+            next[key] = model
+        } else {
+            delete next[key]
+        }
+        setServiceModelState(next)
+        // The pins are independent of the default model, but the save payload
+        // is full-form: persist through the same default-validity gate so the
+        // section never lands alongside an unresolvable default.
+        persistWhenDefaultIsValid(defaultModel, configsRef.current, next)
+    }, [defaultModel, persistWhenDefaultIsValid])
+
     return {
         defaultModel,
         providerConfigs,
         autoRetryMaxSeconds,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
+        serviceModels,
         isLoading,
         flushPendingSave,
         setDefaultModel,
@@ -430,5 +471,6 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         toggleModel,
         addProvider,
         deleteProvider,
+        setServiceModel,
     }
 }
