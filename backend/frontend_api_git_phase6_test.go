@@ -876,6 +876,49 @@ func TestGetFileDiffHunks_UntrackedNoIndexHunks(t *testing.T) {
 	})
 }
 
+// TestGetFileDiffHunks_DiffsInOwningRepo: a file inside a nested repository
+// (a managed worktree is the production case; a nested repo is the same
+// ownership shape without the worktree fixture) is diffed against ITS OWN
+// baseline, not the outer project root the Git-panel focus resolves to.
+// Focus-root resolution would find no diff in the outer repo, classify the
+// path as untracked there, and fall through to the synthetic whole-file
+// --no-index diff — every line rendered as added.
+func TestGetFileDiffHunks_DiffsInOwningRepo(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		inner := filepath.Join(dir, "inner")
+		if err := os.MkdirAll(inner, 0o755); err != nil {
+			t.Fatalf("mkdir inner: %v", err)
+		}
+		gitInit(t, inner)
+		commitFile(t, inner, "owned.txt", "a\nb\nc\n")
+		if err := os.WriteFile(filepath.Join(inner, "owned.txt"), []byte("a\nB\nc\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		hunks, err := f.GetFileDiffHunks(filepath.Join(inner, "owned.txt"))
+		if err != nil {
+			t.Fatalf("GetFileDiffHunks: %v", err)
+		}
+		if len(hunks) == 0 {
+			t.Fatal("expected the inner repo's modification hunks, got none")
+		}
+		var assembled strings.Builder
+		for i, h := range hunks {
+			if i > 0 {
+				assembled.WriteString("\n")
+			}
+			assembled.WriteString(h.Diff)
+		}
+		joined := assembled.String()
+		if !strings.Contains(joined, "-b") || !strings.Contains(joined, "+B") {
+			t.Errorf("hunks must be the inner repo's b→B modification, got:\n%s", joined)
+		}
+		if strings.Contains(joined, "+a") {
+			t.Errorf("unchanged line a must not render as an addition (whole-file --no-index fallback leaked):\n%s", joined)
+		}
+	})
+}
+
 func TestDiscardChanges_StagedNewFileRemoved(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
 		path := filepath.Join(dir, "staged-new.txt")

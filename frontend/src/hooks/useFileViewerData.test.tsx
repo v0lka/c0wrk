@@ -223,6 +223,33 @@ describe('useFileViewerData — diff pipeline', () => {
     expect(getFileDiffHunksMock).toHaveBeenCalledTimes(2)
   })
 
+  it('re-fetches the diff when a reload re-reads CHANGED content even though the epoch is unmoved', async () => {
+    // An agent edit emits workspace:tree_changed but no git:status_changed:
+    // new bytes must re-fetch the hunks even with the epoch standing still,
+    // or the viewer pins pre-edit hunks to post-edit content.
+    const path = '/ws/src/main.ts'
+    let version = 0
+    readFileMock.mockImplementation(async () => {
+      version++
+      return `v${version}\n`
+    })
+    getFileDiffHunksMock.mockResolvedValue([
+      { oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, oldChangeStart: 1, newChangeStart: 1, staged: false, diff: '@@ -1,1 +1,1 @@\n+x' },
+    ])
+
+    await mount(path)
+    expect(getFileDiffHunksMock).toHaveBeenCalledTimes(1)
+
+    // Changed bytes on disk, epoch untouched: the diff MUST re-fetch.
+    act(() => {
+      fire('workspace:tree_changed')
+    })
+    await flushDebounce()
+    expect(readFileMock).toHaveBeenCalledTimes(2)
+    expect(getFileDiffHunksMock).toHaveBeenCalledTimes(2)
+    expect(useFileViewerStore.getState().files[path]?.content).toBe('v2\n')
+  })
+
   it('retries the diff fetch after a hunks failure (the epoch stays unmoved)', async () => {
     const path = '/ws/src/main.ts'
     readFileMock.mockResolvedValue('same\n')
