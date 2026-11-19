@@ -11,11 +11,11 @@ import (
 )
 
 const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off.
-Use when: the user asked to plan first or the task is multi-step; call once before acting. EVERY task MUST declare depends_on: list the prerequisite task ids, or declare [] (empty array) for a task with no dependencies — omitting the field is a validation error. A spurious edge only serializes; a missing edge runs the steps in parallel. Approved plans are append-only: never edit or delete.
-Inputs: mode ("present" | "await_approval"); tasks: array of {id (e.g. step_1), summary (label), description (What/How/Where/AC), depends_on (REQUIRED prerequisite ids; [] = none), agent (Subagent name)}.
+Use when: the user asked to plan first or the task is multi-step; call once before acting. EVERY task MUST declare depends_on: prerequisite ids, or [] for none — omitting it is a validation error; a spurious edge only serializes, a missing edge runs the steps in parallel. Approved plans are append-only: never edit or delete.
+Inputs: mode ("present" | "await_approval"); tasks: array of {id (e.g. step_1), summary (label), description, depends_on (REQUIRED; [] = none), agent (Subagent name)}. description: review-ready markdown; labels **What**, **How**, **Where**, **Acceptance Criteria**, one per line; AC is a "- [ ]" checklist; no #-headers inside.
 Outputs: "present" displays the plan and continues; "await_approval" blocks for approval.
 Example: step 1 "write failing tests", step 2 "implement" with depends_on ["step_1"]; a genuinely independent step 3 declares depends_on [].
-Anti-example: a plan whose step 2 "implement" omits depends_on though it consumes step 1's failing tests — declare ["step_1"] or the steps run CONCURRENTLY and fail. Also: never implement before approval; single-step tasks need no plan.`
+Anti-example: step 2 "implement" omits depends_on though it consumes step 1's tests — declare ["step_1"] or the steps run CONCURRENTLY. Also: never implement before approval; single-step tasks need no plan.`
 
 // PlanPublisher serializes a plan, persists it to the session plans directory,
 // emits the PlanGenerated event, and sets the plan on the blackboard.
@@ -87,7 +87,7 @@ func NewDeclarePlanTool(approvalFunc ApprovalFunc) *DeclarePlanTool {
 				"properties": {
 					"id": {"type": "string", "description": "Unique task identifier (e.g. step_1)"},
 					"summary": {"type": "string", "description": "5-7 word label for UI display"},
-					"description": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
+					"description": {"type": "string", "description": "Review-ready markdown; labels **What**, **How**, **Where**, **Acceptance Criteria**, one per line; AC is a \"- [ ]\" checklist; no #-headers inside."},
 					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. IDs of tasks that must complete before this one; declare [] (empty array) for a task with no dependencies — omitting the field is a validation error. Declare the dependency whenever this task consumes another task's output, artifacts, or decisions (a spurious edge only serializes; a missing edge runs the steps in parallel)."},
 					"agent": {"type": "string", "description": "Optional Subagent Profile name to execute this step with (e.g. \"code-reviewer\"). When set, the step runs with that profile's system prompt, tools, max-steps, and model instead of the orchestrator defaults. Omit for a generic step."}
 				},

@@ -2183,7 +2183,7 @@ func (p *conductorPublisher) Publish(ctx context.Context, tasks []tools.PlanTask
 		plan.Steps = append(plan.Steps, orchestration.PlanStep{
 			ID:          strings.TrimSpace(t.ID),
 			Summary:     t.Summary,
-			Description: t.Description,
+			Description: normalizePlanDescription(t.Description),
 			DependsOn:   deps,
 			Agent:       t.Agent,
 		})
