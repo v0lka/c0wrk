@@ -1,4 +1,4 @@
-# ADR-131: Plan step descriptions carry a declared label contract, normalized deterministically at publish
+# ADR-132: Plan step descriptions carry a declared label contract, normalized deterministically at publish
 
 ## Status
 
