@@ -127,22 +127,35 @@ export async function readFile(filePath: string): Promise<string> {
   }
 }
 
+/** Tri-state existence verdict for one candidate path: `missing` is a
+ *  definitive no (the probe may move to the next candidate), `exists` is a
+ *  definitive yes (even when ReadFile would refuse the file — too large, a
+ *  directory, permission), and `unknown` is everything else (RPC failure,
+ *  malformed response) — never evidence of absence. */
+export type PathExistence = 'missing' | 'exists' | 'unknown'
+
 /**
- * Click-time existence probe for local-file link resolution. Reads through
- * the workspace ReadFile RPC (so the payload is bounded by the viewer's
- * file-size cap) and resolves false on ANY failure — a missing file, a
- * directory, a read error or a missing Wails binding. Failures stay QUIET on
- * purpose: the probe runs speculatively (one link click may test several
- * candidate paths, several of which legitimately do not exist), so failure
- * here is expected control flow, not an error worth logging.
+ * Click-time existence probe for local-file link resolution, via the
+ * lightweight StatPath RPC (no payload is transferred — unlike the ReadFile
+ * seam it replaces, existence is reported even for files the viewer cannot
+ * read). Failures stay QUIET: the probe runs speculatively (one link click
+ * may test several candidate paths, several of which legitimately do not
+ * exist), so failure here is expected control flow, not an error worth
+ * logging. Any failure maps to `unknown`, never to `missing`.
  */
-export async function checkFileExists(filePath: string): Promise<boolean> {
+export async function probePathStat(filePath: string): Promise<PathExistence> {
   try {
     const app = getApp()
-    await app.ReadFile(filePath)
-    return true
+    const stat = await app.StatPath(filePath)
+    if (typeof stat !== 'object' || stat === null || typeof (stat as { exists?: unknown }).exists !== 'boolean') {
+      logger.error('probePathStat: unexpected response shape', stat)
+      return 'unknown'
+    }
+    return stat.exists ? 'exists' : 'missing'
   } catch {
-    return false
+    // Unknown, NOT missing: a failed probe must keep the caller on the
+    // current candidate rather than silently fall through to the next one.
+    return 'unknown'
   }
 }
 

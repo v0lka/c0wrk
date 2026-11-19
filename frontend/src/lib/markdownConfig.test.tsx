@@ -30,14 +30,15 @@ const fileViewerMock = vi.hoisted(() => ({
 const chatRootMock = vi.hoisted(() => ({
   resolveChatWorkspaceRoot: vi.fn(),
 }))
-// The local-file link click path may probe candidate paths for existence
-// (document dir first, workspace root fallback); the image path resolves
-// local srcs to data URLs. Both go through the workspace API — mocked so
-// tests control which candidate exists without a Wails runtime. The image
-// mock rejects like the real no-bindings environment so local-image tests
-// keep their fall-through behavior.
+// The local-file link click path probes candidate paths for existence
+// (document dir first, workspace root fallback) through the tri-state
+// probePathStat; the image path resolves local srcs to data URLs. Both go
+// through the workspace API — mocked so tests control each candidate's
+// verdict without a Wails runtime. The image mock rejects like the real
+// no-bindings environment so local-image tests keep their fall-through
+// behavior.
 const workspaceApiMock = vi.hoisted(() => ({
-  checkFileExists: vi.fn(),
+  probePathStat: vi.fn(),
   readFileAsDataURL: vi.fn().mockRejectedValue(new Error('no bindings')),
 }))
 vi.mock('@/stores/fileViewerStore', () => ({
@@ -47,7 +48,7 @@ vi.mock('@/lib/chatWorkspaceRoot', () => ({
   resolveChatWorkspaceRoot: chatRootMock.resolveChatWorkspaceRoot,
 }))
 vi.mock('@/api/workspace', () => ({
-  checkFileExists: workspaceApiMock.checkFileExists,
+  probePathStat: workspaceApiMock.probePathStat,
   readFileAsDataURL: workspaceApiMock.readFileAsDataURL,
 }))
 
@@ -142,7 +143,7 @@ describe('Markdown local-file links', () => {
     fileViewerMock.openFile.mockClear()
     fileViewerMock.openFileAtLine.mockClear()
     chatRootMock.resolveChatWorkspaceRoot.mockReset()
-    workspaceApiMock.checkFileExists.mockReset()
+    workspaceApiMock.probePathStat.mockReset()
     container = document.createElement('div')
     document.body.replaceChildren(container)
     root = createRoot(container)
@@ -216,10 +217,10 @@ describe('Markdown local-file links', () => {
 
   it('opens a single-candidate link without an existence probe', async () => {
     // Chat links (no document base) have exactly one candidate — opening it
-    // directly is the historical behavior and spends no speculative read.
+    // directly is the historical behavior and spends no speculative probe.
     await render('[x](src/a.ts)', '/repo')
     await click()
-    expect(workspaceApiMock.checkFileExists).not.toHaveBeenCalled()
+    expect(workspaceApiMock.probePathStat).not.toHaveBeenCalled()
     expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/src/a.ts')
   })
 
@@ -227,30 +228,62 @@ describe('Markdown local-file links', () => {
     // Markdown's own semantics: a link inside /repo/docs/a.md resolves
     // against /repo/docs. The doc candidate exists — the probe confirms it
     // and the root fallback is never opened.
-    workspaceApiMock.checkFileExists.mockResolvedValue(true)
+    workspaceApiMock.probePathStat.mockImplementation(async (p: string) =>
+      p === '/repo/docs/b.md' ? 'exists' : 'missing')
     await render('[guide](b.md)', '/repo', '/repo/docs/a.md')
     await click()
-    expect(workspaceApiMock.checkFileExists).toHaveBeenCalledWith('/repo/docs/b.md')
+    expect(workspaceApiMock.probePathStat).toHaveBeenCalledWith('/repo/docs/b.md')
     expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/docs/b.md')
   })
 
   it('falls back to the workspace root when the document candidate is missing', async () => {
     // Model-authored documents sometimes use repo-root-relative hrefs; the
     // doc-relative probe misses and the workspace-root candidate wins.
-    workspaceApiMock.checkFileExists.mockImplementation(async (p: string) =>
-      p === '/repo/b.md')
+    workspaceApiMock.probePathStat.mockImplementation(async (p: string) =>
+      p === '/repo/b.md' ? 'exists' : 'missing')
     await render('[guide](b.md)', '/repo', '/repo/docs/a.md')
     await click()
-    expect(workspaceApiMock.checkFileExists).toHaveBeenCalledWith('/repo/docs/b.md')
-    expect(workspaceApiMock.checkFileExists).toHaveBeenCalledWith('/repo/b.md')
+    expect(workspaceApiMock.probePathStat).toHaveBeenCalledWith('/repo/docs/b.md')
+    expect(workspaceApiMock.probePathStat).toHaveBeenCalledWith('/repo/b.md')
     expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/b.md')
+  })
+
+  it('keeps the document candidate when the probe cannot tell (unknown)', async () => {
+    // An "unknown" outcome (RPC failure) is NOT evidence of absence: the
+    // doc-relative candidate must keep the target — never a silent fall
+    // through to the workspace-root file with the same name.
+    workspaceApiMock.probePathStat.mockImplementation(async (p: string) =>
+      p === '/repo/docs/b.md' ? 'unknown' : 'exists')
+    await render('[guide](b.md)', '/repo', '/repo/docs/a.md')
+    await click()
+    expect(workspaceApiMock.probePathStat).toHaveBeenCalledWith('/repo/docs/b.md')
+    expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/docs/b.md')
+  })
+
+  it('opens the document candidate when it exists but is unreadable', async () => {
+    // The stat-based probe reports existence even for a file the viewer's
+    // ReadFile refuses (too large, permission): "exists" on the doc
+    // candidate beats the fallback — the click then surfaces the backend's
+    // actionable error instead of silently opening another same-named file.
+    workspaceApiMock.probePathStat.mockResolvedValue('exists')
+    await render('[guide](b.md)', '/repo', '/repo/docs/a.md')
+    await click()
+    expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/docs/b.md')
+  })
+
+  it('keeps the document candidate when only the fallback probe is unknown', async () => {
+    workspaceApiMock.probePathStat.mockImplementation(async (p: string) =>
+      p === '/repo/docs/b.md' ? 'missing' : 'unknown')
+    await render('[guide](b.md)', '/repo', '/repo/docs/a.md')
+    await click()
+    expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/docs/b.md')
   })
 
   it('opens the document candidate when NO candidate exists', async () => {
     // A missing link must still open something — the doc-relative candidate
     // (markdown's own semantics) whose miss surfaces in the viewer, and the
     // probe must stay silent (a failed probe is control flow, not an error).
-    workspaceApiMock.checkFileExists.mockResolvedValue(false)
+    workspaceApiMock.probePathStat.mockResolvedValue('missing')
     await render('[guide](b.md)', '/repo', '/repo/docs/a.md')
     await click()
     expect(fileViewerMock.openFile).toHaveBeenCalledWith('/repo/docs/b.md')
@@ -261,13 +294,13 @@ describe('Markdown local-file links', () => {
     // probe, no joining.
     await render('[x](/abs/b.md)', '/repo', '/repo/docs/a.md')
     await click()
-    expect(workspaceApiMock.checkFileExists).not.toHaveBeenCalled()
+    expect(workspaceApiMock.probePathStat).not.toHaveBeenCalled()
     expect(fileViewerMock.openFile).toHaveBeenCalledWith('/abs/b.md')
   })
 
   it('keeps the line anchor when resolving through the fallback', async () => {
-    workspaceApiMock.checkFileExists.mockImplementation(async (p: string) =>
-      p === '/repo/b.md')
+    workspaceApiMock.probePathStat.mockImplementation(async (p: string) =>
+      p === '/repo/b.md' ? 'exists' : 'missing')
     await render('[guide](b.md#L7)', '/repo', '/repo/docs/a.md')
     await click()
     expect(fileViewerMock.openFileAtLine).toHaveBeenCalledWith('/repo/b.md', 7)

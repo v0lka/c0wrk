@@ -27,7 +27,12 @@ export const SearchBody = React.memo(function SearchBody({ toolName, parsedArgs,
 
   if (!result) return null
 
-  const entries = parseEntries(result, toolName ?? '')
+  // An errored call's result text is a diagnostic ("glob error: malformed
+  // pattern …", "path error: …"), never path data — render it plain so no
+  // error line becomes a file link.
+  const entries: Entry[] = status === 'error'
+    ? result.split('\n').filter(l => l.trim()).map(line => ({ display: line }))
+    : parseEntries(result, toolName ?? '')
   const visible = showAll ? entries : entries.slice(0, MAX_ENTRIES)
   const hasMore = entries.length > MAX_ENTRIES
 
@@ -73,12 +78,16 @@ function parseEntries(result: string, toolName: string): Entry[] {
   }
   // glob format: one path per line, relative to the search root. A bounded
   // walk appends "warning: …" lines after a blank separator — never linked.
+  // A trailing "/" marks a directory entry (the tool's marker for
+  // type: dirs|all — the viewer reads files only), and the fixed
+  // zero-match summary is not a path: both render plain.
   if (toolName === 'glob') {
-    return lines.map(line =>
-      line.startsWith('warning:')
-        ? { display: line }
-        : { path: line.replace(/\/$/, ''), display: line },
-    )
+    return lines.map(line => {
+      if (line.startsWith('warning:') || line.endsWith('/') || line === 'no matching files found') {
+        return { display: line }
+      }
+      return { path: line, display: line }
+    })
   }
   // Unknown producers: keep the legacy heuristic — an absolute-looking line
   // is a bare path; anything else renders as plain text.

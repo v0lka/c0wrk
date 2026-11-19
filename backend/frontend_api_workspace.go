@@ -280,6 +280,30 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	return string(content), nil
 }
 
+// StatPath reports whether a path exists WITHOUT reading any payload, with
+// resolveReadablePath semantics (uncontained, line anchor stripped — the
+// same domain the link click's viewer open reads in). It exists for the
+// distinction a ReadFile-based probe cannot offer: "missing" advances the
+// link probe to the next candidate, while "exists but unreadable" (too
+// large, a directory, permission) must WIN so the viewer surfaces the
+// actionable error instead of a silently substituted same-named file. A
+// dangling symlink is Exists=false; any other stat failure is an error.
+// Contract: specs/contracts/desktop-frontend.md (StatPath).
+func (f *FrontendAPI) StatPath(filePath string) (PathStat, error) {
+	absPath, err := f.resolveReadablePath(filePath)
+	if err != nil {
+		return PathStat{}, err
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PathStat{Exists: false}, nil
+		}
+		return PathStat{}, fmt.Errorf("failed to stat file: %w", err)
+	}
+	return PathStat{Exists: true, IsDir: info.IsDir()}, nil
+}
+
 // readCappedFile rejects oversized files BEFORE reading (no whole-file
 // buffer) and still reads through safeio (non-regular refusal).
 func readCappedFile(absPath string, maxSize int64) ([]byte, error) {

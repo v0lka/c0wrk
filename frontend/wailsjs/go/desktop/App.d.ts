@@ -500,6 +500,8 @@ export function StashList():Promise<Array<workspace.StashEntry>>;
 
 export function StashPop(arg1:number):Promise<void>;
 
+export function StatPath(arg1:string):Promise<backend.PathStat>;
+
 export function StopTerminal(arg1:string):Promise<void>;
 
 export function SwitchProject(arg1:string):Promise<void>;

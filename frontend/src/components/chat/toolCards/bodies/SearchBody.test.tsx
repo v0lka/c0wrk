@@ -121,6 +121,53 @@ describe('SearchBody', () => {
     expect(fileViewerMock.openFileAtLine).not.toHaveBeenCalled()
   })
 
+  it('renders glob directory entries (trailing "/") as plain text', async () => {
+    // sp4rk glob marks directories with a trailing slash (type: dirs|all);
+    // the viewer reads files only, so dir entries stay unlinked.
+    await render(makeProps({
+      toolName: 'glob',
+      args: '{"pattern":"**","path":"specs","type":"all"}',
+      result: 'domains/\nb.ts\n',
+    }))
+    expect(links()).toHaveLength(1)
+    const texts = Array.from(container.querySelectorAll('span')).map(el => el.textContent)
+    expect(texts).toContain('domains/')
+    await clickFirst()
+    expect(fileViewerMock.openFile).toHaveBeenCalledWith('/ws/specs/b.ts')
+  })
+
+  it('renders the glob zero-match summary as plain text', async () => {
+    await render(makeProps({
+      toolName: 'glob',
+      args: '{"pattern":"*.zz"}',
+      result: 'no matching files found',
+    }))
+    expect(links()).toHaveLength(0)
+    expect(container.textContent).toContain('no matching files found')
+  })
+
+  it('renders an errored glob result as plain text (no links)', async () => {
+    // The result of a failed call is diagnostic text ("glob error: …",
+    // "path error: …") — the status gate keeps every line unlinked.
+    await render(makeProps({
+      toolName: 'glob',
+      status: 'error',
+      args: '{"pattern":"[["}',
+      result: 'glob error: malformed pattern "[["',
+    }))
+    expect(links()).toHaveLength(0)
+    expect(container.textContent).toContain('glob error: malformed pattern "[["')
+  })
+
+  it('renders an errored ripgrep result as plain text', async () => {
+    await render(makeProps({
+      toolName: 'ripgrep',
+      status: 'error',
+      result: 'search error: invalid regex',
+    }))
+    expect(links()).toHaveLength(0)
+  })
+
   it('keeps the legacy absolute-line heuristic for unknown producers', async () => {
     await render(makeProps({
       args: '{"pattern":"x"}',

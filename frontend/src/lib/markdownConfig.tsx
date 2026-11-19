@@ -10,7 +10,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import { ImageOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { isLocalFileHref, isExternalUrl, parseLocalFileHref, candidateLinkPaths } from '@/lib/localFileLink'
-import { checkFileExists, readFileAsDataURL } from '@/api/workspace'
+import { probePathStat, readFileAsDataURL } from '@/api/workspace'
 import { openExternalURL } from '@/api/runtime'
 import { EXTERNAL_SRC_RE, candidateImagePaths } from '@/lib/markdownImageResolve'
 import { resolveChatWorkspaceRoot } from '@/lib/chatWorkspaceRoot'
@@ -105,20 +105,23 @@ const MarkdownLink = ({ href, children, node: _node, workspaceRoot, baseFilePath
     // No base to resolve against (root-less chat, relative href) — nothing
     // to open, matching the historical inert behavior.
     if (candidates.length === 0) return
-    // A single candidate (absolute href, or only one base available) opens
-    // directly — a miss shows the viewer's error state, exactly as before,
-    // and no speculative read is spent. With BOTH a document base and a
-    // workspace root the two conventions compete, so the first candidate IN
-    // ORDER that exists on disk wins (document-relative first); when none
-    // does, that first candidate (markdown's own semantics) opens and its
-    // miss surfaces in the viewer.
+    // A single candidate opens directly (a miss surfaces in the viewer, no
+    // speculative probe spent). With both bases competing, the first
+    // candidate IN ORDER that exists wins (document-relative first): only a
+    // definitive "missing" advances the probe — an unreadable candidate
+    // (too large, a directory, permission) or an "unknown" outcome keeps
+    // the current one, so the viewer shows the real error and a same-named
+    // workspace-root file never silently replaces the document-relative
+    // one. When NO candidate exists, the first (markdown's semantics) opens.
     let target = candidates[0]!
     if (candidates.length > 1) {
       for (const candidate of candidates) {
-        if (await checkFileExists(candidate)) {
+        const existence = await probePathStat(candidate)
+        if (existence === 'exists') {
           target = candidate
           break
         }
+        if (existence === 'unknown') break
       }
     }
     if (line !== undefined) {
