@@ -242,6 +242,158 @@ func TestCachedGitStatus_MinRefreshThrottle(t *testing.T) {
 	}
 }
 
+// TestGitSnapshotCache_DropDiscardsInFlightFetch pins the generation guard's
+// synchronous leg: a fetch spanning a watcher drop must never store its
+// pre-drop snapshot, and a reader arriving after the drop must start its own
+// fetch (generation-scoped flight key) instead of joining — and receiving —
+// the pre-drop result. Without the guard the post-drop read would either
+// join the stale flight or find the stale entry re-cached with a fresh TTL:
+// pre-change status pinned with no event to heal it.
+func TestGitSnapshotCache_DropDiscardsInFlightFetch(t *testing.T) {
+	ws := t.TempDir()
+	var calls atomic.Int32
+	release := make(chan struct{})
+	started := make(chan struct{})
+	f := newGitCacheTestAPI(ws)
+	f.gitStatusFn = func(string) (map[string]GitStatusEntry, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			close(started)
+			<-release // hold the pre-drop flight open across the drop
+		}
+		return map[string]GitStatusEntry{fmt.Sprintf("f%d.txt", n): {Status: "M"}}, nil
+	}
+	f.ensureGitCaches()
+
+	type result struct {
+		status map[string]GitStatusEntry
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		st, err := f.cachedGitStatus(ws)
+		done <- result{st, err}
+	}()
+	<-started
+
+	// The change lands while the fetch is in flight: the drop bumps the
+	// generation, so this in-flight result must never enter the cache.
+	f.invalidateGitCachesOnWatcher(ws, []string{filepath.Join(ws, "late.txt")})
+
+	// A post-drop reader must not join the held pre-drop flight: it runs its
+	// own fetch (call 2) and stores the post-drop snapshot.
+	post, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("post-drop read: %v", err)
+	}
+	if _, ok := post["f2.txt"]; !ok {
+		t.Fatalf("post-drop read must run its own fetch, got %v", post)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("post-drop read joined the pre-drop flight: %d calls, want 2", got)
+	}
+
+	// Release the held fetch; its pre-drop result reaches its own caller but
+	// must not enter the cache behind the post-drop entry.
+	close(release)
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("pre-drop fetch: %v", res.err)
+		}
+		if _, ok := res.status["f1.txt"]; !ok {
+			t.Fatalf("pre-drop caller must receive its own result, got %v", res.status)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pre-drop fetch never settled")
+	}
+
+	again, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if _, ok := again["f2.txt"]; !ok {
+		t.Fatalf("cache must hold the post-drop snapshot, got %v", again)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("pre-drop result must not have re-entered the cache: %d calls, want 2", got)
+	}
+}
+
+// TestGitSnapshotCache_DropDiscardsStaleBackgroundRefresh pins the
+// create=false leg of the generation guard: a background refresh that
+// spanned a drop must not clobber the post-drop snapshot a synchronous read
+// already stored.
+func TestGitSnapshotCache_DropDiscardsStaleBackgroundRefresh(t *testing.T) {
+	ws := t.TempDir()
+	var calls atomic.Int32
+	release := make(chan struct{})
+	started := make(chan struct{})
+	settled := make(chan error, 4)
+	f := newGitCacheTestAPI(ws)
+	f.gitRefreshSettled = func(_ string, err error) { settled <- err }
+	f.gitStatusFn = func(string) (map[string]GitStatusEntry, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			close(started)
+			<-release // hold the background refresh open across the drop
+		}
+		return map[string]GitStatusEntry{fmt.Sprintf("f%d.txt", n): {Status: "M"}}, nil
+	}
+	f.ensureGitCaches()
+
+	// Seed a launch-eligible stale entry: freshness window closed and
+	// lastRefresh past the throttle, so the next read serves the seed and
+	// launches the background refresh (call 1).
+	f.gitStatusCache.seed(gitCacheKey(ws), map[string]GitStatusEntry{"f0.txt": {Status: "A"}}, false)
+	f.gitStatusCache.mu.Lock()
+	e := f.gitStatusCache.entries[gitCacheKey(ws)]
+	e.expiry = time.Time{}
+	e.lastRefresh = time.Now().Add(-gitRefreshMinInterval)
+	f.gitStatusCache.mu.Unlock()
+
+	stale, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("stale read: %v", err)
+	}
+	if _, ok := stale["f0.txt"]; !ok {
+		t.Fatalf("stale read must serve the seed, got %v", stale)
+	}
+	<-started
+
+	// The change lands while the refresh is in flight; the post-drop read
+	// stores the fresh snapshot.
+	f.invalidateGitCachesOnWatcher(ws, []string{filepath.Join(ws, "late.txt")})
+	post, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("post-drop read: %v", err)
+	}
+	if _, ok := post["f2.txt"]; !ok {
+		t.Fatalf("post-drop read must recompute, got %v", post)
+	}
+
+	// The stale refresh settles and must NOT clobber the post-drop entry.
+	close(release)
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatalf("background refresh failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background refresh never settled")
+	}
+	again, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if _, ok := again["f2.txt"]; !ok {
+		t.Fatalf("stale background refresh must not clobber the post-drop snapshot, got %v", again)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("re-read must stay cached: %d calls, want 2", got)
+	}
+}
+
 // TestListDirectory_GitIgnoredFlagsCachedOnce verifies that two back-to-back
 // ListDirectory calls on a git repo run the batched check-ignore once: the
 // second listing is served from the per-directory flags cache.
