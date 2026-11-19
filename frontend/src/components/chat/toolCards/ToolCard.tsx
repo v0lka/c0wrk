@@ -5,11 +5,10 @@ import { bookmarkKey } from '@/lib/bookmarks'
 import type { DisplayItem } from '@/types/messages'
 import { useAttachmentName } from '@/stores/attachmentsStore'
 import { resolveSkillResourcePath } from '@/api/skills'
-import { resolveChatWorkspaceRoot } from '@/lib/chatWorkspaceRoot'
-import { normalizePath } from '@/lib/localFileLink'
 import { resolveCardConfig } from './toolCardRegistry'
 import { extractAttachmentId, extractFileLine, extractSkillName } from './extractors'
 import { FileLink } from './shared/FileLink'
+import { makeWorkspacePathResolver } from './shared/workspacePathResolver'
 import { EllipsisHint } from './shared/EllipsisHint'
 
 type ToolItem = Extract<DisplayItem, { kind: 'tool' }>
@@ -120,10 +119,11 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   //     backend through the SAME catalog scan + traversal guard the tool used
   //     (ResolveSkillResourcePath RPC). A missing skill name or a failed
   //     resolution renders the path as plain text.
-  //   - workspace file tools: the chat workspace root (normalizePath) — a
-  //     relative arg joins the root, an absolute/drive/UNC path passes
-  //     through normalized. Without a root (transient state) the raw path
-  //     opens unchanged, matching the historical behavior.
+  //   - workspace file tools: the chat workspace root — a relative arg joins
+  //     the root, an absolute/drive/UNC path passes through normalized.
+  //     Without a root (transient state) the raw path opens unchanged,
+  //     matching the historical behavior. Bodies share the same resolver
+  //     (makeWorkspacePathResolver) so result-entry links behave identically.
   const skillName = useMemo(
     () => (baseToolName === 'read_skill_resource' ? extractSkillName(item.parsedArgs, item.args) : undefined),
     [baseToolName, item.parsedArgs, item.args],
@@ -133,10 +133,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     if (baseToolName === 'read_skill_resource') {
       return (p: string) => (skillName ? resolveSkillResourcePath(skillName, p) : Promise.resolve(null))
     }
-    return async (p: string) => {
-      const root = await resolveChatWorkspaceRoot()
-      return root ? normalizePath(root, p) : p
-    }
+    return makeWorkspacePathResolver()
   }, [isFileTool, baseToolName, skillName])
 
   // fullText mirrors the visible title so the tooltip reveals exactly what the
@@ -207,6 +204,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
         result={item.result}
         resultLen={item.resultLen}
         status={item.status}
+        toolName={baseToolName}
       />
     </CollapsibleBlock>
   )

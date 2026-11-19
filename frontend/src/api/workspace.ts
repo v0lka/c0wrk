@@ -127,6 +127,38 @@ export async function readFile(filePath: string): Promise<string> {
   }
 }
 
+/** Tri-state existence verdict for one candidate path: `missing` is a
+ *  definitive no (the probe may move to the next candidate), `exists` is a
+ *  definitive yes (even when ReadFile would refuse the file — too large, a
+ *  directory, permission), and `unknown` is everything else (RPC failure,
+ *  malformed response) — never evidence of absence. */
+export type PathExistence = 'missing' | 'exists' | 'unknown'
+
+/**
+ * Click-time existence probe for local-file link resolution, via the
+ * lightweight StatPath RPC (no payload is transferred — unlike the ReadFile
+ * seam it replaces, existence is reported even for files the viewer cannot
+ * read). Failures stay QUIET: the probe runs speculatively (one link click
+ * may test several candidate paths, several of which legitimately do not
+ * exist), so failure here is expected control flow, not an error worth
+ * logging. Any failure maps to `unknown`, never to `missing`.
+ */
+export async function probePathStat(filePath: string): Promise<PathExistence> {
+  try {
+    const app = getApp()
+    const stat = await app.StatPath(filePath)
+    if (typeof stat !== 'object' || stat === null || typeof (stat as { exists?: unknown }).exists !== 'boolean') {
+      logger.error('probePathStat: unexpected response shape', stat)
+      return 'unknown'
+    }
+    return stat.exists ? 'exists' : 'missing'
+  } catch {
+    // Unknown, NOT missing: a failed probe must keep the caller on the
+    // current candidate rather than silently fall through to the next one.
+    return 'unknown'
+  }
+}
+
 /**
  * Fetch a local file's bytes as a `data:` URL (base64-encoded). Used by the
  * markdown renderer to embed images that live on disk — the webview cannot

@@ -600,6 +600,13 @@ type FileIconResponse struct {
 	IconColor string `json:"icon_color"`
 }
 
+// PathStat is the StatPath RPC's payload: existence and dir-ness of one
+// path, nothing else (specs/contracts/desktop-frontend.md, StatPath).
+type PathStat struct {
+	Exists bool `json:"exists"`
+	IsDir  bool `json:"is_dir"`
+}
+
 type GitStatusEntry = workspace.GitStatusEntry
 
 type DiffStat = workspace.DiffStat

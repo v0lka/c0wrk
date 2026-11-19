@@ -9,8 +9,8 @@ import rehypeExternalLinks from 'rehype-external-links'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import { ImageOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { isAbsolutePath, isLocalFileHref, isExternalUrl, parseLocalFileHref, resolveFileRefPath } from '@/lib/localFileLink'
-import { readFileAsDataURL } from '@/api/workspace'
+import { isLocalFileHref, isExternalUrl, parseLocalFileHref, candidateLinkPaths } from '@/lib/localFileLink'
+import { probePathStat, readFileAsDataURL } from '@/api/workspace'
 import { openExternalURL } from '@/api/runtime'
 import { EXTERNAL_SRC_RE, candidateImagePaths } from '@/lib/markdownImageResolve'
 import { resolveChatWorkspaceRoot } from '@/lib/chatWorkspaceRoot'
@@ -65,9 +65,15 @@ const rehypePlugins: PluggableList = [
 type MarkdownLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
   node?: unknown
   workspaceRoot?: string | null
+  /** Absolute path of the document the link is written in. When present
+   *  (file-viewer markdown preview, paper artifacts), relative hrefs resolve
+   *  against its directory first — markdown's own semantics — and fall back
+   *  to the workspace root; absent (chat messages), the workspace root is
+   *  the only base, exactly as before. */
+  baseFilePath?: string | null
 }
 
-const MarkdownLink = ({ href, children, node: _node, workspaceRoot, ...rest }: MarkdownLinkProps) => {
+const MarkdownLink = ({ href, children, node: _node, workspaceRoot, baseFilePath, ...rest }: MarkdownLinkProps) => {
   // External URLs (http, https, mailto, ftp, …) must be dispatched to the
   // system browser. The Wails webview ignores `<a target="_blank">` or opens
   // it inside the webview, which cannot render arbitrary web pages. We render
@@ -95,14 +101,33 @@ const MarkdownLink = ({ href, children, node: _node, workspaceRoot, ...rest }: M
   const handleClick = async () => {
     const { path, line } = parseLocalFileHref(href!)
     const rootPath = workspaceRoot || (await resolveChatWorkspaceRoot())
-    // Absolute inputs (POSIX, drive, UNC) normalize without a root; only
-    // relative paths need the workspace root to join.
-    if (!rootPath && !isAbsolutePath(path)) return
-    const resolved = resolveFileRefPath(rootPath, path)
+    const candidates = candidateLinkPaths(path, baseFilePath, rootPath)
+    // No base to resolve against (root-less chat, relative href) — nothing
+    // to open, matching the historical inert behavior.
+    if (candidates.length === 0) return
+    // A single candidate opens directly (a miss surfaces in the viewer, no
+    // speculative probe spent). With both bases competing, the first
+    // candidate IN ORDER that exists wins (document-relative first): only a
+    // definitive "missing" advances the probe — an unreadable candidate
+    // (too large, a directory, permission) or an "unknown" outcome keeps
+    // the current one, so the viewer shows the real error and a same-named
+    // workspace-root file never silently replaces the document-relative
+    // one. When NO candidate exists, the first (markdown's semantics) opens.
+    let target = candidates[0]!
+    if (candidates.length > 1) {
+      for (const candidate of candidates) {
+        const existence = await probePathStat(candidate)
+        if (existence === 'exists') {
+          target = candidate
+          break
+        }
+        if (existence === 'unknown') break
+      }
+    }
     if (line !== undefined) {
-      useFileViewerStore.getState().openFileAtLine(resolved, line)
+      useFileViewerStore.getState().openFileAtLine(target, line)
     } else {
-      useFileViewerStore.getState().openFile(resolved)
+      useFileViewerStore.getState().openFile(target)
     }
   }
 
@@ -297,7 +322,7 @@ function createMarkdownComponents(
 ): Components {
   return {
     a: ((props: MarkdownLinkProps) => (
-      <MarkdownLink {...props} workspaceRoot={workspaceRoot} />
+      <MarkdownLink {...props} baseFilePath={baseFilePath} workspaceRoot={workspaceRoot} />
     )) as Components['a'],
     pre: MarkdownPre,
     img: ({ src, alt, title, node: _node }) => (
@@ -318,11 +343,12 @@ interface MarkdownProps {
   content: string
   className?: string
   compact?: boolean
-  /** Absolute path of the markdown document being rendered. Used to resolve
-   *  relative image paths (tried before the workspace root). */
+  /** Absolute path of the markdown document being rendered. Relative image
+   *  paths resolve against it first, and relative local-file LINKS try it
+   *  (document dir) before the workspace root — markdown's own semantics. */
   baseFilePath?: string | null
-  /** Workspace/project root used to resolve relative image paths as a
-   *  fallback when they aren't found relative to the document. */
+  /** Workspace/project root used to resolve relative image paths and link
+   *  hrefs as a fallback when they aren't found relative to the document. */
   workspaceRoot?: string | null
 }
 

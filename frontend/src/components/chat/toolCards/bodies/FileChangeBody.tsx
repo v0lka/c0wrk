@@ -1,8 +1,15 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 import type { ToolBodyProps } from '../toolCardRegistry'
 import { FileLink } from '../shared/FileLink'
+import { makeWorkspacePathResolver } from '../shared/workspacePathResolver'
 
 export const FileChangeBody = React.memo(function FileChangeBody({ result, status, parsedArgs, args }: ToolBodyProps) {
+  // The written file's path resolves like the card title's link: relative
+  // args join the chat workspace root, absolute/drive/UNC paths pass through
+  // normalized. Computed unconditionally — hooks stay above the early
+  // returns.
+  const resolvePath = useMemo(() => makeWorkspacePathResolver(), [])
+
   if (status === 'running') {
     return (
       <div className="mt-2 border-l-2 border-border bg-muted/30 rounded p-3 min-w-0">
@@ -28,7 +35,7 @@ export const FileChangeBody = React.memo(function FileChangeBody({ result, statu
     return (
       <div className="mt-2 border-l-2 border-success/30 bg-muted/30 rounded p-3 min-w-0 flex items-center gap-2">
         <span className="text-xs text-muted-foreground">File updated</span>
-        {path && <FileLink path={path} className="text-xs" />}
+        {path && <FileLink path={path} className="text-xs" resolve={resolvePath} />}
       </div>
     )
   }

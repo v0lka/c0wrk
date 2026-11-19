@@ -216,6 +216,132 @@ func TestReadFile_FileNotFound(t *testing.T) {
 	}
 }
 
+// TestStatPath_Missing pins the probe's negative: an absent path is a clean
+// Exists=false with no error, unlike ReadFile which surfaces a stat error.
+func TestStatPath_Missing(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+
+	stat, err := f.StatPath(filepath.Join(t.TempDir(), "nonexistent.txt"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stat.Exists {
+		t.Error("expected Exists=false for a missing path")
+	}
+	if stat.IsDir {
+		t.Error("expected IsDir=false for a missing path")
+	}
+}
+
+func TestStatPath_RegularFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+
+	filePath := filepath.Join(tmpDir, "a.md")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	stat, err := f.StatPath(filePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !stat.Exists || stat.IsDir {
+		t.Errorf("expected {Exists:true IsDir:false}, got %+v", stat)
+	}
+}
+
+func TestStatPath_Directory(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+
+	dirPath := filepath.Join(tmpDir, "sub")
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatalf("failed to mkdir: %v", err)
+	}
+
+	stat, err := f.StatPath(dirPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !stat.Exists || !stat.IsDir {
+		t.Errorf("expected {Exists:true IsDir:true}, got %+v", stat)
+	}
+}
+
+// TestStatPath_TooLargeStillExists is the probe contract's core: a file
+// beyond the viewer's read cap must report Exists=true, so link resolution
+// keeps the document-relative candidate and the viewer surfaces the "file
+// too large" error — instead of the probe mistaking it for missing and
+// silently opening a same-named workspace file.
+func TestStatPath_TooLargeStillExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+
+	bigPath := filepath.Join(tmpDir, "big.bin")
+	if err := os.WriteFile(bigPath, nil, 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.Truncate(bigPath, maxViewerFileSize+1); err != nil {
+		t.Fatalf("failed to create oversized file: %v", err)
+	}
+
+	if _, err := f.ReadFile(bigPath); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("precondition: ReadFile must refuse the oversized file, got %v", err)
+	}
+	stat, err := f.StatPath(bigPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !stat.Exists {
+		t.Error("expected Exists=true for an oversized (but present) file")
+	}
+}
+
+// TestStatPath_DanglingSymlink pins the symlink follow: a dangling symlink
+// reports Exists=false, matching what the eventual ReadFile would see.
+func TestStatPath_DanglingSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+
+	linkPath := filepath.Join(tmpDir, "dangling")
+	if err := os.Symlink(filepath.Join(tmpDir, "gone.txt"), linkPath); err != nil {
+		t.Skipf("symlinks unsupported on this filesystem: %v", err)
+	}
+
+	stat, err := f.StatPath(linkPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stat.Exists {
+		t.Error("expected Exists=false for a dangling symlink")
+	}
+}
+
+func TestStatPath_LineAnchorStripped(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+
+	filePath := filepath.Join(tmpDir, "a.md")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	stat, err := f.StatPath(filePath + "#L4")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !stat.Exists {
+		t.Errorf("expected the line anchor to be stripped before stat, got Exists=false for %q", filePath+"#L4")
+	}
+}
+
 func TestReadFile_NestedPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}

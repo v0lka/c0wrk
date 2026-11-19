@@ -2162,6 +2162,20 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class PathStat {
+	    exists: boolean;
+	    is_dir: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PathStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.exists = source["exists"];
+	        this.is_dir = source["is_dir"];
+	    }
+	}
 	export class ProjectUIStateRequest {
 	    project_id: string;
 	    saved_session_id: string;

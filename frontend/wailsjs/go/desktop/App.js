@@ -978,6 +978,10 @@ export function StashPop(arg1) {
   return window['go']['desktop']['App']['StashPop'](arg1);
 }
 
+export function StatPath(arg1) {
+  return window['go']['desktop']['App']['StatPath'](arg1);
+}
+
 export function StopTerminal(arg1) {
   return window['go']['desktop']['App']['StopTerminal'](arg1);
 }
