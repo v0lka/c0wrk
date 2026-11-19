@@ -292,7 +292,7 @@ describe('SessionSelector — flat mode (default)', () => {
     expect(text).toContain('Feat A two')
     expect(text).toContain('Checkout work')
     // The mode toggle is present and advertises the switch to grouped mode.
-    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')
+    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by repo branch"]')
     expect(toggle).not.toBeNull()
     expect(useUIStore.getState().sessionListGrouped).toBe(false)
     void container
@@ -337,7 +337,7 @@ describe('SessionSelector — mode toggle', () => {
     const container = await render(<SessionSelector />)
     const menu = await openMenu(container)
 
-    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')!
+    const toggle = menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by repo branch"]')!
     expect(toggle).not.toBeNull()
     // Hover affordance (the user requirement) + a bigger hit area aligned
     // with the h-7 search input and the larger size-4 glyph.
@@ -361,7 +361,7 @@ describe('SessionSelector — mode toggle', () => {
     const container = await render(<SessionSelector />)
     const menu = await openMenu(container)
 
-    expect(menu.querySelector('[role="menuitem"][title="Group sessions by Git branch"]')).not.toBeNull()
+    expect(menu.querySelector('[role="menuitem"][title="Group sessions by repo branch"]')).not.toBeNull()
     expect(menu.querySelector('input')).toBeNull()
   })
 
@@ -373,7 +373,7 @@ describe('SessionSelector — mode toggle', () => {
     const container = await render(<SessionSelector />)
     const menu = await openMenu(container)
 
-    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')!)
+    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by repo branch"]')!)
 
     // The menu is still open and now renders the branch group.
     expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
@@ -1010,7 +1010,7 @@ describe('SessionSelector — archived section (branch groups + flat local)', ()
 
     // Toggle grouped ON: the archived branch row appears (members start
     // expanded) and the menu stays open.
-    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by Git branch"]')!)
+    await click(menu.querySelector<HTMLElement>('[role="menuitem"][title="Group sessions by repo branch"]')!)
     expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
     const branchRow = archivedBranchToggle(menu, 'feat-a')
     expect(branchRow.getAttribute('aria-expanded')).toBe('true')

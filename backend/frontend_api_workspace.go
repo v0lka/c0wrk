@@ -876,44 +876,17 @@ func (f *FrontendAPI) UnwatchDirectory(_ string) error {
 	return nil
 }
 
-// WriteFile: resolveWorkspacePath is the containment decision; the
-// re-validation below re-checks the SAME admitted root — never
-// SessionWorkspaceRoot, which disagrees by construction (plans/ and temp/
-// are siblings of the workspace; external projects' workspaces are their
-// own checkouts) and used to swallow every admitted write.
+// WriteFile: admission (resolveWorkspacePath, same-root re-validation, No
+// Project isolation) is shared with the structural mutation RPCs via
+// admitMutationPath — never SessionWorkspaceRoot, which disagrees by
+// construction (plans/ and temp/ are siblings of the workspace; external
+// projects' workspaces are their own checkouts) and used to swallow every
+// admitted write (#146).
 func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
 	f.seedAcquire()
-	absPath, absRoot, err := f.resolveWorkspacePath(path)
+	absPath, absRoot, err := f.admitMutationPath(sessionID, path)
 	if err != nil {
 		return err
-	}
-
-	// Defence in depth: re-verify containment against the admitted root.
-	if ok, err := config.IsWithinPath(absRoot, absPath); err != nil {
-		return fmt.Errorf("path %q: %w", path, err)
-	} else if !ok {
-		return fmt.Errorf("path %q is outside session workspace", path)
-	}
-
-	f.activeProjectMu.RLock()
-	projectID := f.activeProjectID
-	f.activeProjectMu.RUnlock()
-	// No Project adds per-session isolation: a CHAT session writes only
-	// inside its own <sid>/workspace or its own plans//temp/ infra dirs.
-	if projectID == project.NoProjectID {
-		wsErr := config.ValidateWithinSessionWorkspace(f.agentDir, projectID, sessionID, absPath)
-		infraOK := false
-		if sessionID != "" {
-			ownSession := config.SessionDir(f.agentDir, projectID, sessionID)
-			if ownOK, ownErr := config.IsWithinPath(ownSession, absPath); ownErr == nil && ownOK {
-				// IsSessionInfraPath takes the PROJECT dir; the own-session
-				// check above pins <sid> to the calling session.
-				infraOK = config.IsSessionInfraPath(config.ProjectDir(f.agentDir, projectID), absPath)
-			}
-		}
-		if wsErr != nil && !infraOK {
-			return fmt.Errorf("path %q is outside session workspace: %w", path, wsErr)
-		}
 	}
 
 	dir := filepath.Dir(absPath)

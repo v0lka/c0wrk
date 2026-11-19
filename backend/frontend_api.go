@@ -108,6 +108,9 @@ type FrontendAPI struct {
 	gitStatusFn       func(root string) (map[string]GitStatusEntry, error)
 	gitStatusLiteFn   func(root string) (map[string]GitStatusEntry, error)
 	gitIgnoredFlagsFn func(root, dir, scope string, paths []string) (map[string]bool, error)
+	// revealOpener is the reveal-RPC launcher seam; nil in production, where
+	// DefaultRevealOpener spawns the OS file manager.
+	revealOpener RevealOpener
 	// gitRefreshSettled, when non-nil, runs after every background git refresh
 	// settles — test hook for deterministic awaits (nil in production),
 	// mirroring gitStatusFn.
