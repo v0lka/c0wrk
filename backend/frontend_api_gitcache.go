@@ -7,6 +7,7 @@ import (
 	"maps"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,10 +32,11 @@ import (
 //
 // Every real change therefore hard-drops the status entries — mutating git
 // RPCs via emitGitStatusChanged and watcher batches alike — so the refetch
-// each triggers is a synchronous cold fetch (singleflight-coalesced). The
-// flags cache is deliberately NOT dropped there: check-ignore is pattern-only
-// (it never consults the index or the tracked set), so a commit or stage
-// cannot change its answer.
+// each triggers is a synchronous cold fetch (singleflight-coalesced; the
+// cache generation discards any fetch that spans a drop, so a slow git run
+// can never re-cache pre-drop state). The flags cache is deliberately NOT
+// dropped there: check-ignore is pattern-only (it never consults the index
+// or the tracked set), so a commit or stage cannot change its answer.
 const (
 	// gitStatusCacheTTL stays short: the tree changes constantly while
 	// editing, and the watcher plus every mutating git RPC invalidate anyway.
@@ -120,6 +122,13 @@ type gitSnapshotCache[M ~map[string]V2, V2 any] struct {
 	minRefresh time.Duration
 	staleSync  bool
 	flight     singleflight.Group
+	// gen bumps on every drop: a fetch that starts under one generation and
+	// ends under another observed pre-drop state, so its result is discarded
+	// instead of re-caching (or clobbering a fresher entry with) a snapshot
+	// the drop declared obsolete. The singleflight key is generation-scoped
+	// too — a post-drop reader starts its own fetch instead of joining, and
+	// receiving, a pre-drop result.
+	gen uint64
 	// spawn runs a background refresh goroutine (tracked upstream so Shutdown
 	// joins it); nil means no background path is wired — stale entries then
 	// keep serving until the next synchronous path.
@@ -149,21 +158,23 @@ func (c *gitSnapshotCache[M, V2]) snapshot(base context.Context, key string, fet
 	if ok && !c.staleSync {
 		out := maps.Clone(e.data)
 		launch := !e.refreshing && now.Sub(e.lastRefresh) >= c.minRefresh
+		gen := c.gen
 		if launch {
 			e.refreshing = true
 		}
 		c.mu.Unlock()
 		if launch {
-			c.launchRefresh(key, fetch)
+			c.launchRefresh(key, gen, fetch)
 		}
 		return out, nil
 	}
+	gen := c.gen
 	c.mu.Unlock()
 
 	// Clone the shared flight result: every snapshot() caller — the fetch
 	// owner and every singleflight joiner — receives its own copy, so a
 	// caller-side mutation can never corrupt what was stored.
-	out, err := c.fetchNow(base, key, fetch)
+	out, err := c.fetchNow(base, key, gen, fetch)
 	if err != nil {
 		return nil, err
 	}
@@ -183,9 +194,12 @@ func (c *gitSnapshotCache[M, V2]) markStale(key string) {
 	c.mu.Unlock()
 }
 
-// dropWhere deletes every entry whose key fails keep.
+// dropWhere deletes every entry whose key fails keep and bumps the cache
+// generation: every fetch in flight across the drop is discarded (see gen),
+// so nothing it observed pre-drop can re-enter the cache.
 func (c *gitSnapshotCache[M, V2]) dropWhere(keep func(key string) bool) {
 	c.mu.Lock()
+	c.gen++
 	for k := range c.entries {
 		if !keep(k) {
 			delete(c.entries, k)
@@ -213,14 +227,21 @@ func (c *gitSnapshotCache[M, V2]) seed(key string, data M, stale bool) {
 	c.mu.Unlock()
 }
 
+// flightKey scopes the singleflight key by the generation the fetch started
+// under: a post-drop caller must not join a pre-drop flight and receive its
+// stale result.
+func (c *gitSnapshotCache[M, V2]) flightKey(key string, gen uint64) string {
+	return key + "\x00" + strconv.FormatUint(gen, 10)
+}
+
 // fetchNow runs fetch under singleflight and stores the result; ctx bounds
 // the run.
-func (c *gitSnapshotCache[M, V2]) fetchNow(ctx context.Context, key string, fetch func(context.Context) (M, error)) (M, error) {
+func (c *gitSnapshotCache[M, V2]) fetchNow(ctx context.Context, key string, gen uint64, fetch func(context.Context) (M, error)) (M, error) {
 	runCtx, cancel := context.WithTimeout(ctx, c.fetchBudget)
 	defer cancel()
-	v, err, _ := c.flight.Do(key, func() (any, error) {
+	v, err, _ := c.flight.Do(c.flightKey(key, gen), func() (any, error) {
 		data, ferr := fetch(runCtx)
-		c.finalize(key, data, ferr, time.Now(), true)
+		c.finalize(key, data, ferr, time.Now(), true, gen)
 		if ferr != nil {
 			return nil, ferr
 		}
@@ -242,13 +263,13 @@ func (c *gitSnapshotCache[M, V2]) fetchNow(ctx context.Context, key string, fetc
 // landing on a dropped slot (a mutation or a project switch raced it) does
 // not recreate the entry — the next read cold-fetches post-drop state
 // instead of re-adding a pre-drop snapshot.
-func (c *gitSnapshotCache[M, V2]) launchRefresh(key string, fetch func(context.Context) (M, error)) {
+func (c *gitSnapshotCache[M, V2]) launchRefresh(key string, gen uint64, fetch func(context.Context) (M, error)) {
 	if c.spawn == nil {
-		c.finalize(key, nil, errors.New("git snapshot cache: no background runner"), time.Now(), false)
+		c.finalize(key, nil, errors.New("git snapshot cache: no background runner"), time.Now(), false, gen)
 		return
 	}
 	c.spawn(func() {
-		_, err := c.fetchNowDetached(key, fetch)
+		_, err := c.fetchNowDetached(key, gen, fetch)
 		if c.settled != nil {
 			c.settled(key, err)
 		}
@@ -257,12 +278,12 @@ func (c *gitSnapshotCache[M, V2]) launchRefresh(key string, fetch func(context.C
 
 // fetchNowDetached is fetchNow for the background path: detached context, no
 // entry creation on success.
-func (c *gitSnapshotCache[M, V2]) fetchNowDetached(key string, fetch func(context.Context) (M, error)) (M, error) {
+func (c *gitSnapshotCache[M, V2]) fetchNowDetached(key string, gen uint64, fetch func(context.Context) (M, error)) (M, error) {
 	runCtx, cancel := context.WithTimeout(context.Background(), c.fetchBudget)
 	defer cancel()
-	v, err, _ := c.flight.Do(key, func() (any, error) {
+	v, err, _ := c.flight.Do(c.flightKey(key, gen), func() (any, error) {
 		data, ferr := fetch(runCtx)
-		c.finalize(key, data, ferr, time.Now(), false)
+		c.finalize(key, data, ferr, time.Now(), false, gen)
 		if ferr != nil {
 			return nil, ferr
 		}
@@ -280,11 +301,12 @@ func (c *gitSnapshotCache[M, V2]) fetchNowDetached(key string, fetch func(contex
 
 // finalize records a finished run. Success stores/refreshes the entry when
 // create allows it (a synchronous cold fetch creates; a background refresh
-// only refreshes an entry that still exists). Failure never touches data — it
-// releases the refreshing guard and backdates lastRefresh, so a persistently
-// failing git retries at most once per minRefresh. Caller holds no locks; the
-// flight singleton guarantees one finalize per key per run.
-func (c *gitSnapshotCache[M, V2]) finalize(key string, data M, err error, now time.Time, create bool) {
+// only refreshes an entry that still exists) and the fetch stayed within its
+// generation — a run that spanned a drop is discarded. Failure never touches
+// data — it releases the refreshing guard and backdates lastRefresh, so a
+// persistently failing git retries at most once per minRefresh. Caller holds
+// no locks; the flight singleton guarantees one finalize per key per run.
+func (c *gitSnapshotCache[M, V2]) finalize(key string, data M, err error, now time.Time, create bool, gen uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
@@ -293,6 +315,13 @@ func (c *gitSnapshotCache[M, V2]) finalize(key string, data M, err error, now ti
 			e.refreshing = false
 			e.lastRefresh = now
 		}
+		return
+	}
+	// The fetch spanned a drop and observed pre-drop state: discard the
+	// result. Storing it would re-cache — or clobber a fresher post-drop
+	// entry with — a snapshot the drop declared obsolete; the next read
+	// cold-fetches post-drop state instead.
+	if gen != c.gen {
 		return
 	}
 	if !ok {
