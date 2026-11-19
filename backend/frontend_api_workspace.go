@@ -512,8 +512,24 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 		return nil, listErr
 	}
 
-	f.applyIgnoreFlags(nodes, absRoot, absDir)
+	f.applyIgnoreFlags(nodes, absRoot, absDir, listScope(recursive))
 	return nodes, nil
+}
+
+// Listing scopes naming the ignore-flags cache key (gitFlagsCacheKey): a flat
+// and a recursive listing of the same directory cache their verdicts
+// separately, so neither serves the other a set that misses its paths.
+const (
+	ignoreScopeFlat      = "flat"
+	ignoreScopeRecursive = "recursive"
+)
+
+// listScope maps ListDirectory's recursive flag onto the cache-key scope.
+func listScope(recursive bool) string {
+	if recursive {
+		return ignoreScopeRecursive
+	}
+	return ignoreScopeFlat
 }
 
 // ignoreResolverJoinTimeout bounds ListDirectory's wait on a not-yet-built
@@ -528,8 +544,8 @@ const ignoreDeliveryTimeout = 5 * time.Minute
 
 // applyIgnoreFlags flags the listed nodes per git and .aiignore. Git's verdict
 // is one batched check-ignore over the listed paths (O(entries), no walk),
-// cached per (root, dir) and revalidated synchronously when stale.
-func (f *FrontendAPI) applyIgnoreFlags(nodes []FileNode, absRoot, absDir string) {
+// cached per (root, dir, scope) and revalidated synchronously when stale.
+func (f *FrontendAPI) applyIgnoreFlags(nodes []FileNode, absRoot, absDir, scope string) {
 	if len(nodes) == 0 {
 		return
 	}
@@ -539,7 +555,7 @@ func (f *FrontendAPI) applyIgnoreFlags(nodes []FileNode, absRoot, absDir string)
 		for i := range nodes {
 			paths[i] = nodes[i].Path
 		}
-		flags, err := f.cachedGitIgnoredFlags(absRoot, absDir, paths)
+		flags, err := f.cachedGitIgnoredFlags(absRoot, absDir, scope, paths)
 		if err != nil {
 			// Degrade, don't fail: the flags are cosmetic, and the frontend
 			// caches a rejected root listing as empty with no retry. No
@@ -612,13 +628,10 @@ func (f *FrontendAPI) scheduleIgnoreDelivery(root string) {
 	if _, loaded := f.ignoreDeliveryPending.LoadOrStore(root, struct{}{}); loaded {
 		return
 	}
-	if f.gitBgStopped.Load() {
-		f.ignoreDeliveryPending.Delete(root)
-		return
-	}
-	f.gitBgWG.Add(1)
-	go func() {
-		defer f.gitBgWG.Done()
+	// trackGitBg pairs the stopped check with WaitGroup.Add under the
+	// admission mutex — a bare check-then-Add here could race
+	// JoinGitBackground's Wait and leak the delivery past the shutdown join.
+	if !f.trackGitBg(func() {
 		defer f.ignoreDeliveryPending.Delete(root)
 		ctx, cancel := context.WithTimeout(context.Background(), ignoreDeliveryTimeout)
 		defer cancel()
@@ -630,7 +643,9 @@ func (f *FrontendAPI) scheduleIgnoreDelivery(root string) {
 		if f.emitEvent != nil {
 			f.emitEvent(EventWorkspaceIgnoreReady, root)
 		}
-	}()
+	}) {
+		f.ignoreDeliveryPending.Delete(root)
+	}
 }
 
 // prewarmIgnoreResolver starts the manager's tracked background resolver

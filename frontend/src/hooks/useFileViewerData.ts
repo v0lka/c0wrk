@@ -32,9 +32,11 @@ export const TREE_CHANGED_DEBOUNCE_MS = 400
  *    changed, a payload without one (the agent-write PostExecuteHook emitter
  *    carries no path metadata) refreshes every tab — fail-open, mirroring the
  *    SPECS panel's relevance filter.
- *  - Per-path in-flight dedup: overlapping loads for the same file (a
- *    refresh racing the initial open) share one chain instead of stacking
- *    parallel reads whose results land last-write-wins.
+ *  - Per-path in-flight dedup: an explicit (re)open racing an in-flight load
+ *    joins it; a silent refresh queued while a chain runs waits for the chain
+ *    to settle and then runs exactly one fresh follow-up read — parallel
+ *    readFile + diff pipelines never stack, and a refresh can never join a
+ *    chain that predates the change it was scheduled by.
  *  - Content short-circuit: a reload whose re-read is byte-identical to the
  *    cached content skips the diff/hunks RPCs entirely — unless a git
  *    mutation moved the viewer-diff epoch (lib/viewerDiffEpoch) since that
@@ -71,15 +73,30 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingPathsRef = useRef(new Set<string>())
   const pendingAllRef = useRef(false)
+  // Stable indirections so loadFile's own deferred follow-ups and the
+  // workspace event subscription always call the latest loadFile / read the
+  // latest openTabs without re-binding effects.
+  const loadFileRef = useRef<(path: string, silent: boolean) => Promise<void>>(async () => {})
+  const openTabsRef = useRef(openTabs)
+  openTabsRef.current = openTabs
 
   const loadFile = useCallback(async (path: string, silent: boolean): Promise<void> => {
     if (!silent) setFileLoading(path, true)
-    // Overlapping load for the same path: join the running chain instead of
-    // stacking a second readFile + diff pipeline. The running chain performs
-    // the same store updates this call would have, so the caller's
-    // expectations hold either way.
+    // Overlapping load for the same path. An explicit (re)open joins the
+    // running chain — it performs the same store updates this call would
+    // have. A silent refresh does NOT: the running chain may have started
+    // (and read) BEFORE the change that scheduled this refresh, and joining
+    // it would pin stale content until the next unrelated event. It queues
+    // exactly one fresh follow-up read for after the chain settles, so two
+    // parallel pipelines never stack either.
     const running = inFlightRef.current.get(path)
-    if (running) return running
+    if (running) {
+      if (!silent) return running
+      void running.then(() => {
+        if (!inFlightRef.current.has(path)) void loadFileRef.current(path, true)
+      })
+      return running
+    }
     const chain = (async () => {
       try {
         // Image files are binary and cannot be shown as text — fetch them as a
@@ -137,13 +154,9 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
     return chain
   }, [setFileLoading, setFileBinary, setFileImage, setFileContent, setFileDiff, setFileHunks, setFileError])
 
-  // Stable refs so the workspace event subscription does not re-bind on every
-  // openTabs change. We re-read the current openTabs/loadFile inside the
-  // event handler.
-  const loadFileRef = useRef(loadFile)
+  // Keep the indirection pointed at the latest loadFile (deps are stable
+  // store actions, so this rarely changes — the re-assignment is cheap).
   loadFileRef.current = loadFile
-  const openTabsRef = useRef(openTabs)
-  openTabsRef.current = openTabs
 
   // Load the active file when it changes (skipped if cache already populated).
   useEffect(() => {

@@ -530,10 +530,6 @@ export function InstallEmbeddedLLM() {
   return window['go']['desktop']['App']['InstallEmbeddedLLM']();
 }
 
-export function JoinGitBackground(arg1) {
-  return window['go']['desktop']['App']['JoinGitBackground'](arg1);
-}
-
 export function Lifecycle() {
   return window['go']['desktop']['App']['Lifecycle']();
 }

@@ -92,8 +92,11 @@ type FrontendAPI struct {
 	gitStatusLiteCache   *gitSnapshotCache[map[string]GitStatusEntry, GitStatusEntry]
 	gitIgnoredFlagsCache *gitSnapshotCache[map[string]bool, bool]
 	// gitBgWG tracks the detached background git refreshes and ignore-ready
-	// deliveries; joinGitBackground drains it during teardown, and gitBgStopped
-	// stops admitting new ones.
+	// deliveries; backend.JoinGitBackground drains it during teardown while
+	// gitBgStopped stops admitting new ones. gitBgMu pairs the stopped check
+	// with WaitGroup.Add so an admission can never race the shutdown Wait
+	// (Add after Wait returned would leak the goroutine past the join).
+	gitBgMu      sync.Mutex
 	gitBgWG      sync.WaitGroup
 	gitBgStopped atomic.Bool
 	// ignoreDeliveryPending dedupes the per-root workspace:ignore_ready
@@ -104,7 +107,7 @@ type FrontendAPI struct {
 	// workspace functions run.
 	gitStatusFn       func(root string) (map[string]GitStatusEntry, error)
 	gitStatusLiteFn   func(root string) (map[string]GitStatusEntry, error)
-	gitIgnoredFlagsFn func(root, dir string, paths []string) (map[string]bool, error)
+	gitIgnoredFlagsFn func(root, dir, scope string, paths []string) (map[string]bool, error)
 	// gitRefreshSettled, when non-nil, runs after every background git refresh
 	// settles — test hook for deterministic awaits (nil in production),
 	// mirroring gitStatusFn.
