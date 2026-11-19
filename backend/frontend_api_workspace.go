@@ -573,13 +573,25 @@ func (f *FrontendAPI) applyIgnoreFlags(nodes []FileNode, absRoot, absDir, scope 
 	if len(nodes) == 0 {
 		return
 	}
-	isRepo := f.isGitRepo(absRoot)
+	// check-ignore runs in the repository that OWNS the listed directory —
+	// the same re-rooting gitStatus applies. A session tree rooted at a
+	// managed worktree sits INSIDE the checkout, under the /.worktrees/
+	// container exclude (anchored to the checkout root): a checkout-rooted
+	// batch would match every deep path of the tree and dim the whole
+	// session tree. Resolved against the tree's own root, the container
+	// exclude cannot match (the paths are relative to the tree), while rules
+	// the tree's repository actually carries still apply.
+	repoRoot := workspace.ResolveWorkTreeRoot(absDir)
+	if repoRoot == "" {
+		repoRoot = absRoot
+	}
+	isRepo := f.isGitRepo(repoRoot)
 	if isRepo {
 		paths := make([]string, len(nodes))
 		for i := range nodes {
 			paths[i] = nodes[i].Path
 		}
-		flags, err := f.cachedGitIgnoredFlags(absRoot, absDir, scope, paths)
+		flags, err := f.cachedGitIgnoredFlags(repoRoot, absDir, scope, paths)
 		if err != nil {
 			// Degrade, don't fail: the flags are cosmetic, and the frontend
 			// caches a rejected root listing as empty with no retry. No
