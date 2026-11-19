@@ -1,28 +1,31 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Loader2, AlertCircle } from 'lucide-react'
+import { Loader2, AlertCircle, GitGraph } from 'lucide-react'
 import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitPanelStore, GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { FilterBar } from '@/components/ui/FilterBar'
-import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor, expandedContentHeight } from './gitGraphRender'
+import { Button } from '@/components/ui/button'
+import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor } from './gitGraphRender'
 import { GitGraphGutter } from './GitGraphGutter'
 import { GitHistoryRow } from './GitHistoryRow'
 import { GitHistoryContextMenu } from './GitHistoryContextMenu'
 
 /**
- * Unified commit history + graph tab. Replaces the former separate History
- * and Graph tabs with a single view: an SVG lane gutter alongside commit
- * rows that carry every field from both (message, refs, short SHA, author,
- * date). Clicking a commit lazily expands its changed files inline; the
- * graph edges route around the expanded gap via variable row heights.
+ * Unified commit history + graph tab: an SVG lane gutter alongside fixed
+ * ROW_SPACING commit rows that carry every field from both former tabs
+ * (message, refs, short SHA, per-commit changed-file stats, author, date).
+ * Rows never expand inline — heights are constant, so the lane layout is
+ * trivial — and the full-width DAG inspection lives in the file viewer:
+ * the graph button beside the filter bar opens the GIT_GRAPH_TAB_PATH tab.
+ * Clicking a commit's short SHA opens its read-only diff review in the
+ * viewer as well.
  *
  * Data comes from a single paginated source (`useGitHistory` →
  * `GetGitHistory`); the next page is loaded on scroll-to-end or via the
- * "Load more" button. Changed files are fetched lazily per commit via
- * `GetCommitFiles` and cached by `useGitHistoryFilter`.
+ * "Load more" button.
  *
  * A glob/regex file filter (shared with the file-tree panel via `FilterBar`)
  * narrows the list to commits that touched matching files. While a filter is
@@ -44,11 +47,7 @@ export function GitHistoryTab() {
     isInvalidFilter,
     isResolvingFiles,
     filteredCommits,
-    filesBySha,
-    fetchFiles,
-    pendingShas,
   } = useGitHistoryFilter(commits)
-  const [expandedSha, setExpandedSha] = useState<string | null>(null)
 
   // Current branch name — used by the commit context menu to label the
   // "Reset <branch> to This Commit" submenu.
@@ -101,28 +100,24 @@ export function GitHistoryTab() {
     return map
   }, [nodes])
 
-  // Per-row heights: collapsed rows are ROW_SPACING; the expanded row grows
-  // by its file-list height so the SVG routes edges around the gap.
-  const rowY = useMemo(() => {
-    const rowHeights = nodes.map((n) =>
-      expandedSha === n.sha
-        ? ROW_SPACING + expandedContentHeight(pendingShas.has(n.sha), filesBySha[n.sha])
-        : ROW_SPACING,
-    )
-    return computeRowYLayout(rowHeights, ROW_SPACING, NODE_OFFSET)
-  }, [nodes, expandedSha, pendingShas, filesBySha])
-
-  const handleCommitClick = useCallback(
-    async (sha: string) => {
-      if (expandedSha === sha) {
-        setExpandedSha(null)
-        return
-      }
-      setExpandedSha(sha)
-      void fetchFiles(sha)
-    },
-    [expandedSha, fetchFiles],
+  // Rows are fixed-height (no inline expansion), so the lane layout is
+  // trivial: every row is ROW_SPACING tall and the SVG node always sits
+  // NODE_OFFSET below the row top.
+  const rowY = useMemo(
+    () => computeRowYLayout(nodes.map(() => ROW_SPACING), ROW_SPACING, NODE_OFFSET),
+    [nodes],
   )
+
+  // Open the commit-graph tab in the file viewer. The pseudo-path is opened
+  // as a VIRTUAL file (the canonical openResearch/openPaper pattern): the
+  // virtual flag keeps the viewer's data loader, the tree_changed reload and
+  // persistence from ever treating the tab as an on-disk file. The viewer is
+  // expanded so the graph is visible.
+  const handleOpenGraph = useCallback(() => {
+    const { openVirtualFile, setCollapsed } = useFileViewerStore.getState()
+    openVirtualFile(GIT_GRAPH_TAB_PATH)
+    setCollapsed(false)
+  }, [])
 
   // Open a read-only review page showing the given commit's diff in the file
   // viewer. The commit SHA is encoded in a synthetic pseudo-path
@@ -134,20 +129,12 @@ export function GitHistoryTab() {
     setCollapsed(false)
   }, [])
 
-  // Pixel height of a single row, accounting for inline expansion.
-  const rowHeightFor = useCallback(
-    (sha: string): number => {
-      if (expandedSha !== sha) return ROW_SPACING
-      return ROW_SPACING + expandedContentHeight(pendingShas.has(sha), filesBySha[sha])
-    },
-    [expandedSha, pendingShas, filesBySha],
-  )
-
   // ── Virtualization ───────────────────────────────────────────────────
   // Only visible rows are mounted — essential now that GetGitHistory loads
   // large histories a page at a time. Two virtualizers are created (one per
   // rendering mode); the inactive one has count 0 so it produces no items.
-  // Both share the same scroll element.
+  // Both share the same scroll element. Heights are constant (ROW_SPACING),
+  // so sizing needs no DOM measurement (which returns 0 in jsdom anyway).
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // SVG gutter width — needed to offset the row column past the graph.
@@ -157,29 +144,17 @@ export function GitHistoryTab() {
     return xFor(maxLane) + LANE_SPACING
   }, [nodes])
 
-  // Exact per-row heights so the virtualizer can position items without
-  // DOM measurement (which returns 0 in jsdom and is unreliable for
-  // dynamically expanded rows).
-  const fullHeights = useMemo(
-    () => nodes.map((n) => rowHeightFor(n.sha)),
-    [nodes, rowHeightFor],
-  )
-  const filteredHeights = useMemo(
-    () => filteredCommits.map((c) => rowHeightFor(c.sha)),
-    [filteredCommits, rowHeightFor],
-  )
-
   const fullVirtualizer = useVirtualizer({
     count: isFiltering ? 0 : nodes.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i: number) => fullHeights[i] ?? ROW_SPACING,
+    estimateSize: () => ROW_SPACING,
     overscan: 8,
     getItemKey: (i: number) => nodes[i]?.sha ?? i,
   })
   const filteredVirtualizer = useVirtualizer({
     count: isFiltering ? filteredCommits.length : 0,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i: number) => filteredHeights[i] ?? ROW_SPACING,
+    estimateSize: () => ROW_SPACING,
     overscan: 8,
     getItemKey: (i: number) => filteredCommits[i]?.sha ?? i,
   })
@@ -226,13 +201,28 @@ export function GitHistoryTab() {
 
   return (
     <div className="flex flex-col min-h-0 flex-1">
-      <FilterBar
-        value={filterText}
-        onChange={setFilterText}
-        mode={filterMode}
-        onToggleMode={toggleFilterMode}
-        placeholder="Filter by file"
-      />
+      <div className="flex shrink-0 items-center border-b border-border pl-1.5">
+        {/* Commit DAG inspection moved to the file viewer: this button opens
+            the graph pseudo-path tab full-width there. `title` is mandatory —
+            it is the button's only label (icon-only control). */}
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={handleOpenGraph}
+          title="Open commit graph"
+          aria-label="Open commit graph"
+        >
+          <GitGraph className="size-4" />
+        </Button>
+        <FilterBar
+          className="flex-1 shrink border-b-0"
+          value={filterText}
+          onChange={setFilterText}
+          mode={filterMode}
+          onToggleMode={toggleFilterMode}
+          placeholder="Filter by file"
+        />
+      </div>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -276,11 +266,7 @@ export function GitHistoryTab() {
                         node={node}
                         author={commit.author}
                         date={commit.date}
-                        height={rowHeightFor(node.sha)}
-                        expanded={expandedSha === node.sha}
-                        files={filesBySha[node.sha]}
-                        loadingFiles={pendingShas.has(node.sha)}
-                        onClick={() => void handleCommitClick(node.sha)}
+                        stats={commit.stats}
                         onShaClick={handleShaClick}
                       />
                     </div>
@@ -326,11 +312,7 @@ export function GitHistoryTab() {
                     node={node}
                     author={commit?.author ?? ''}
                     date={commit?.date ?? ''}
-                    height={rowHeightFor(node.sha)}
-                    expanded={expandedSha === node.sha}
-                    files={filesBySha[node.sha]}
-                    loadingFiles={pendingShas.has(node.sha)}
-                    onClick={() => void handleCommitClick(node.sha)}
+                    stats={commit?.stats}
                     onShaClick={handleShaClick}
                   />
                 </div>

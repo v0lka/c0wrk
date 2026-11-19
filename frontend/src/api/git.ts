@@ -15,7 +15,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf } from '@/types/guards'
-import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, GitHistoryCommit, GitHistoryPage, GitPanelFocus, GitWorktree, HunkDiffInfo, MergeRebaseState, StashEntry } from '@/types/models'
+import type { Branch, BranchBase, BranchInfo, CommitFile, CommitStats, DiffStat, GitHistoryCommit, GitHistoryPage, GitPanelFocus, GitWorktree, HunkDiffInfo, MergeRebaseState, StashEntry } from '@/types/models'
 
 // --- Type guards ---
 
@@ -73,9 +73,18 @@ function isDiffStat(v: unknown): v is DiffStat {
   return typeof (v as Record<string, unknown>).added === 'number' && typeof (v as Record<string, unknown>).deleted === 'number'
 }
 
+function isCommitStats(v: unknown): v is CommitStats {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return typeof o.added === 'number' && typeof o.modified === 'number' && typeof o.deleted === 'number'
+}
+
 function isGitHistoryCommit(v: unknown): v is GitHistoryCommit {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
+  // `stats` is optional (a backend predating the field omits it); when
+  // present it must be a full {added, modified, deleted} triple.
+  if (o.stats !== undefined && !isCommitStats(o.stats)) return false
   return (
     typeof o.sha === 'string' &&
     Array.isArray(o.parents) &&
@@ -331,6 +340,26 @@ export async function getCommitFilesBatch(shas: string[]): Promise<Record<string
     return validated
   } catch (err) {
     logger.error('getCommitFilesBatch failed:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch a commit's full commit message by SHA (`git log -1 --format=%B`
+ * server-side). The backend trims the message and caps it at 64 KiB on a
+ * rune boundary, so the returned string is always intact UTF-8; an unknown
+ * SHA or empty message surfaces as a rejection.
+ */
+export async function getCommitMessage(sha: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.GetCommitMessage(sha)
+    if (typeof result !== 'string') {
+      throw new Error('getCommitMessage: backend returned non-string data')
+    }
+    return result
+  } catch (err) {
+    logger.error('getCommitMessage failed:', err)
     throw err
   }
 }

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import type { FilterMode } from '@/lib/pathFilter'
+import { cn } from '@/lib/utils'
 
 interface FilterBarProps {
   value: string
@@ -20,6 +21,13 @@ interface FilterBarProps {
   /** Optional content rendered after the mode toggle (e.g. a refresh
    *  action owned by the embedding panel). */
   rightSlot?: ReactNode
+  /**
+   * Extra classes merged into the root row — e.g. `flex-1 border-b-0` when
+   * the embedding row places sibling controls beside the bar (the git
+   * history tab's graph button). Without it the bar keeps its standalone
+   * full-width form.
+   */
+  className?: string
 }
 
 /**
@@ -27,10 +35,10 @@ interface FilterBarProps {
  * switches between glob and regex matching modes. Shared by the file-tree
  * panel and the git history panel so the filter UX stays identical.
  */
-export function FilterBar({ value, onChange, mode, onToggleMode, placeholder, leftSlot, rightSlot }: FilterBarProps) {
+export function FilterBar({ value, onChange, mode, onToggleMode, placeholder, leftSlot, rightSlot, className }: FilterBarProps) {
   const label = placeholder ?? 'Filter'
   return (
-    <div className="flex shrink-0 gap-1 border-b border-border px-2 py-1">
+    <div className={cn('flex shrink-0 gap-1 border-b border-border px-2 py-1', className)}>
       {leftSlot}
       <Input
         value={value}

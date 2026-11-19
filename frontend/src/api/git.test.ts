@@ -40,6 +40,7 @@ import {
   requestRemoteRefresh,
   getCommitFiles,
   getCommitFilesBatch,
+  getCommitMessage,
   stashCreate,
   stashPop,
   stashList,
@@ -1183,5 +1184,76 @@ describe('getGitHistory', () => {
   it('propagates errors', async () => {
     mockApp.GetGitHistory = vi.fn().mockRejectedValue(new Error('git error'))
     await expect(getGitHistory()).rejects.toThrow('git error')
+  })
+
+  it('accepts commits carrying a valid stats triple', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue({
+      commits: [
+        { sha: 'aaa', parents: [], author: 'J', email: 'j@x.io', date: 'd', message: 'm', refs: [], stats: { added: 2, modified: 1, deleted: 0 } },
+        { sha: 'bbb', parents: [], author: 'J', email: 'j@x.io', date: 'd', message: 'm', refs: [], stats: { added: 0, modified: 0, deleted: 0 } },
+      ],
+      next_skip: 2,
+      has_more: false,
+    })
+    const result = await getGitHistory()
+    expect(result.commits).toHaveLength(2)
+    expect(result.commits[0]!.stats).toEqual({ added: 2, modified: 1, deleted: 0 })
+  })
+
+  it('accepts commits without stats (a backend predating the field)', async () => {
+    // The page fixture above has no stats and parses fine.
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue(page)
+    const result = await getGitHistory()
+    expect(result.commits).toHaveLength(2)
+    expect(result.commits[0]!.stats).toBeUndefined()
+  })
+
+  it('returns an empty page when a stats triple is malformed', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue({
+      commits: [
+        { sha: 'aaa', parents: [], author: 'J', email: 'j@x.io', date: 'd', message: 'm', refs: [], stats: { added: 'many', modified: 0, deleted: 0 } },
+      ],
+      next_skip: 1,
+      has_more: false,
+    })
+    expect(await getGitHistory()).toEqual({ commits: [], next_skip: 0, has_more: false })
+  })
+
+  it('returns an empty page when stats is null', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue({
+      commits: [
+        { sha: 'aaa', parents: [], author: 'J', email: 'j@x.io', date: 'd', message: 'm', refs: [], stats: null },
+      ],
+      next_skip: 1,
+      has_more: false,
+    })
+    expect(await getGitHistory()).toEqual({ commits: [], next_skip: 0, has_more: false })
+  })
+})
+
+describe('getCommitMessage', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns the commit message from the backend', async () => {
+    mockApp.GetCommitMessage = vi.fn().mockResolvedValue('feat: add stats\n\nLong body…')
+    expect(await getCommitMessage('abc123')).toBe('feat: add stats\n\nLong body…')
+    expect(mockApp.GetCommitMessage).toHaveBeenCalledWith('abc123')
+  })
+
+  it('throws when the backend returns non-string data', async () => {
+    mockApp.GetCommitMessage = vi.fn().mockResolvedValue(42)
+    await expect(getCommitMessage('abc123')).rejects.toThrow('non-string')
+  })
+
+  it('returns an empty string as-is (the backend errors on empty itself)', async () => {
+    mockApp.GetCommitMessage = vi.fn().mockResolvedValue('')
+    expect(await getCommitMessage('abc123')).toBe('')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.GetCommitMessage = vi.fn().mockRejectedValue(new Error('unknown sha'))
+    await expect(getCommitMessage('abc123')).rejects.toThrow('unknown sha')
   })
 })

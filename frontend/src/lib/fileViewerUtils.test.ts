@@ -23,6 +23,10 @@ describe('fileNameFromPath', () => {
     expect(fileNameFromPath(`c0wrk:commit:${sha}`)).toBe('Commit 0123456')
   })
 
+  it('renders "Git Graph" for the c0wrk:graph viewer tab', () => {
+    expect(fileNameFromPath('c0wrk:graph')).toBe('Git Graph')
+  })
+
   it('renders the slug for a c0wrk:paper:<slug> path', () => {
     expect(fileNameFromPath('c0wrk:paper:vaswani-2017-attention')).toBe('vaswani-2017-attention')
   })

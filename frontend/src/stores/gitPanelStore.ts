@@ -2,6 +2,17 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Branch, BranchInfo, GitPanelFocus, GitWorktree, MergeRebaseState } from '@/types/models'
 
+/**
+ * Synthetic pseudo-path the file viewer renders as the commit-graph tab
+ * (parallels RESEARCH_TAB_PATH in researchStore / REVIEW_TAB_PATH in
+ * reviewStore; the constant lives in the store of the owning subsystem).
+ * GitHistoryTab's filter-bar button opens it so the lane DAG can be
+ * inspected full-width in the viewer. The tab is VIRTUAL — never backed by
+ * a file on disk; the title shown on the tab is pinned by
+ * `fileNameFromPath` in lib/fileViewerUtils.
+ */
+export const GIT_GRAPH_TAB_PATH = 'c0wrk:graph'
+
 // --- Types ---
 
 /** The BranchPicker's open intent: Git-panel switch/create vs the chat-side workspace pick ('draft' mode). */

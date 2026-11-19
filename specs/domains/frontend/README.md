@@ -330,6 +330,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 - [tabs.md](tabs.md) — the workspace tab layer: always-live model, `tabsEnabled` flag scope, single activation engine, snapshot slices ([ADR-085](../../decisions/085-workspace-tabs-single-engine.md))
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips
+- [git-history.md](git-history.md) — Git History: the Git panel's compact History tab (fixed-height rows + SVG lane gutter, per-commit stats, client-side file filter, SHA-click review) and the viewer's `c0wrk:graph` Git-graph page (expandable commit cards: full message, changed files, per-file diffs in the shared unified/split mode) over one shared paginated source — deterministic heights, `title` on icon-only buttons, lazy per-SHA RPCs
 - [sound-notifications.md](sound-notifications.md) — the audible notification channel: Web Audio-synthesized cues (no assets), webview autoplay-suspension recovery, and the persisted master toggle
 - [system-notifications.md](system-notifications.md) — the visual notification channel: native OS banners raised from the same cued session events, plus banner-click routing back to the session
 - [events.md](events.md) — event handling architecture

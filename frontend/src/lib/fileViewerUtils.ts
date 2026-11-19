@@ -52,6 +52,12 @@ export function fileNameFromPath(path: string): string {
     const slug = path.slice('c0wrk:paper:'.length)
     return slug || 'Paper'
   }
+  // Commit-graph viewer tab: "c0wrk:graph" → "Git Graph" (GIT_GRAPH_TAB_PATH
+  // in stores/gitPanelStore; the literal is inlined here so this lib stays
+  // free of store imports).
+  if (path === 'c0wrk:graph') {
+    return 'Git Graph'
+  }
   if (path.startsWith('c0wrk:') && !path.includes('/')) {
     const label = path.slice('c0wrk:'.length)
     return label.charAt(0).toUpperCase() + label.slice(1)

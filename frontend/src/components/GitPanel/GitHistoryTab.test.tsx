@@ -16,11 +16,13 @@ const { gitMocks } = vi.hoisted(() => ({
 vi.mock('@/api/git', () => gitMocks)
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
-// Mock the file viewer store so we can assert that clicking a commit SHA
-// opens the read-only commit-review page via a synthetic pseudo-path.
+// Mock the file viewer store so we can assert how pseudo-path tabs are
+// opened: the SHA click goes through openFile (pre-existing), the graph
+// button through openVirtualFile (virtual — never backed by a disk file).
 const { fileViewerMocks } = vi.hoisted(() => ({
   fileViewerMocks: {
     openFile: vi.fn(),
+    openVirtualFile: vi.fn(),
     setCollapsed: vi.fn(),
   },
 }))
@@ -28,6 +30,7 @@ vi.mock('@/stores/fileViewerStore', () => ({
   useFileViewerStore: {
     getState: () => ({
       openFile: fileViewerMocks.openFile,
+      openVirtualFile: fileViewerMocks.openVirtualFile,
       setCollapsed: fileViewerMocks.setCollapsed,
     }),
   },
@@ -66,10 +69,22 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 let container: HTMLDivElement
 let root: Root
 
-const COMMITS = [
-  { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'j@x', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'] },
-  { sha: 'bbb', parents: ['ccc'], author: 'Jane', email: 'j@x', date: '2026-07-09', message: 'docs: readme', refs: [] },
-  { sha: 'ccc', parents: [], author: 'Jane', email: 'j@x', date: '2026-07-08', message: 'init', refs: [] },
+/** Local commit shape mirroring the wire model (`stats` optional — a stale backend may omit it). */
+interface TestCommit {
+  sha: string
+  parents: string[]
+  author: string
+  email: string
+  date: string
+  message: string
+  refs: string[]
+  stats?: { added: number; modified: number; deleted: number }
+}
+
+const COMMITS: TestCommit[] = [
+  { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'j@x', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'], stats: { added: 1, modified: 1, deleted: 0 } },
+  { sha: 'bbb', parents: ['ccc'], author: 'Jane', email: 'j@x', date: '2026-07-09', message: 'docs: readme', refs: [], stats: { added: 0, modified: 1, deleted: 0 } },
+  { sha: 'ccc', parents: [], author: 'Jane', email: 'j@x', date: '2026-07-08', message: 'init', refs: [], stats: { added: 1, modified: 0, deleted: 0 } },
 ]
 
 const FILES: Record<string, { path: string; status: string }[]> = {
@@ -79,7 +94,7 @@ const FILES: Record<string, { path: string; status: string }[]> = {
 }
 
 /** Build a paginated GetGitHistory response for the mocks. */
-function makePage(commits: typeof COMMITS, nextSkip: number, hasMore: boolean) {
+function makePage(commits: TestCommit[], nextSkip: number, hasMore: boolean) {
   return { commits, next_skip: nextSkip, has_more: hasMore }
 }
 
@@ -97,6 +112,7 @@ beforeEach(() => {
     ),
   )
   fileViewerMocks.openFile.mockReset()
+  fileViewerMocks.openVirtualFile.mockReset()
   fileViewerMocks.setCollapsed.mockReset()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -137,15 +153,17 @@ function renderTab() {
 
 /** Commit messages currently rendered, in DOM order (newest-first). */
 function commitMessages(): string[] {
-  return Array.from(container.querySelectorAll('button'))
-    .map((b) => b.textContent ?? '')
-    .filter((t) => COMMITS.some((c) => t.includes(c.message)))
-    .map((t) => COMMITS.find((c) => t.includes(c.message))!.message)
+  return Array.from(container.querySelectorAll('[data-commit-row]'))
+    .map((el) => el.textContent ?? '')
+    .map((t) => COMMITS.find((c) => t.includes(c.message))?.message)
+    .filter((m): m is string => m !== undefined)
 }
 
-/** The lane graph renders one <circle> per commit; it is unique to the gutter. */
+/** The lane graph renders one <circle> per commit; it is unique to the gutter
+ *  (the filter row's GitGraph icon button also draws an svg — excluded by its
+ *  lucide class so the count stays per-commit). */
 function graphNodes(): number {
-  return container.querySelectorAll('svg circle').length
+  return container.querySelectorAll('svg:not([class*="lucide"]) circle').length
 }
 
 describe('GitHistoryTab file filter', () => {
@@ -263,20 +281,80 @@ describe('GitHistoryTab commit SHA click', () => {
     expect(fileViewerMocks.setCollapsed).toHaveBeenCalledWith(false)
   })
 
-  it('does not toggle the row expansion when the SHA is clicked', async () => {
+  it('rows are inert: no chevrons, no inline expansion, and a body click opens nothing', async () => {
     renderTab()
     await flush()
     await flush()
 
-    const shaButton = container.querySelector('span[title="View commit changes"]') as HTMLSpanElement
-    // Before clicking the SHA, no commit is expanded.
+    const rows = container.querySelectorAll('[data-commit-row]')
+    expect(rows).toHaveLength(3)
+    // No chevron glyphs (inline expansion was removed) and no changed-file
+    // lists — the diff review lives in the file viewer via the SHA click.
+    expect(container.querySelector('.lucide-chevron-right')).toBeNull()
+    expect(container.querySelector('.lucide-chevron-down')).toBeNull()
+    expect(container.textContent).not.toContain('src/a.ts')
     expect(container.textContent).not.toContain('Loading files')
-    expect(container.textContent).not.toContain('src/a.ts')
 
-    await act(async () => { shaButton.click() })
+    // Clicking the row body (not the SHA) must not open anything.
+    await act(async () => { (rows[0] as HTMLElement).click() })
+    expect(fileViewerMocks.openFile).not.toHaveBeenCalled()
+    expect(fileViewerMocks.openVirtualFile).not.toHaveBeenCalled()
+    expect(fileViewerMocks.setCollapsed).not.toHaveBeenCalled()
+  })
+})
 
-    // The row should NOT expand — stopPropagation prevents the row toggle.
-    expect(container.textContent).not.toContain('src/a.ts')
+describe('GitHistoryTab commit graph button', () => {
+  it('opens the commit-graph tab in the file viewer and expands it', async () => {
+    renderTab()
+    await flush()
+    await flush()
+
+    // The graph button sits left of the filter bar, labelled only by its
+    // title/aria attributes (icon-only control).
+    const graphButton = container.querySelector('button[title="Open commit graph"]') as HTMLButtonElement
+    expect(graphButton).toBeTruthy()
+    expect(graphButton.getAttribute('aria-label')).toBe('Open commit graph')
+
+    await act(async () => { graphButton.click() })
+
+    // The viewer is asked to open the synthetic graph pseudo-path as a
+    // VIRTUAL file (openVirtualFile — the canonical openResearch/openPaper
+    // pattern) and expand, so the graph is visible. It must NOT go through
+    // openFile: a non-virtual entry would make the viewer's data loader fire
+    // a guaranteed-failing ReadFile RPC for the pseudo-path, repeat it on
+    // every pathless tree_changed burst, and persist the tab across restarts.
+    expect(fileViewerMocks.openVirtualFile).toHaveBeenCalledWith('c0wrk:graph')
+    expect(fileViewerMocks.openFile).not.toHaveBeenCalled()
+    expect(fileViewerMocks.setCollapsed).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('GitHistoryTab commit stats cell', () => {
+  it('renders the per-commit changed-file stats at the end of each row', async () => {
+    renderTab()
+    await flush()
+    await flush()
+
+    // Row aaa: 1 added, 1 modified, 0 deleted.
+    const firstRow = container.querySelector('[data-commit-row]') as HTMLElement
+    expect(firstRow.textContent).toContain('+1')
+    expect(firstRow.textContent).toContain('~1')
+    expect(firstRow.textContent).toContain('-0')
+  })
+
+  it('omits the stats cell when the backend sent no stats (stale bindings)', async () => {
+    gitMocks.getGitHistory.mockResolvedValue(makePage(
+      [{ sha: 'aaa', parents: [], author: 'Jane', email: 'j@x', date: 'd', message: 'no stats', refs: [] }],
+      1,
+      false,
+    ))
+    renderTab()
+    await flush()
+    await flush()
+
+    const row = container.querySelector('[data-commit-row]') as HTMLElement
+    expect(row.textContent).not.toContain('+0')
+    expect(row.textContent).toContain('no stats')
   })
 })
 
@@ -330,9 +408,9 @@ describe('GitHistoryTab pagination', () => {
     await flush()
 
     // Capture a first-page row to prove it survives the append (same DOM node).
-    const firstRowBefore = Array.from(container.querySelectorAll('button')).find(
+    const firstRowBefore = Array.from(container.querySelectorAll('[data-commit-row]')).find(
       (b) => (b.textContent ?? '').includes('feat: x'),
-    ) as HTMLButtonElement
+    ) as HTMLElement
     expect(firstRowBefore).toBeTruthy()
 
     const btn = loadMoreButton()

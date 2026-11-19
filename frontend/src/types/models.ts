@@ -218,6 +218,17 @@ export interface CommitFile {
   status: string
 }
 
+/**
+ * Per-commit change-count summary carried by every `GitHistoryCommit`
+ * (`GetGitHistory` buckets each commit's `--name-status` entries into
+ * added/modified/deleted; merge commits report zeros).
+ */
+export interface CommitStats {
+  added: number
+  modified: number
+  deleted: number
+}
+
 /** A stash entry (Phase 5). */
 export interface StashEntry {
   index: number
@@ -240,6 +251,12 @@ export interface GitHistoryCommit {
   message: string
   /** Git decorations: branch names, tags, HEAD pointer (e.g. `HEAD -> main`). */
   refs: string[]
+  /**
+   * Change counts bucketed from the commit's file statuses (merge commits:
+   * zeros). Optional — a backend predating the field (stale generated
+   * bindings) simply omits it.
+   */
+  stats?: CommitStats
 }
 
 /**

@@ -5,11 +5,12 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 type IconEntry = { icon: string; icon_color: string }
 
 /** Prefix of synthetic pseudo-paths reserved for c0wrk virtual tabs (e.g.
- *  `c0wrk:research`, `c0wrk:review`, `c0wrk:commit:<sha>` — see
- *  RESEARCH_TAB_PATH / REVIEW_TAB_PATH). These are not filesystem paths:
- *  the hook must never fire the getFileIcon RPC for them nor persist a
- *  `fileIcons` cache entry keyed by them. Guarded on the PREFIX, not any
- *  single constant, so future pseudo-tabs are covered automatically. */
+ *  `c0wrk:research`, `c0wrk:review`, `c0wrk:commit:<sha>`, `c0wrk:graph` —
+ *  see RESEARCH_TAB_PATH / REVIEW_TAB_PATH / GIT_GRAPH_TAB_PATH). These are
+ *  not filesystem paths: the hook must never fire the getFileIcon RPC for
+ *  them nor persist a `fileIcons` cache entry keyed by them. Guarded on the
+ *  PREFIX, not any single constant, so future pseudo-tabs are covered
+ *  automatically. */
 const PSEUDO_PATH_PREFIX = 'c0wrk:'
 
 export function useFileIcon(filePath: string) {
