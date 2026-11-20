@@ -63,3 +63,46 @@ Negative / residual:
 - `core/tools/declare_plan.go` — the declared contract on the tool description and JSON schema.
 - `frontend/src/lib/planParser.ts` — the parser whose field grammar (`detectFieldHeader` / `normalizeFieldName`) the canonical labels match; `serializePlanMarkdown`, the rewrite that made deviations lossy.
 - [model-profiles.md](../domains/model-profiles.md) (Lite variant) — the prompt swap that makes tool surfaces format-authoritative.
+
+## Amendment (AC list items without checkboxes)
+
+The declared contract above spells the AC list as "a `- [ ]` checklist".
+Since 2026-11-20 the AC list is declared as a plain unordered list — `- ...`
+lines without task-list checkboxes — with the same both-halves structure:
+
+- **Declared**: the tool description (Inputs section) and the
+  `tasks[].description` schema text in `core/tools/declare_plan.go` now say
+  "AC: plain unordered list, no checkboxes".
+- **Enforced**: `normalizePlanDescription` strips task-list checkbox markers
+  (`[ ]` / `[x]` / `[X]` directly after a `-`/`*`/`+`/`N.`/`N)` list marker)
+  from prose lines — checkboxed ordered items demote to plain `- ` bullets —
+  and from the inline content carried after a field-label marker (the
+  `**Acceptance Criteria**: - [ ] foo` shape; a box whose list marker was
+  eaten as the label separator — `AC - [ ] foo` → bare `[ ]` — strips via
+  the bare-box path; a separator residue run a doubled spelling leaves in
+  front of the box (`**Acceptance Criteria**:: - [ ] foo` —
+  `planBoldLabelContent` consumes exactly one leading `:` or `-`) drops
+  together with the checkbox via `stripSeparatorsToCheckbox`, and only when
+  it exposes a strippable box — prose content that legitimately starts with
+  `:` or `*` (`**How**: :: intro`, `**How**: **bold** intro`) stays
+  untouched). The dash-separator shapes canonicalize on the Go side
+  only; the TS mirror covers the canonical colon shape (its grammar never
+  produces a bare box from a dash separator), where the Go label-content
+  path and the TS `stripInlineCheckboxes` strip identically — doubled
+  separators included (the TS `[*: ]` rest-strip plus the same gated
+  separator strip inside its fixed-point loop reach the same result). Fence bodies stay verbatim: a label line can
+  open a fence in its inline content (`**How**: ```md` — the multi-line
+  shape `serializePlanMarkdown` writes for field values), and both the Go
+  scanner (`planInlineFenceContent`) and the TS parser arm their fence state
+  from that content — body lines, blank lines included, stay verbatim until
+  the standalone close, and Go auto-closes an inline fence left unclosed.
+  Idempotency is preserved (a remaining checkbox is re-stripped in the same
+  pass). `planParser.ts` mirrors the rule (`stripCheckbox`) so a PlanEditor
+  round-trip of a legacy checkbox-bearing plan does not resurrect the
+  markers.
+
+Everything else in this decision stands unchanged: the contract is still
+declared on the tool surfaces and enforced at the publish boundary, all four
+description consumers receive the canonical form, and legacy persisted plans
+are still read as-is without re-normalization (re-declaring the plan remains
+the migration path — and now also drops the checkboxes).

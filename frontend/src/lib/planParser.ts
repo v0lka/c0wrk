@@ -59,6 +59,10 @@ function extractFields(block: string): Record<string, string> {
   const lines = block.split('\n')
   let currentField = ''
   const contentLines: string[] = []
+  // Fence bodies stay verbatim, mirroring the Go normalizer
+  // (core/plan_description.go planFenceState): no checkbox stripping and no
+  // field-header detection inside an open fence.
+  const fences = { in: false, marker: '`', length: 0 }
 
   const flushField = () => {
     if (currentField) {
@@ -67,9 +71,39 @@ function extractFields(block: string): Record<string, string> {
     }
   }
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    // Mirror Go's strings.TrimSuffix(line, "\r") at line intake: in a CRLF
+    // plan file every line still ends with `\r` after the '\n' split, and a
+    // trailing `\r` would break planFenceCloses' pure-marker-run check (the
+    // fence would never close and swallow the following fields) and leak
+    // into stored fence bodies.
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
     const trimmed = line.trim()
+
+    if (fences.in) {
+      // Fence bodies stay byte-verbatim — indentation, trailing whitespace
+      // and blank lines included (the Go normalizer appends fence lines
+      // raw); only prose blank lines are skipped below.
+      if (planFenceCloses(line, fences.marker, fences.length)) {
+        fences.in = false
+      }
+      if (currentField) {
+        contentLines.push(line)
+      }
+      continue
+    }
     if (!trimmed) continue
+
+    const opened = planFenceOpens(line)
+    if (opened) {
+      fences.in = true
+      fences.marker = opened.marker
+      fences.length = opened.length
+      if (currentField) {
+        contentLines.push(line)
+      }
+      continue
+    }
 
     const header = detectFieldHeader(trimmed)
     if (header) {
@@ -77,12 +111,26 @@ function extractFields(block: string): Record<string, string> {
       currentField = header.name
       if (header.inlineContent) {
         contentLines.push(header.inlineContent)
+        // serializePlanMarkdown writes multi-line field values inline after
+        // the label (`**How**: ```md …`), so a fence can OPEN inside the
+        // header line; arm the state from the content exactly like the
+        // standalone path (the closing run is still a standalone line).
+        // The check content is header.fenceCheck — the mirror of Go's
+        // planBoldLabelContent (one leading `:` or `-` consumed) — NOT the
+        // emitted inline content, whose `*: `-class strip collapses more
+        // separator shapes than Go does.
+        const opened = planFenceOpens(header.fenceCheck)
+        if (opened) {
+          fences.in = true
+          fences.marker = opened.marker
+          fences.length = opened.length
+        }
       }
       continue
     }
 
     if (currentField) {
-      contentLines.push(trimmed)
+      contentLines.push(stripCheckbox(trimmed))
     }
   }
   flushField()
@@ -90,12 +138,98 @@ function extractFields(block: string): Record<string, string> {
   return result
 }
 
-function detectFieldHeader(line: string): { name: string; inlineContent: string } | null {
+// Task-list checkboxes are not part of the canonical plan grammar (AC are a
+// plain unordered list — the Go normalizer strips them at publish, see
+// core/plan_description.go stripPlanTaskMarkers). Stripping here mirrors that
+// rule so legacy checkbox-bearing plans stay checkbox-free across a PlanEditor
+// round-trip. Checkboxed ordered items demote to plain bullets.
+function stripCheckbox(line: string): string {
+  let out = line
+  for (;;) {
+    // `\s*` after the `]` mirrors the Go normalizer's TrimSpace: extra
+    // whitespace between the checkbox and the item collapses (line-local —
+    // callers pass single lines).
+    const m = /^([-*+]|\d+[.)]) \[( |x|X)\]\s*(.*)$/.exec(out)
+    if (!m) return out
+    const bullet = /^\d/.test(m[1]!) ? '-' : m[1]!
+    out = `${bullet} ${m[3]!}`.trimEnd()
+  }
+}
+
+// Inline content after a field label can carry a checkbox whose list marker
+// was consumed as the label separator (`**Acceptance Criteria**: - [ ] foo`
+// parses the content as `[ ] foo`), so a bare box strips here too — the
+// mirror of stripLabelContentCheckboxes in core/plan_description.go. All
+// strips repeat to a fixed point: one strip can expose another checkbox
+// (`[ ] [x] foo`), and a separator residue run a doubled label spelling
+// leaves in front of a box (`:: - [ ] foo`) drops via
+// stripSeparatorsToCheckbox, mirroring the Go loop.
+function stripInlineCheckboxes(content: string): string {
+  let out = content
+  for (;;) {
+    const stripped = stripCheckbox(out)
+    if (stripped !== out) {
+      out = stripped
+      continue
+    }
+    const m = /^\[( |x|X)\]\s*(.*)$/.exec(out)
+    if (m) {
+      out = m[2]!.trimEnd()
+      continue
+    }
+    const separated = stripSeparatorsToCheckbox(out)
+    if (separated === out) return out
+    out = separated
+  }
+}
+
+// Mirrors stripSeparatorsToCheckbox in core/plan_description.go: a leading
+// run of label-separator and emphasis characters (`:`, `*`, spaces, tabs)
+// drops only when the remainder starts with a strippable checkbox, so prose
+// that legitimately starts with `:` or `*` (`:: intro`, `**bold** intro`)
+// stays untouched. Inside the fixed-point loop it lets `[ ] :: - [ ] x`
+// converge to `- x` like Go, and lets the fenceCheck derivation expose a
+// checkbox-hidden opener (`**How**: :: [ ] ```sh`) the same way the Go
+// rewritten line arms.
+function stripSeparatorsToCheckbox(content: string): string {
+  const run = /^[:*\t ]+/.exec(content)
+  if (!run || run[0]!.length >= content.length) return content
+  const tail = content.slice(run[0]!.length)
+  const stripped = stripCheckbox(tail)
+  if (stripped !== tail) return stripped
+  const bare = /^\[( |x|X)\]\s*(.*)$/.exec(tail)
+  if (bare) return bare[2]!.trimEnd()
+  return content
+}
+
+// Mirrors the Go fence rules (core/plan_description.go fenceOpens): a fence
+// opens with a run of >= 3 backticks or tildes after up to three leading
+// spaces; a backtick info string must not contain backticks.
+function planFenceOpens(line: string): { marker: string; length: number } | null {
+  const s = line.replace(/^ {0,3}/, '')
+  if (s.length < 3 || (s[0] !== '`' && s[0] !== '~')) return null
+  let n = 0
+  while (n < s.length && s[n] === s[0]) n++
+  if (n < 3 || (s[0] === '`' && s.slice(n).includes('`'))) return null
+  return { marker: s[0]!, length: n }
+}
+
+// Mirrors the Go fenceCloses: an equally long pure run of the opening marker
+// closes the fence (no info string on closing lines).
+function planFenceCloses(line: string, marker: string, minLength: number): boolean {
+  const s = line.replace(/^ {0,3}/, '')
+  if (s.length < minLength) return false
+  let n = 0
+  while (n < s.length && s[n] === marker) n++
+  return n === s.length
+}
+
+function detectFieldHeader(line: string): { name: string; inlineContent: string; fenceCheck: string } | null {
   // "### What:" format
   if (line.startsWith('###')) {
     const after = line.slice(3).trim().replace(/:$/, '')
     const name = normalizeFieldName(after)
-    if (name) return { name, inlineContent: '' }
+    if (name) return { name, inlineContent: '', fenceCheck: '' }
   }
 
   // "**What**: content" format
@@ -113,7 +247,24 @@ function detectFieldHeader(line: string): { name: string; inlineContent: string 
     const name = normalizeFieldName(after.slice(0, sepIdx))
     if (name) {
       const rest = after.slice(sepIdx).replace(/^[*: ]+/, '').trim()
-      return { name, inlineContent: rest }
+      // The fence check mirrors Go's planInlineFenceContent on the rewritten
+      // line (core/plan_description.go): Go re-parses the canonical line it
+      // emitted — planBoldLabelContent takes the tail after the closing `**`,
+      // trims it, consumes ONE leading `:` or `-`, and planBoldLabelLine has
+      // already stripped inline checkboxes — then strips any remaining
+      // separator run and runs fenceOpens on the result. The `[*: ]`-class
+      // strip used for the emitted content above is NOT that rule (it would
+      // eat the dash of `**How**: - ```sh` before the checkbox strip can run
+      // on it, and miss that a checkbox-hidden opener `**How**: [ ] ```sh`
+      // arms only through the rewritten line), so the check content is
+      // derived separately.
+      let fenceCheck = after.slice(starIdx + 2).trim()
+      if (fenceCheck.startsWith(':') || fenceCheck.startsWith('-')) {
+        fenceCheck = fenceCheck.slice(1).trim()
+      }
+      fenceCheck = stripInlineCheckboxes(fenceCheck)
+      fenceCheck = fenceCheck.replace(/^[-: \t]+/, '')
+      return { name, inlineContent: stripInlineCheckboxes(rest), fenceCheck }
     }
   }
 
