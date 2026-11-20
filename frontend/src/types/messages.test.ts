@@ -112,6 +112,27 @@ describe('parseAskUserQuestions', () => {
         ])
     })
 
+    it('carries option descriptions through and drops non-string ones', () => {
+        const meta = {
+            questions: [
+                {
+                    id: 'q1',
+                    question: 'REST or GraphQL?',
+                    options: [
+                        { label: 'REST', value: 'rest', description: 'Simpler tooling, wide adoption' },
+                        { label: 'GraphQL', value: 'graphql', description: 123 },
+                        { label: 'Bare', value: 'bare' },
+                    ],
+                },
+            ],
+        }
+        expect(parseAskUserQuestions(meta)[0]!.options).toEqual([
+            { label: 'REST', value: 'rest', description: 'Simpler tooling, wide adoption' },
+            { label: 'GraphQL', value: 'graphql' },
+            { label: 'Bare', value: 'bare' },
+        ])
+    })
+
     it('skips questions with missing id or question text', () => {
         const meta = {
             questions: [

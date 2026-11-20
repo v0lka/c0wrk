@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { emit } from '@/api/runtime'
 import { useChatStore } from '@/stores/chatStore'
-import type { DisplayItem } from '@/types/messages'
+import type { AskUserOption, DisplayItem } from '@/types/messages'
 import { getAskUserResolution, parseAskUserQuestions, askUserResolved } from '@/types/messages'
 
 type AskUserItem = Extract<DisplayItem, { kind: 'ask_user' }>
@@ -48,7 +48,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
     const parts = questions.map(q => {
       const sel = selections.get(q.id) ?? new Set<string>()
       const custom = customTexts.get(q.id) ?? ''
-      const labels = q.options.filter((o: { label: string; value: string }) => sel.has(o.value)).map((o: { label: string; value: string }) => o.label)
+      const labels = q.options.filter((o: AskUserOption) => sel.has(o.value)).map((o: AskUserOption) => o.label)
       return [...labels, custom.trim() ? `Custom: ${custom.trim()}` : ''].filter(Boolean).join('; ')
     }).filter(Boolean)
     const answer = parts.join(' | ')
@@ -86,7 +86,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
             <p className="text-xs font-medium text-foreground mb-1.5">{q.question}</p>
             {q.options.length > 0 && (
               <div className="space-y-1.5 mb-2">
-                {q.options.map((opt: { label: string; value: string }) => (
+                {q.options.map((opt: AskUserOption) => (
                   <button key={opt.value} type="button" onClick={() => toggleOption(q.id, opt.value)}
                     title={sel.has(opt.value) ? `Deselect ${opt.label}` : `Select ${opt.label}`}
                     className={`w-full flex items-center gap-2 p-2 rounded-md border text-left transition-colors ${sel.has(opt.value) ? 'bg-info/10 border-info/50' : 'border-border hover:bg-accent/50'}`}
@@ -94,7 +94,12 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
                     <div className={`shrink-0 flex items-center justify-center ${q.multi_select ? 'h-3.5 w-3.5 rounded-sm' : 'h-3.5 w-3.5 rounded-full'} border ${sel.has(opt.value) ? 'border-info bg-info' : 'border-muted-foreground'}`}>
                       {sel.has(opt.value) && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
                     </div>
-                    <span className="text-xs flex-1">{opt.label}</span>
+                    <span className="text-xs flex-1">
+                      {opt.label}
+                      {opt.description && (
+                        <span className="block text-xs text-muted-foreground/80 mt-0.5">{opt.description}</span>
+                      )}
+                    </span>
                     {q.recommended?.includes(opt.value) && <Star className="h-3 w-3 text-warning shrink-0" />}
                   </button>
                 ))}

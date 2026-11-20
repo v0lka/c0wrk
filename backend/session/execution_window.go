@@ -170,11 +170,11 @@ func (w *executionWindow) copyCounters() ExecutionWindowCounters {
 // added; informational diagnostics map to no bucket.
 func diagnosticBuckets(event string) (nudge, abort, parse bool) {
 	switch event {
-	case "repeated_tool_call_nudge", "same_tool_repeat_nudge", "fruitless_nudge":
+	case "repeated_tool_call_nudge", "same_tool_repeat_nudge", "fruitless_nudge", "validation_error_nudge":
 		return true, false, false
 	case "parse_error_nudge", "tool_call_syntax_nudge":
 		return true, false, true
-	case "repeated_tool_call_abort", "same_tool_repeat_abort", "fruitless_abort", "truncation_abort":
+	case "repeated_tool_call_abort", "same_tool_repeat_abort", "fruitless_abort", "truncation_abort", "validation_error_abort":
 		return false, true, false
 	case "parse_error_abort", "tool_call_syntax_abort":
 		return false, true, true

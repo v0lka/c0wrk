@@ -39,6 +39,8 @@ func (m *metricsState) observeDiagnostic(event string) {
 	case "parse_error_nudge", "tool_call_syntax_nudge":
 		m.nudges.Parse++
 		m.parseErrors++
+	case "validation_error_nudge":
+		m.nudges.Validation++
 	// Hard aborts — the loop breaker stopped the run.
 	case "repeated_tool_call_abort":
 		m.aborts.Repeat++
@@ -49,6 +51,8 @@ func (m *metricsState) observeDiagnostic(event string) {
 	case "parse_error_abort", "tool_call_syntax_abort":
 		m.aborts.Parse++
 		m.parseErrors++
+	case "validation_error_abort":
+		m.aborts.Validation++
 	case "truncation_abort":
 		m.aborts.Truncation++
 	}

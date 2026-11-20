@@ -94,9 +94,14 @@ export interface ToolConfirmData {
   disable_judge?: boolean
 }
 
+export interface AskUserOption {
+  label: string; value: string
+  /** Optional one-line hint rendered under the option label in the form. */
+  description?: string
+}
 export interface AskUserQuestion {
   id: string; question: string
-  options: Array<{ label: string; value: string }>
+  options: AskUserOption[]
   multi_select?: boolean; recommended?: string[]
 }
 export interface AskUserData { request_id: string; questions: AskUserQuestion[] }
@@ -1211,6 +1216,7 @@ export function isAskUserQuestion(v: unknown): v is AskUserQuestion {
 }
 function isAskUserOption(v: unknown): v is AskUserQuestion['options'][number] {
   return isObj(v) && typeof v.label === 'string' && typeof v.value === 'string'
+    && (v.description === undefined || typeof v.description === 'string')
 }
 export function isAskUserData(d: unknown): d is AskUserData {
   // `questions` is a required array of well-formed questions: the answer form

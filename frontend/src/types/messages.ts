@@ -1,8 +1,8 @@
 // All message and display item types for the chat system
 
 import { isObj } from '@/types/guards'
-import type { AskUserQuestion } from '@/types/events'
-export type { AskUserQuestion }
+import type { AskUserOption, AskUserQuestion } from '@/types/events'
+export type { AskUserOption, AskUserQuestion }
 
 export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
@@ -179,14 +179,16 @@ export function parseAskUserQuestions(metadata: Record<string, unknown> | undefi
     // fall back to the label so a single click doesn't select every option at
     // once (all sharing value=""). Drops options with neither label nor value.
     const options = q.options
-      .map((o): { label: string; value: string } | null => {
+      .map((o): AskUserOption | null => {
         if (!isObj(o)) return null
         const label = typeof o.label === 'string' ? o.label : ''
         const value = typeof o.value === 'string' ? o.value : ''
         if (!label && !value) return null
-        return { label: label || value, value: value || label }
+        const option: AskUserOption = { label: label || value, value: value || label }
+        if (typeof o.description === 'string') option.description = o.description
+        return option
       })
-      .filter((o): o is { label: string; value: string } => o !== null)
+      .filter((o): o is AskUserOption => o !== null)
     const question: AskUserQuestion = { id: q.id, question: q.question, options }
     if (typeof q.multi_select === 'boolean') question.multi_select = q.multi_select
     if (Array.isArray(q.recommended)) {

@@ -391,12 +391,14 @@ type AgentMetricsData struct {
 // AgentMetricsCounters breaks nudges/aborts down by executor loop detector:
 // repeat — identical tool calls, same_tool — same tool with similar results,
 // fruitless — no-progress detector, parse — malformed output detectors,
-// truncation — output-truncation circuit-breaker abort.
+// validation — schema-validation rejections, truncation — output-truncation
+// circuit-breaker abort.
 type AgentMetricsCounters struct {
 	Repeat     int `json:"repeat"`
 	SameTool   int `json:"same_tool"`
 	Fruitless  int `json:"fruitless"`
 	Parse      int `json:"parse"`
+	Validation int `json:"validation"`
 	Truncation int `json:"truncation"`
 }
 
