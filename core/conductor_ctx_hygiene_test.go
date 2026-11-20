@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/goal"
@@ -199,4 +201,146 @@ func TestRedelegTaskCtx_ClearsGoalStateAndRoster(t *testing.T) {
 	} else if detached, ok := store.(*trajectoryHolder); !ok || detached == parent {
 		t.Error("expected a fresh trajectory holder for the redelegating subagent")
 	}
+}
+
+// TestSubagentCtxAndRedelegTaskCtx_StripsInheritedDelegationCatalog pins the
+// delegation-boundary catalog strip: a delegating conduit (the goal
+// verifier's own pass, a redelegating subagent) labels its own delegate tool
+// call with ITS catalog, and that label inherits downward through Launch
+// into every child tool-call context. Without the strip the child's own
+// catalog decorator would see a catalog already present, skip its write, and
+// Gate 2c would enforce the PARENT's grant over the child's own — the exact
+// dispatch-surface hole the catalog gate exists to close, in both directions
+// (verifier-only names dispatchable, the child's granted names refused).
+// Both context builders that build child contexts must clear it.
+func TestSubagentCtxAndRedelegTaskCtx_StripsInheritedDelegationCatalog(t *testing.T) {
+	parentCatalog := coretools.DelegationCatalog{Names: map[string]struct{}{"parent_only": {}}}
+	ctx := coretools.WithDelegationCatalog(context.Background(), parentCatalog)
+
+	if _, ok := coretools.DelegationCatalogFromContext(ctx); !ok {
+		t.Fatal("fixture: the parent context must carry the catalog before the boundary")
+	}
+
+	if _, ok := coretools.DelegationCatalogFromContext(subagentCtx(ctx)); ok {
+		t.Fatal("subagentCtx must strip an inherited dispatch catalog: the child must start from an empty label")
+	}
+
+	// The redelegating boundary keeps the child delegation machinery but
+	// strips the inherited label the same way.
+	l := &conductorLauncher{}
+	childReg := coretools.NewDelegationRegistryWithDepth(1)
+	redelegCtx := l.redelegTaskCtx(coretools.WithDelegationCatalog(context.Background(), parentCatalog), childReg)
+	if _, ok := coretools.DelegationCatalogFromContext(redelegCtx); ok {
+		t.Fatal("redelegTaskCtx must strip an inherited dispatch catalog: the redelegating child must start from an empty label")
+	}
+	if reg := coretools.DelegationRegistryFrom(redelegCtx); reg != childReg {
+		t.Error("the catalog strip must not remove the re-injected child delegation registry")
+	}
+}
+
+// --- execute_plan is conductor-only at dispatch, not just at descriptor level ---
+
+// TestSubagentCtx_StripsPlanStepExecutor: the PlanStepExecutor handoff is
+// conductor-only context, but execute_plan is GroupSystem + PolicyAlwaysAllow,
+// so the registry's policy gates never stop a subagent's call — the strip must
+// remove the executor itself. With it gone, a delegated child's execute_plan
+// call lands in the tool's documented no-Conductor error instead of driving
+// the parent task's plan waves (force re-running approved steps, unbounded
+// executor recursion through inherited child contexts).
+func TestSubagentCtx_StripsPlanStepExecutor(t *testing.T) {
+	executor := &stubPlanStepExecutor{}
+	ctx := coretools.WithPlanStepExecutor(context.Background(), executor)
+
+	sub := subagentCtx(ctx)
+	if got := coretools.PlanStepExecutorFrom(sub); got != nil {
+		t.Fatalf("subagentCtx must strip the PlanStepExecutor, got %T", got)
+	}
+
+	// The tool call from a subagent context fails closed with the documented
+	// error instead of reaching the parent's executor.
+	tool := coretools.NewExecutePlanTool()
+	raw, err := json.Marshal(map[string]any{"steps": []string{"step_1"}})
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	res, err := tool.Execute(sub, raw)
+	if err != nil {
+		t.Fatalf("execute_plan returned a hard error: %v", err)
+	}
+	if !strings.Contains(res.Content, "no plan step executor in context") {
+		t.Fatalf("execute_plan content = %q, want the no-Conductor error", res.Content)
+	}
+	if executor.calls != 0 {
+		t.Errorf("the parent executor was invoked %d times, want 0", executor.calls)
+	}
+
+	// Control: the conductor's own context still reaches the executor.
+	if got := coretools.PlanStepExecutorFrom(ctx); got == nil {
+		t.Fatal("control: the parent context must still carry the executor")
+	}
+}
+
+type stubPlanStepExecutor struct{ calls int }
+
+func (s *stubPlanStepExecutor) Execute(ctx context.Context, stepIDs []string) ([]coretools.PlanStepResult, error) {
+	s.calls++
+	return []coretools.PlanStepResult{{StepID: "stub", Status: "completed"}}, nil
+}
+
+// --- declare_step_complete is conductor-only at dispatch, not just at descriptor level ---
+
+// TestSubagentCtx_StripsStepCompleteFunc: the StepCompleteFunc handoff is
+// conductor-only context, and declare_step_complete is GroupSystem +
+// PolicyAlwaysAllow, so the registry's policy gates never stop a subagent's
+// call — the strip must remove the callback itself. With it gone, a delegated
+// child's declare_step_complete call lands in the tool's documented
+// no-Conductor error instead of terminating steps of the PARENT task's plan
+// (skipped waves, a plan finished without its verification steps).
+func TestSubagentCtx_StripsStepCompleteFunc(t *testing.T) {
+	steps := []string{}
+	ctx := coretools.WithStepCompleteFunc(context.Background(), func(stepID string, success bool, errMsg string) {
+		steps = append(steps, stepID)
+	})
+
+	sub := subagentCtx(ctx)
+	if got := coretools.StepCompleteFuncFromContext(sub); got != nil {
+		t.Fatalf("subagentCtx must strip the StepCompleteFunc, got %T", got)
+	}
+
+	// The tool call from a subagent context fails closed with the documented
+	// error instead of reaching the parent's callback.
+	tool := coretools.NewDeclareStepCompleteTool()
+	raw, err := json.Marshal(map[string]any{"step_id": "step_3", "success": true})
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	res, err := tool.Execute(sub, raw)
+	if err != nil {
+		t.Fatalf("declare_step_complete returned a hard error: %v", err)
+	}
+	if !strings.Contains(res.Content, "no step-complete callback in context") {
+		t.Fatalf("declare_step_complete content = %q, want the no-Conductor error", res.Content)
+	}
+	if len(steps) != 0 {
+		t.Errorf("the parent callback was invoked %d times, want 0", len(steps))
+	}
+
+	// Control: the conductor's own context still reaches the callback.
+	if got := coretools.StepCompleteFuncFromContext(ctx); got == nil {
+		t.Fatal("control: the parent context must still carry the step-complete callback")
+	}
+
+	// The goal proposer rides the same strip class as defense in depth:
+	// propose_goal is already excluded from subagent tool sets, but the
+	// context must not carry the proposer either.
+	ctx = coretools.WithGoalProposer(context.Background(), stubGoalProposer{})
+	if got := coretools.GoalProposerFrom(subagentCtx(ctx)); got != nil {
+		t.Fatalf("subagentCtx must strip the GoalProposer, got %T", got)
+	}
+}
+
+type stubGoalProposer struct{}
+
+func (stubGoalProposer) Propose(ctx context.Context, proposal coretools.GoalProposal) (coretools.GoalProposalResponse, error) {
+	return coretools.GoalProposalResponse{Decision: "cancel"}, nil
 }

@@ -48,7 +48,7 @@ func TestCanaryTrustedRepoSpawnsRawGitFiresCanary(t *testing.T) {
 	f.repo.AppendConfig(t, "[core]\n\thooksPath = "+hooksDir)
 	f.requireFinding(GitConfigFindingHooksPath) // armed: hardened path would neutralize it
 
-	gittrust.Trust(f.repo.Root)
+	trustFingerprinted(t, f.repo.Root)
 
 	f.repo.Write(t, "file.txt", "hello\nchanged\n")
 	f.repo.Git(t, "add", ".")

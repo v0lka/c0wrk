@@ -20,8 +20,29 @@ import (
 // registry (written by backend) and, for a trusted work-tree root, spawns
 // raw git via sysproc.GitCmdRaw — no baseline overrides, no per-repo
 // NeutralizingArgv, no GIT_EDITOR pin. Untrusted / hardened repositories keep
-// the full neutralization (the existing canary suite). The registry is
-// process-wide, so every test here clears it up front and on teardown.
+// the full neutralization (the existing canary suite). Every raw-eligible
+// spawn additionally re-checks the semantic git-config fingerprint the
+// decision was bound to: a plain checkout scans its own config, a linked
+// worktree re-derives the identity from the TRUST ROOT (the common config is
+// shared; the worktree's own overlay stays on the separate overlay gate) —
+// drift since the decision evicts the trust and hardens the spawn, and a
+// fingerprint-less registry entry (legacy `gittrust.Trust`) never spawns
+// raw. The registry is process-wide, so every test here clears it up
+// front and on teardown.
+
+// trustFingerprinted registers root in the gittrust registry the way the
+// backend's TrustGitRepo pipeline does: bound to the semantic fingerprint of
+// the repository's current config (scan + include resolution), so the spawn
+// layer's identity check passes.
+func trustFingerprinted(t *testing.T, root string) {
+	t.Helper()
+	info, err := ScanGitConfig(root)
+	if err != nil {
+		t.Fatalf("ScanGitConfig for trust registration: %v", err)
+	}
+	info.ResolveIncludes()
+	gittrust.TrustWithFingerprint(root, info.SemanticFingerprint())
+}
 
 // TestGitCmdInRepoTrustedRepoSpawnsRawGit plants a filter finding (which the
 // hardened path would neutralize with -c filter.* overrides) and then trusts
@@ -39,7 +60,7 @@ func TestGitCmdInRepoTrustedRepoSpawnsRawGit(t *testing.T) {
 	f.requireFinding(GitConfigFindingFilter) // armed: hardened path would neutralize it
 
 	root := f.repo.Root
-	gittrust.Trust(root)
+	trustFingerprinted(t, root)
 
 	cmd, err := GitCmdInRepo(f.ctx, root, "status", "--porcelain")
 	if err != nil {
@@ -84,7 +105,7 @@ func TestGitCmdInRepoTrustedBySubdirectory(t *testing.T) {
 	t.Cleanup(gittrust.Clear)
 
 	f := newCanaryFixture(t, "hello\n")
-	gittrust.Trust(f.repo.Root)
+	trustFingerprinted(t, f.repo.Root)
 
 	sub := filepath.Join(f.repo.Root, "nested", "deeper")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -119,8 +140,11 @@ func TestGitCmdInRepoTrustedByLinkedWorktree(t *testing.T) {
 
 	repo, wt := worktreeFixture(t)
 	// Trust recorded for the MAIN root — the form backend's TrustGitRepo
-	// stores once normalized through ResolveGitTrustRoot.
-	gittrust.Trust(repo.Root)
+	// stores once normalized through ResolveGitTrustRoot — bound to the
+	// semantic fingerprint: the worktree path re-derives the identity from
+	// the trust root, so a fingerprint-less entry would keep the hardened
+	// path (the same fail-closed rule as a plain checkout).
+	trustFingerprinted(t, repo.Root)
 
 	cmd, err := GitCmdInRepo(context.Background(), wt, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
@@ -147,7 +171,10 @@ func TestGitCmdInRepoTrustedWorktreeLegacyEntry(t *testing.T) {
 	t.Cleanup(gittrust.Clear)
 
 	_, wt := worktreeFixture(t)
-	gittrust.Trust(wt)
+	// Legacy worktree-keyed entry, bound to the semantic fingerprint the
+	// same way: even the degraded keying verifies its identity before a raw
+	// spawn — a fingerprint-less entry hardens.
+	trustFingerprinted(t, wt)
 
 	cmd, err := GitCmdInRepo(context.Background(), wt, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
@@ -175,7 +202,7 @@ func TestGitCmdInRepoTrustedRepoPinsOptionalLocks(t *testing.T) {
 	t.Setenv("GIT_OPTIONAL_LOCKS", "1")
 
 	f := newCanaryFixture(t, "hello\n")
-	gittrust.Trust(f.repo.Root)
+	trustFingerprinted(t, f.repo.Root)
 
 	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "status", "--porcelain")
 	if err != nil {
@@ -275,9 +302,12 @@ func TestGitCmdInRepoTrustedWorktreeDirtyOverlayHardens(t *testing.T) {
 	repo, wt := worktreeFixture(t)
 	writeWorktreeOverlay(t, repo, wt, "[core]\n\tfsmonitor = /tmp/evil-wt-fsmonitor.sh\n")
 
-	// Trust recorded for the MAIN root: the snapshot scanned the main
-	// checkout and never saw the overlay written above.
-	gittrust.Trust(repo.Root)
+	// Fingerprint-bound trust for the MAIN root (the raw-spawn registration
+	// convention): the snapshot scanned the main checkout and never saw the
+	// overlay written above, so only the overlay gate can refuse this spawn —
+	// a fingerprint-less entry would harden via the identity check and mask
+	// an overlay-gate regression.
+	trustFingerprinted(t, repo.Root)
 
 	sub := filepath.Join(wt, "sub", "dir")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -310,7 +340,9 @@ func TestGitCmdInRepoTrustedWorktreeCleanOverlaySpawnsRaw(t *testing.T) {
 
 	repo, wt := worktreeFixture(t)
 	writeWorktreeOverlay(t, repo, wt, "[alias]\n\tst = status\n")
-	gittrust.Trust(repo.Root)
+	// Fingerprint-bound trust (the raw-spawn registration convention): the
+	// worktree spawn re-derives the trust root's identity below.
+	trustFingerprinted(t, repo.Root)
 
 	cmd, err := GitCmdInRepo(context.Background(), wt, "status", "--porcelain")
 	if err != nil {
@@ -341,7 +373,10 @@ func TestGitCmdInRepoTrustedWorktreeOverlayIncludeHardens(t *testing.T) {
 
 	repo, wt := worktreeFixture(t)
 	writeWorktreeOverlay(t, repo, wt, "[include]\n\tpath = ./evil\n")
-	gittrust.Trust(repo.Root)
+	// Fingerprint-bound trust (the raw-spawn registration convention): the
+	// spawn must harden via the overlay include, not via a fingerprint-less
+	// identity refusal — that keeps this test pinning the overlay gate.
+	trustFingerprinted(t, repo.Root)
 
 	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(2, "./evil"))
 	ctx := gitDiagnosticContext(context.Background(), logger)
@@ -353,6 +388,45 @@ func TestGitCmdInRepoTrustedWorktreeOverlayIncludeHardens(t *testing.T) {
 	joined := strings.Join(cmd.Args, " ")
 	if !strings.Contains(joined, "-c core.fsmonitor=false") {
 		t.Errorf("argv = %q, want the hardened baseline for an include-bearing overlay", cmd.Args)
+	}
+}
+
+// TestGitCmdInRepoTrustedWorktreeCommonConfigDriftHardens pins the
+// common-config identity check on the worktree spawn path (the gap a linked
+// worktree's raw spawn had: gated only on its own overlay, drift of the
+// SHARED common config stayed invisible until the next main-checkout spawn —
+// so a config edited after the trust decision rode a worktree session's
+// auto-fetch or panel refresh raw). The worktree spawn re-derives the trust
+// root's semantic fingerprint: drift evicts the trust and the spawn hardens,
+// exactly like the plain path.
+func TestGitCmdInRepoTrustedWorktreeCommonConfigDriftHardens(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+
+	repo, wt := worktreeFixture(t)
+	trustFingerprinted(t, repo.Root)
+
+	// Drift the COMMON config — the shared file every checkout reads — after
+	// the decision: a command-bearing key the trust never reviewed.
+	repo.AppendConfig(t, "[core]\n\tfsmonitor = /tmp/evil-wt-fsmonitor.sh\n")
+
+	cmd, err := GitCmdInRepo(context.Background(), wt, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (trusted worktree, common-config drift): %v", err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "-c core.fsmonitor=false") {
+		t.Errorf("argv = %q, want the hardened baseline with the drifted common-config key neutralized", cmd.Args)
+	}
+	if !slices.Contains(cmd.Env, "GIT_EDITOR=true") {
+		t.Error("the drifted spawn must carry the hardened GIT_EDITOR pin")
+	}
+
+	// The drift evicted the trust: the registry entry is gone, so the next
+	// spawn (worktree or main checkout) stays hardened until re-trust.
+	if gittrust.IsTrusted(repo.Root) {
+		t.Error("the common-config drift must evict the trust from the registry")
 	}
 }
 
@@ -490,4 +564,183 @@ func TestWorktreeOverlayClean(t *testing.T) {
 			t.Error("an overlay the scan did not retain cannot be proven safe (fail closed)")
 		}
 	})
+}
+
+// TestGitCmdInRepoTrustedWithoutFingerprintHardens pins the spawn-side
+// fail-closed for entries registered without a semantic identity — the form
+// gittrust.Trust produces and a v1 trust record mirrors before its next-open
+// migration: the decision cannot be checked against the live config, so the
+// repository keeps the full hardened baseline instead of raw git.
+func TestGitCmdInRepoTrustedWithoutFingerprintHardens(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+
+	f := newCanaryFixture(t, "hello\n")
+	f.repo.AppendConfig(t, "[filter \"lfs\"]\n\tprocess = /tmp/evil-filter.sh\n\tclean = /tmp/evil-clean.sh\n\tsmudge = /tmp/evil-smudge.sh\n")
+	f.requireFinding(GitConfigFindingFilter)
+
+	gittrust.Trust(f.repo.Root) // no fingerprint: an unverifiable decision
+
+	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (trusted, no fingerprint): %v", err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "-c filter.lfs.process=") {
+		t.Errorf("argv = %q, want the hardened baseline for a fingerprint-less trust entry", cmd.Args)
+	}
+	if !slices.Contains(cmd.Env, "GIT_EDITOR=true") {
+		t.Errorf("cmd.Env missing the hardened GIT_EDITOR pin: %q", cmd.Env)
+	}
+}
+
+// TestGitCmdInRepoTrustedFingerprintDriftEvicts pins the spawn-path semantic
+// recheck: a trusted repository whose command-bearing config changes after
+// the trust decision stops spawning raw on the very next operation — the
+// spawn hardens, the registry entry is evicted, and the backend-registered
+// drift handler learns the root so it can remove the config record and
+// re-warn. Without this gate every non-intake GitCmdInRepo caller (auto-fetch,
+// panel refreshes) ran whatever config stood in the repo at spawn time.
+func TestGitCmdInRepoTrustedFingerprintDriftEvicts(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(func() {
+		gittrust.SetDriftHandler(nil)
+		gittrust.Clear()
+	})
+
+	f := newCanaryFixture(t, "hello\n")
+	root := f.repo.Root
+	trustFingerprinted(t, root)
+
+	// Trust bound to the current config: raw spawn works.
+	cmd, err := GitCmdInRepo(f.ctx, root, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (trusted): %v", err)
+	}
+	if want := []string{"git", "status", "--porcelain"}; !slices.Equal(cmd.Args, want) {
+		t.Fatalf("trusted argv = %q, want raw %q", cmd.Args, want)
+	}
+
+	// Drift AFTER trust: an fsmonitor armed where the decision saw none.
+	f.repo.AppendConfig(t, "[core]\n\tfsmonitor = /tmp/evil-fsmonitor.sh\n")
+
+	var drifted []string
+	gittrust.SetDriftHandler(func(r string) { drifted = append(drifted, r) })
+
+	cmd, err = GitCmdInRepo(f.ctx, root, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (drifted): %v", err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "-c core.fsmonitor=false") {
+		t.Errorf("argv = %q, want the hardened baseline after semantic drift", cmd.Args)
+	}
+	if !slices.Contains(cmd.Env, "GIT_EDITOR=true") {
+		t.Errorf("cmd.Env missing the hardened GIT_EDITOR pin after drift: %q", cmd.Env)
+	}
+	if gittrust.IsTrusted(root) {
+		t.Error("a drifted trusted repository must be evicted from the registry")
+	}
+	if len(drifted) != 1 || drifted[0] != filepath.Clean(root) {
+		t.Fatalf("drift handler invocations = %q, want exactly [%s]", drifted, filepath.Clean(root))
+	}
+
+	// The eviction stands: with the registry entry gone the next operation
+	// takes the ordinary untrusted path without re-firing the handler.
+	cmd, err = GitCmdInRepo(f.ctx, root, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (after eviction): %v", err)
+	}
+	if !strings.Contains(strings.Join(cmd.Args, " "), "-c core.fsmonitor=false") {
+		t.Errorf("argv = %q, want the hardened path to stand after eviction", cmd.Args)
+	}
+	if len(drifted) != 1 {
+		t.Errorf("drift handler fired %d times, want 1 (the eviction must stand)", len(drifted))
+	}
+}
+
+// TestGitCmdInRepoTrustedIncludeTargetDriftEvicts pins the TOCTOU closure on
+// the exact vector the spawn-path recheck exists for: the trust snapshot
+// covers include TARGETS' bytes, so a target file edited after the trust
+// decision — which the pre-fix spawn path executed raw, with no recheck
+// between the user's decision and the spawn — reads as semantic drift and
+// evicts before git can run the smuggled configuration.
+func TestGitCmdInRepoTrustedIncludeTargetDriftEvicts(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(func() {
+		gittrust.SetDriftHandler(nil)
+		gittrust.Clear()
+	})
+
+	f := newCanaryFixture(t, "hello\n")
+	root := f.repo.Root
+	// An include directive in .git/config whose target resolves against the
+	// .git directory — the shape a narrowed agent can edit inside the
+	// workspace.
+	target := f.repo.GitDirFile("trusted-git.conf")
+	if err := os.WriteFile(target, []byte("[alias]\n\tst = status\n"), 0o644); err != nil {
+		t.Fatalf("writing include target: %v", err)
+	}
+	f.repo.AppendConfig(t, "[include]\n\tpath = trusted-git.conf")
+	trustFingerprinted(t, root)
+
+	// Trust bound to the resolved include content: raw spawn works.
+	cmd, err := GitCmdInRepo(f.ctx, root, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (trusted): %v", err)
+	}
+	if want := []string{"git", "status", "--porcelain"}; !slices.Equal(cmd.Args, want) {
+		t.Fatalf("trusted argv = %q, want raw %q", cmd.Args, want)
+	}
+
+	// The smuggled edit: the include target arms a transport command the
+	// decision never saw.
+	if err := os.WriteFile(target, []byte("[core]\n\tsshCommand = /tmp/evil-ssh.sh\n"), 0o644); err != nil {
+		t.Fatalf("smuggling into the include target: %v", err)
+	}
+
+	var drifted []string
+	gittrust.SetDriftHandler(func(r string) { drifted = append(drifted, r) })
+
+	cmd, err = GitCmdInRepo(f.ctx, root, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo (drifted include target): %v", err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "-c core.sshCommand=ssh") {
+		t.Errorf("argv = %q, want the hardened baseline with core.sshCommand pinned after include-target drift", cmd.Args)
+	}
+	if gittrust.IsTrusted(root) {
+		t.Error("a repository whose include target drifted must be evicted from the registry")
+	}
+	if len(drifted) != 1 || drifted[0] != filepath.Clean(root) {
+		t.Fatalf("drift handler invocations = %q, want exactly [%s]", drifted, filepath.Clean(root))
+	}
+}
+
+// TestGitCmdInRepoTrustedUnscannableConfigRefuses pins the fail-closed scan
+// error on the trusted plain-checkout path: a config that stops being
+// readable never upgrades to raw git — the spawn refuses with the scan error,
+// exactly as for an untrusted repository.
+func TestGitCmdInRepoTrustedUnscannableConfigRefuses(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+
+	f := newCanaryFixture(t, "hello\n")
+	root := f.repo.Root
+	trustFingerprinted(t, root)
+
+	configPath := f.repo.GitDirFile("config")
+	if err := os.Chmod(configPath, 0o000); err != nil {
+		t.Fatalf("chmod config: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o644) })
+
+	if _, err := GitCmdInRepo(f.ctx, root, "status", "--porcelain"); err == nil {
+		t.Fatal("GitCmdInRepo must refuse to spawn git when a trusted repository's config cannot be scanned (fail closed)")
+	}
 }

@@ -645,6 +645,22 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}
 	}
 
+	// Gate 2c: delegated-subagent catalog gating (defense-in-depth) — the
+	// subagent's prompt advertises exactly its granted descriptors, but the
+	// dispatch channel is the shared session registry: without this gate a
+	// hallucinated or smuggled call (a batch sub-call, a conductor-only tool
+	// stripped from the descriptors) would still execute under the session's
+	// policy gates. GroupSystem rides the same gate: the bypass below would
+	// otherwise make conductor-only/infra tools dispatchable by bare name.
+	// Fail-closed: a carried-but-empty catalog blocks everything.
+	if catalog, ok := DelegationCatalogFromContext(ctx); ok && !catalog.Allows(name) {
+		r.log().Warn("security: tool blocked outside the delegated subagent's catalog", "tool", name, "reason", "not_in_delegation_catalog")
+		return sdktools.ToolResult{
+			Content: fmt.Sprintf("tool %q is not part of this delegated subagent's tool catalog — it was not granted for this delegation", name),
+			IsError: true,
+		}, nil
+	}
+
 	// Gate 3: system group bypasses the remaining policy and judge checks.
 	if sdktools.ToolGroupOf(tool) == sdktools.GroupSystem {
 		return tool.Execute(ctx, input)

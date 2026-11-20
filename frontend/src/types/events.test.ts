@@ -408,6 +408,17 @@ describe('isGitConfigRiskData', () => {
         ).toBe(true)
     })
 
+    it('accepts the spawn source (drift caught by the git spawn layer)', () => {
+        expect(
+            isGitConfigRiskData({
+                ...valid,
+                source: 'spawn',
+                reason: 'The trust has been revoked and the repository is hardened again.',
+                findings: [{ key: 'core.fsmonitor', description: 'runs a monitor command' }],
+            }),
+        ).toBe(true)
+    })
+
     it('rejects an empty findings list (event never fires without findings)', () => {
         expect(isGitConfigRiskData({ ...valid, findings: [] })).toBe(false)
     })

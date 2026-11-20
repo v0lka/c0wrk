@@ -1263,3 +1263,175 @@ func TestNotifyGitConfigRisk_TrustedRepoDriftCoversIncludes(t *testing.T) {
 		t.Error("expected the repo to be unregistered from the git trust registry after included-file drift")
 	}
 }
+
+// TestOnGitTrustDrift_EvictsAndRewarns pins the spawn-path drift wiring: when
+// core/workspace's raw-spawn gate catches a trusted repository whose live
+// config no longer reproduces its recorded semantic fingerprint, it evicts
+// the registry entry and hands the root to the backend drift handler, which
+// must remove the config record (so the next registry sync cannot resurrect
+// the evicted trust) and re-emit the same reasoned drift warning the intake
+// recheck produces, attributed to the spawn source. A root with no config
+// record behind it (removed concurrently) must be a no-op.
+func TestOnGitTrustDrift_EvictsAndRewarns(t *testing.T) {
+	gittrust.Clear()
+	t.Cleanup(func() {
+		gittrust.SetDriftHandler(nil)
+		gittrust.Clear()
+	})
+
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+	if !gittrust.IsTrusted(dir) {
+		t.Fatal("fixture: expected the root in the git trust registry after TrustGitRepo")
+	}
+
+	// Drift AFTER trust: an fsmonitor where the decision saw none.
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/other\n")
+
+	rec := newRiskRecorder(t, f)
+	f.onGitTrustDrift(dir)
+
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk from the spawn drift handler")
+	}
+	if rec.data.Source != GitConfigRiskSourceSpawn {
+		t.Errorf("risk source = %q, want %q", rec.data.Source, GitConfigRiskSourceSpawn)
+	}
+	if rec.data.Reason == "" {
+		t.Error("expected a drift reason in the spawn-drift payload")
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("trusted repos after spawn drift = %v, want empty (record removed)", got)
+	}
+	if gittrust.IsTrusted(dir) {
+		t.Error("expected the repo to be unregistered from the git trust registry after spawn drift")
+	}
+
+	// A root with no config record (already removed concurrently): the
+	// registry eviction is the whole job — no re-warning.
+	rec.fired = false
+	f.onGitTrustDrift(filepath.Join(t.TempDir(), "elsewhere"))
+	if rec.fired {
+		t.Error("spawn drift for an unregistered root must not emit a risk event")
+	}
+}
+
+// TestOnGitTrustDrift_TransientDriftNotifiesBeforeDedup pins the
+// transient-drift notification: the spawn layer caught a real fingerprint
+// drift (evicting the registry trust), but the config was restored to the
+// trusted bytes before the drift handler's recheck ran. The recheck's
+// unchanged-config dedup must not swallow the incident — the minimal
+// spawn-source notification carries the transient reason (and no diff: the
+// config matches the trusted state), the config record survives, and the
+// next registry sync resurrects the trust exactly as the trusted state left
+// it. The intake recheck of the same unchanged config stays silent — the
+// notification is specific to a spawn-caught drift.
+func TestOnGitTrustDrift_TransientDriftNotifiesBeforeDedup(t *testing.T) {
+	gittrust.Clear()
+	t.Cleanup(func() {
+		gittrust.SetDriftHandler(nil)
+		gittrust.Clear()
+	})
+
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+	if !gittrust.IsTrusted(dir) {
+		t.Fatal("fixture: expected the root in the git trust registry after TrustGitRepo")
+	}
+
+	rec := newRiskRecorder(t, f)
+	// The spawn-layer sequence with the drift rolled back before the handler
+	// ran: the registry entry was evicted (Untrust — EvictDrifted minus the
+	// handler call, which fires on the git goroutine and is under test
+	// below), then the file was restored byte-identically, THEN the handler
+	// recheck runs against the restored state.
+	gittrust.Untrust(dir)
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+	f.onGitTrustDrift(dir)
+
+	if !rec.fired {
+		t.Fatal("expected the transient-drift notification from the spawn drift handler")
+	}
+	if rec.data.Source != GitConfigRiskSourceSpawn {
+		t.Errorf("risk source = %q, want %q", rec.data.Source, GitConfigRiskSourceSpawn)
+	}
+	if rec.data.Reason != gitConfigTransientDriftReason {
+		t.Errorf("reason = %q, want the transient-drift reason", rec.data.Reason)
+	}
+	if rec.data.Diff != "" {
+		t.Errorf("diff = %q, want empty (the config matches the trusted bytes)", rec.data.Diff)
+	}
+	if len(rec.data.Findings) != 1 || rec.data.Findings[0].Key != "(transient drift)" {
+		t.Errorf("findings = %+v, want the single (transient drift) marker", rec.data.Findings)
+	}
+
+	// The record survived the recheck: the next registry sync resurrects
+	// the evicted trust — exactly the trusted state, no re-trust needed.
+	if got := f.GetTrustedGitRepos(); len(got) != 1 {
+		t.Fatalf("trusted repos after the transient drift = %v, want the untouched record", got)
+	}
+	f.syncGitTrustRegistry()
+	if !gittrust.IsTrusted(dir) {
+		t.Error("the next registry sync must resurrect the trust for the restored config")
+	}
+
+	// The intake recheck of the same unchanged config stays silent: no
+	// drift was caught on that path, so no notification fires.
+	rec.fired = false
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if rec.fired {
+		t.Error("an unchanged-config intake recheck must stay silent")
+	}
+}
+
+// TestSyncGitTrustRegistry_MirrorsSemanticFingerprint pins that the registry
+// mirror carries each record's semantic fingerprint — the identity the spawn
+// layer re-checks before every raw git — and that a record without one (a v1
+// record awaiting its next-open migration) mirrors fingerprint-less, which
+// the spawn layer reads as an unverifiable decision and keeps hardened.
+func TestSyncGitTrustRegistry_MirrorsSemanticFingerprint(t *testing.T) {
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	info, err := workspace.ScanGitConfig(dir)
+	if err != nil {
+		t.Fatalf("ScanGitConfig: %v", err)
+	}
+	info.ResolveIncludes()
+	got, ok := gittrust.SemanticFingerprint(dir)
+	if !ok {
+		t.Fatal("expected a registered semantic fingerprint after TrustGitRepo")
+	}
+	if got != info.SemanticFingerprint() {
+		t.Errorf("registered fingerprint = %q, want the record's semantic fingerprint %q", got, info.SemanticFingerprint())
+	}
+
+	// An empty-identity record mirrors without a fingerprint.
+	f2 := &FrontendAPI{}
+	f2.seedPublished.Store(true)
+	f2.config = &config.Config{Security: config.SecurityConfig{TrustedGitRepos: []config.TrustedGitRepo{
+		{Path: dir, Fingerprint: "raw", SemanticFingerprint: ""},
+	}}}
+	f2.syncGitTrustRegistry()
+	if fp, ok := gittrust.SemanticFingerprint(dir); !ok || fp != "" {
+		t.Errorf("SemanticFingerprint for a record without an identity = %q (ok=%v), want empty (the spawn layer must keep the hardened path)", fp, ok)
+	}
+}

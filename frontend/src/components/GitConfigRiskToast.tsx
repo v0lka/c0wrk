@@ -53,7 +53,9 @@ interface RiskToastState {
 }
 
 function sourceLabel(source: GitConfigRiskData['source']): string {
-  return source === 'workdir' ? 'Added working directory' : 'Project'
+  if (source === 'workdir') return 'Added working directory'
+  if (source === 'spawn') return 'Git operation'
+  return 'Project'
 }
 
 export function GitConfigRiskToast() {

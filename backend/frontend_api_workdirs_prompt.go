@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -25,13 +26,20 @@ const promptAutoWorkDirDescription = "auto-detected from prompt"
 var homeRelativeRe = regexp.MustCompile(`~[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9/_.\-~]+)?`)
 
 // autoAddPromptWorkDirs scans the user's prompt text for local filesystem
-// paths and adds every existing directory as a session-scoped auxiliary work
-// directory, so prose-mentioned directories become containment roots. Existing
-// directories only; already-recorded and broadly-scoped paths (see
-// [isSensitiveWorkDir]) are skipped; best-effort end to end — a failure never
-// blocks the message. Emits one workdirs:changed when anything was added.
-// See specs/architecture/security-model.md.
-func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
+// paths and silently adds the ones that do NOT widen the session's containment
+// as session-scoped auxiliary work directories: a candidate is added only when
+// it lies inside the session's workspace or inside an already-approved session
+// root (explicitly added by the user, or previously recorded). Everything else
+// — an unrelated home directory, a hidden state/credential store (~/.ssh,
+// ~/.c0wrk), an arbitrary absolute path — is left to the user's explicit
+// action in the UI: prompt text is untrusted input (a repository can plant a
+// command template whose body mentions credential directories — ADR-096
+// templates are expanded and sent without a preview), so a mention must never
+// become a read root on its own. Existing directories only; already-recorded
+// and broadly-scoped paths (see [isSensitiveWorkDir]) are skipped; best-effort
+// end to end — a failure never blocks the message. Emits one workdirs:changed
+// when anything was added. See specs/architecture/security-model.md.
+func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, workspaceRoot, text string) {
 	f.seedAcquire()
 	if f.store == nil || strings.TrimSpace(text) == "" {
 		return
@@ -42,6 +50,11 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 		return
 	}
 
+	// approved holds the containment roots recorded BEFORE this message: the
+	// eligibility check runs against this fixed set, so an auto-added path
+	// can never authorize a further candidate inside it within the same pass
+	// (no chained widening from one prompt).
+	approved := make(map[string]struct{})
 	existing := make(map[string]struct{})
 	{
 		ctx, cancel := context.WithTimeout(f.ctx(), 5*time.Second)
@@ -51,6 +64,7 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 			f.log().Warn("auto-add: failed to list existing session work directories", "session", sessionID, "error", err)
 		} else {
 			for _, rec := range recs {
+				approved[rec.Path] = struct{}{}
 				existing[rec.Path] = struct{}{}
 			}
 		}
@@ -63,6 +77,9 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 			continue
 		}
 		if isSensitiveWorkDir(resolved) {
+			continue
+		}
+		if !promptAutoAddAllowed(resolved, workspaceRoot, approved) {
 			continue
 		}
 		if _, ok := existing[resolved]; ok {
@@ -91,18 +108,57 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 	}
 }
 
-// isSensitiveWorkDir reports whether a path is too broad to add silently from
-// a prompt mention: the filesystem/volume root, the home root, or a top-level
-// system directory. Narrow subdirectories (/opt/build) stay auto-addable.
+// promptAutoAddAllowed reports whether a resolved candidate may be added
+// silently from prompt text: only when it lies inside the session's workspace
+// or inside an already-approved session root (equal counts as within — the
+// candidate itself is already a containment root). Containment goes through
+// the centralized path primitive; a containment error resolves to "not
+// allowed" (fail-closed).
+func promptAutoAddAllowed(candidate, workspaceRoot string, approved map[string]struct{}) bool {
+	if withinRoot(workspaceRoot, candidate) {
+		return true
+	}
+	for root := range approved {
+		if withinRoot(root, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// withinRoot reports whether child lies within parent; an empty parent never
+// contains anything.
+func withinRoot(parent, child string) bool {
+	if parent == "" {
+		return false
+	}
+	ok, err := config.IsWithinPath(parent, child)
+	return err == nil && ok
+}
+
+// isSensitiveWorkDir reports whether a path is too broad or too sensitive to
+// add silently from a prompt mention: the filesystem/volume root, the home
+// root, a hidden directory directly under home (state/credential stores by
+// convention — ~/.ssh, ~/.c0wrk, ~/.aws, ~/.gnupg, ~/.kube, ~/.config), or a
+// top-level system directory. Deeper paths are governed by
+// [promptAutoAddAllowed]: nothing outside the workspace and already-approved
+// roots is eligible at all.
 func isSensitiveWorkDir(resolved string) bool {
 	resolved = filepath.Clean(resolved)
 	// Filesystem/volume root ("/", "C:\").
 	if filepath.Dir(resolved) == resolved {
 		return true
 	}
-	// Home-directory root (a bare "~" mention).
+	// The home root and hidden directories directly under it: the hidden ones
+	// are state/credential stores by convention, and a prompt mention (or a
+	// planted template mentioning them) must never silently turn one into a
+	// session read root.
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if resolved == filepath.Clean(home) {
+		home = filepath.Clean(home)
+		if resolved == home {
+			return true
+		}
+		if filepath.Dir(resolved) == home && strings.HasPrefix(filepath.Base(resolved), ".") {
 			return true
 		}
 	}

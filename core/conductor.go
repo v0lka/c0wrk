@@ -1103,12 +1103,34 @@ func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, age
 }
 
 // subagentCtx strips Conductor-only context values — required for any
-// non-redelegating subagent (three cleared classes + trajectory detach).
-// See specs/domains/orchestration/delegation.md ("Subagent Context Narrowing").
+// non-redelegating subagent (five cleared classes + trajectory detach). The
+// PlanStepExecutor handoff is deliberate: execute_plan is GroupSystem +
+// PolicyAlwaysAllow, so the registry's gates never stop a subagent's call —
+// without the strip a delegated child could drive the PARENT task's plan
+// waves (force re-running approved steps, unlimited executor recursion),
+// because the value survives the context inheritance. StepCompleteFunc is
+// the same class: declare_step_complete would otherwise terminate steps of
+// the PARENT task's plan (skipped waves, a plan finished without its
+// verification steps). GoalProposer mirrors them as defense in depth behind
+// resolveTaskTools (propose_goal is already excluded from subagent tool
+// sets). See specs/domains/orchestration/delegation.md ("Subagent Context
+// Narrowing").
 func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithDelegationRegistry(ctx, nil)
 	ctx = tools.WithDelegationLauncher(ctx, nil)
+	// Strip an inherited dispatch catalog: the delegating conduit (the goal
+	// verifier, a redelegating subagent) labeled its delegate tool call with
+	// ITS catalog, and the label inherits downward through Launch — without
+	// this clear the child's own catalog decorator would see a catalog
+	// already present, skip its write, and Gate 2c would enforce the PARENT's
+	// grant over the child's own (verifier-only names dispatchable, the
+	// child's granted names refused). The child's decorator is the writer
+	// closest to the model; first-writer-wins needs an actually-empty start.
+	ctx = tools.ClearDelegationCatalog(ctx)
 	ctx = tools.WithPlanPublisher(ctx, nil)
+	ctx = tools.WithPlanStepExecutor(ctx, nil)
+	ctx = tools.WithStepCompleteFunc(ctx, nil)
+	ctx = tools.WithGoalProposer(ctx, nil)
 	ctx = tools.WithReflectionRunner(ctx, nil)
 	ctx = tools.WithPlanChecker(ctx, nil)
 	ctx = orchestration.WithDelegationRegistry(ctx, nil)
@@ -1266,6 +1288,11 @@ func (l *conductorLauncher) relaunchRegularLeg(ctx context.Context, t tools.Dele
 func (l *conductorLauncher) redelegTaskCtx(ctx context.Context, childReg *tools.DelegationRegistry) context.Context {
 	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
 	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
+	// Strip the inherited dispatch catalog (see subagentCtx): the delegating
+	// conduit's label must never survive into a redelegating child's own
+	// tool-call contexts, or Gate 2c would enforce the parent's grant over
+	// this child's own.
+	taskCtx = tools.ClearDelegationCatalog(taskCtx)
 	// Also inject into the sp4rk-level context key so the sp4rk Conductor's
 	// finish guard (executor.SetFinishGuard) can find the child registry and
 	// reject finish while sub-delegations are still pending.
@@ -1675,6 +1702,18 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	if len(profileSkills) > 0 && toolExec != nil {
 		toolExec = &activeSkillsToolExec{inner: toolExec, skills: &ActiveSkills{Skills: profileSkills}}
 	}
+	// Pin this subagent's dispatches to its advertised catalog (Gate 2c in
+	// ToolRegistry.Execute): the descriptor strip shapes what the model SEES,
+	// the catalog shapes what actually DISPATCHES — batch sub-calls and
+	// hidden-name calls included. A redelegating child's own delegate/
+	// cancel_delegation calls stay dispatchable: the delegation launcher in
+	// the task context is the signal that makes them functional at all (the
+	// redeleg path re-adds both to the advertised set), so the catalog
+	// mirrors that extension; a non-redelegating subagentCtx strips the
+	// launcher and keeps both names out.
+	if toolExec != nil {
+		toolExec = &delegationCatalogToolExec{inner: toolExec, catalog: delegationCatalogFor(ctx, taskTools)}
+	}
 	executor := agent.NewExecutor(caller, toolExec, maxSteps, execOpts...)
 	executor.SetPlanContext(t.ID, 0, 0)
 	l.configureExecutor(executor)
@@ -1717,14 +1756,19 @@ func dishonorableCompositeModelOverrideReason(bare string) string {
 }
 
 // conductorOnlyToolNames must never reach a regular subagent: delegation
-// machinery and the Conductor's plan/reflect workflow. See
-// specs/domains/orchestration/delegation.md.
+// machinery, the Conductor's plan/reflect workflow, and the plan step
+// lifecycle (declare_step_complete would let a child terminate steps of the
+// PARENT task's plan — the StepCompleteFunc strip in subagentCtx is the
+// structural backstop, this keeps the tool out of the advertised set).
+// See specs/domains/orchestration/delegation.md and
+// specs/contracts/conductor-tools.md.
 var conductorOnlyToolNames = map[string]struct{}{
-	"delegate":          {},
-	"cancel_delegation": {},
-	"declare_plan":      {},
-	"execute_plan":      {},
-	"reflect":           {},
+	"delegate":              {},
+	"cancel_delegation":     {},
+	"declare_plan":          {},
+	"execute_plan":          {},
+	"declare_step_complete": {},
+	"reflect":               {},
 }
 
 // coreNonCacheableToolNames extend the sp4rk default non-cacheable set via
@@ -2159,6 +2203,60 @@ func (a *activeSkillsToolExec) CacheStrategy(ctx context.Context, name string, i
 	return a.inner.CacheStrategy(ctx, name, input)
 }
 
+// delegationCatalogFor computes a subagent's dispatch catalog: the advertised
+// descriptor set, extended with delegate/cancel_delegation exactly when the
+// delegation launcher is present in the context — the same signal that makes
+// those tools functional at all (the redelegating path; a subagentCtx-derived
+// context strips the launcher and keeps both names out).
+func delegationCatalogFor(ctx context.Context, taskTools []sdktools.ToolDescriptor) tools.DelegationCatalog {
+	catalog := tools.CatalogFromDescriptors(taskTools)
+	if tools.DelegationLauncherFrom(ctx) != nil {
+		catalog.Allow("delegate", "cancel_delegation")
+	}
+	return catalog
+}
+
+// delegationCatalogToolExec injects the delegated subagent's dispatch catalog
+// into every tool call's context before the inner executor sees it; the
+// registry's Gate 2c refuses names outside the catalog, so the dispatch
+// surface can never exceed what the delegation granted (the descriptor strip
+// alone only shapes the prompt). The injection is first-writer-wins: the
+// decorator closest to the model — the FIRST to run on each call's context —
+// writes the catalog the registry reads. A verifier-delegated child runs
+// through TWO decorators (the verifier's executor is already catalog-wrapped
+// when the delegation launcher builds the child, and buildSubAgentTask wraps
+// it again with the child's own grant); with plain WithValue semantics the
+// second wrap would overwrite the child's catalog with the verifier's and the
+// child would dispatch under the wrong grant in both directions
+// (over-permissive: verifier-only names; over-restrictive: the child's full
+// grant gated by the narrower verifier set). Two mechanisms keep the child's
+// grant authoritative at any depth: the launcher's context builders strip an
+// INHERITED label (subagentCtx / redelegTaskCtx clear what rode in on the
+// delegate call's context), and this decorator writes only when nothing is
+// present — so a nested wrap never overwrites the label the child's own wrap
+// already wrote. The verifier's own pass (a single decorator) keeps its
+// catalog, and the Conductor's main children (also single) are unaffected.
+type delegationCatalogToolExec struct {
+	inner   agent.ToolExecutor
+	catalog tools.DelegationCatalog
+}
+
+func (d *delegationCatalogToolExec) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
+	if _, ok := tools.DelegationCatalogFromContext(ctx); !ok {
+		ctx = tools.WithDelegationCatalog(ctx, d.catalog)
+	}
+	return d.inner.Execute(ctx, name, input)
+}
+func (d *delegationCatalogToolExec) GetToolSource(name string) string {
+	return d.inner.GetToolSource(name)
+}
+func (d *delegationCatalogToolExec) IsToolUntrusted(name string) bool {
+	return d.inner.IsToolUntrusted(name)
+}
+func (d *delegationCatalogToolExec) CacheStrategy(ctx context.Context, name string, input json.RawMessage) sdktools.CacheMode {
+	return d.inner.CacheStrategy(ctx, name, input)
+}
+
 // conductorPublisher implements tools.PlanPublisher.
 type conductorPublisher struct {
 	emitter   Emitter
@@ -2448,8 +2546,11 @@ func RunConductor(
 	ctx = agent.WithTrajectoryStore(ctx, trajStore)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
-	// Inline-step lifecycle for update_checklist / declare_step_complete;
-	// subagents get their own observation-only callback (buildSubAgentTask).
+	// Inline-step lifecycle for update_checklist / declare_step_complete on
+	// the CONDUCTOR's own pass. Subagents get neither: subagentCtx strips
+	// StepCompleteFunc (a child must not terminate steps of the parent
+	// task's plan), and the subagent checklist observation rides sp4rk's
+	// subagent todo callback, not this wiring.
 	ctx = agent.WithStepTodoUpdateFunc(ctx, inlineLifecycle.onChecklistUpdate)
 	ctx = tools.WithStepCompleteFunc(ctx, inlineLifecycle.completeStep)
 	ctx = tools.WithPlanStepExecutor(ctx, launcher)
