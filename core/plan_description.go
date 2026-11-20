@@ -105,7 +105,9 @@ func fenceRun(s string, c byte) int {
 // canonical shape the reviewer surface and the frontend plan parser expect.
 // Outside code fences: `#`-headers become bold text, known field labels
 // (What/Where/How/AC in any spelling, separated by `:` or ` - `) become
-// `**What**:`-style markers, and runs of 3+ blank lines collapse to one.
+// `**What**:`-style markers, task-list checkboxes (`- [ ] `, `1. [x] `) are
+// stripped from list items — AC are declared as a plain unordered list —
+// and runs of 3+ blank lines collapse to one.
 // Fence bodies stay verbatim and an unclosed trailing fence is closed.
 // Idempotent: canonical input passes through unchanged.
 func normalizePlanDescription(desc string) string {
@@ -171,6 +173,9 @@ func normalizePlanProseLine(line string) string {
 		i++
 	}
 	indent, body := line[:i], line[i:]
+	if out, changed := stripPlanTaskMarkers(body); changed {
+		body = out
+	}
 	if out, ok := planBoldLabelLine(body); ok {
 		return indent + out
 	}
@@ -183,7 +188,74 @@ func normalizePlanProseLine(line string) string {
 	if out, ok := planLabelLine(body, false); ok {
 		return indent + out
 	}
-	return line
+	return indent + body
+}
+
+// stripPlanTaskMarkers removes Markdown task-list checkboxes from a list-item
+// body and reports whether anything changed. A checkbox is a `[ ]`, `[x]` or
+// `[X]` token immediately after a list marker (`-`, `*`, `+`, or an ordered
+// `N.`/`N)`) followed by one space. Checkboxed ordered items demote to plain
+// `- ` bullets: the checkbox marks the line as task-list content, and plan AC
+// are declared as a plain unordered list, so the normalizer enforces both.
+// Repeats while a checkbox remains (a double-marker line converges in one
+// call), keeping normalizePlanDescription idempotent.
+func stripPlanTaskMarkers(body string) (string, bool) {
+	changed := false
+	for {
+		out, ok := stripPlanTaskMarker(body)
+		if !ok {
+			return body, changed
+		}
+		body, changed = out, true
+	}
+}
+
+// stripPlanTaskMarker strips one leading checkbox from body, rewriting a
+// checkboxed ordered marker to `-`. Non-list lines and list items without a
+// checkbox pass through unchanged (ok=false).
+func stripPlanTaskMarker(body string) (string, bool) {
+	if body == "" {
+		return body, false
+	}
+	i := 0
+	ordered := false
+	switch body[0] {
+	case '-', '*', '+':
+		i = 1
+	default:
+		for i < len(body) && body[i] >= '0' && body[i] <= '9' {
+			i++
+		}
+		if i == 0 || i >= len(body) || (body[i] != '.' && body[i] != ')') {
+			return body, false
+		}
+		ordered = true
+		i++
+	}
+	// Exactly one space must separate the marker from the checkbox (the
+	// CommonMark task-list shape; "- [ ]foo" is plain text, not a task list).
+	if i >= len(body) || body[i] != ' ' {
+		return body, false
+	}
+	i++
+	if i+2 >= len(body) || body[i] != '[' || body[i+2] != ']' {
+		return body, false
+	}
+	switch body[i+1] {
+	case ' ', 'x', 'X':
+	default:
+		return body, false
+	}
+	boxStart := i
+	bullet := body[:boxStart-1] // the list marker without its trailing space
+	if ordered {
+		bullet = "-" // checkboxed ordered items demote to plain bullets
+	}
+	rest := strings.TrimSpace(body[boxStart+3:])
+	if rest == "" {
+		return bullet, true
+	}
+	return bullet + " " + rest, true
 }
 
 // planHeaderSplit recognizes an ATX header (`#` run of 1-6, one space/tab,

@@ -63,3 +63,26 @@ Negative / residual:
 - `core/tools/declare_plan.go` — the declared contract on the tool description and JSON schema.
 - `frontend/src/lib/planParser.ts` — the parser whose field grammar (`detectFieldHeader` / `normalizeFieldName`) the canonical labels match; `serializePlanMarkdown`, the rewrite that made deviations lossy.
 - [model-profiles.md](../domains/model-profiles.md) (Lite variant) — the prompt swap that makes tool surfaces format-authoritative.
+
+## Amendment (AC list items without checkboxes)
+
+The declared contract above spells the AC list as "a `- [ ]` checklist".
+Since 2026-11-20 the AC list is declared as a plain unordered list — `- ...`
+lines without task-list checkboxes — with the same both-halves structure:
+
+- **Declared**: the tool description (Inputs section) and the
+  `tasks[].description` schema text in `core/tools/declare_plan.go` now say
+  "AC: plain unordered list, no checkboxes".
+- **Enforced**: `normalizePlanDescription` strips task-list checkbox markers
+  (`[ ]` / `[x]` / `[X]` directly after a `-`/`*`/`+`/`N.`/`N)` list marker)
+  from prose lines — checkboxed ordered items demote to plain `- ` bullets;
+  fence bodies stay verbatim and idempotency is preserved (a remaining
+  checkbox is re-stripped in the same pass). `planParser.ts` mirrors the rule
+  (`stripCheckbox`) so a PlanEditor round-trip of a legacy checkbox-bearing
+  plan does not resurrect the markers.
+
+Everything else in this decision stands unchanged: the contract is still
+declared on the tool surfaces and enforced at the publish boundary, all four
+description consumers receive the canonical form, and legacy persisted plans
+are still read as-is without re-normalization (re-declaring the plan remains
+the migration path — and now also drops the checkboxes).

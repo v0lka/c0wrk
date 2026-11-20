@@ -110,6 +110,70 @@ func TestNormalizePlanDescription_CanonicalizesLabels(t *testing.T) {
 	})
 }
 
+// TestNormalizePlanDescription_StripsCheckboxes covers task-list checkboxes
+// being stripped from prose list items (AC are declared as a plain unordered
+// list): bullets keep their marker, checkboxed ordered items demote to
+// bullets, non-task-list bracket tokens and fence bodies stay verbatim.
+func TestNormalizePlanDescription_StripsCheckboxes(t *testing.T) {
+	runPlanNormalizeCases(t, []planNormalizeCase{
+		{
+			name: "unchecked bullet item loses the checkbox",
+			in:   "**Acceptance Criteria**:\n- [ ] tests pass\n",
+			want: "**Acceptance Criteria**:\n- tests pass\n",
+		},
+		{
+			name: "checked bullet item loses the checkbox",
+			in:   "- [x] tests pass\n",
+			want: "- tests pass\n",
+		},
+		{
+			name: "uppercase X checkbox strips too",
+			in:   "- [X] tests pass\n",
+			want: "- tests pass\n",
+		},
+		{
+			name: "star bullet checkbox strips",
+			in:   "* [x] starred item\n",
+			want: "* starred item\n",
+		},
+		{
+			name: "indented nested checkbox strips with indent kept",
+			in:   "  - [ ] nested item\n",
+			want: "  - nested item\n",
+		},
+		{
+			name: "checkboxed ordered item demotes to bullet",
+			in:   "1. [ ] first criterion\n",
+			want: "- first criterion\n",
+		},
+		{
+			name: "bare checked item keeps just the marker",
+			in:   "- [x]\n",
+			want: "-\n",
+		},
+		{
+			name: "double checkbox converges in one pass",
+			in:   "- [ ] [x] weird nesting\n",
+			want: "- weird nesting\n",
+		},
+		{
+			name: "plain numbered item keeps its marker",
+			in:   "1. first do this\n2. then that\n",
+			want: "1. first do this\n2. then that\n",
+		},
+		{
+			name: "bracket without checkbox semantics stays",
+			in:   "- [] empty brackets stay\n- [y] odd token stays\n[ ] bare bracket stays\n",
+			want: "- [] empty brackets stay\n- [y] odd token stays\n[ ] bare bracket stays\n",
+		},
+		{
+			name: "checkbox inside a fence stays verbatim",
+			in:   "```md\n- [ ] not an AC item\n```\n",
+			want: "```md\n- [ ] not an AC item\n```\n",
+		},
+	})
+}
+
 // TestNormalizePlanDescription_FenceBalancing covers the unclosed trailing
 // fence being closed with its own marker and length.
 func TestNormalizePlanDescription_FenceBalancing(t *testing.T) {
@@ -180,6 +244,7 @@ func TestNormalizePlanDescription_BlankRuns(t *testing.T) {
 func TestNormalizePlanDescription_Idempotent(t *testing.T) {
 	inputs := []string{
 		"## What\nAdd the normalizer\n\nWhere: core/\n\nHow - wire Publish\n\nAC:\n- tests green\n\n\n\nTrailing blanks collapse\n",
+		"**Acceptance Criteria**:\n- [ ] a\n- [x] b\n",
 		"### Where: core/foo.go\n\n```sh\ncode\n",
 		"**What**: already canonical\n**Acceptance Criteria**:\n- bullet\n",
 		"Run a no-op build so later measurements are stable.\n",
@@ -241,7 +306,7 @@ func TestPublish_NormalizesPlanDescriptions(t *testing.T) {
 	emitter := &publishNormalizeEmitter{}
 	p := &conductorPublisher{emitter: emitter, bb: bb, plansDir: t.TempDir()}
 
-	raw := "## What\nAdd the normalizer\n\nAC:\n- tests green"
+	raw := "## What\nAdd the normalizer\n\nAC:\n- [ ] tests green"
 	want := "**What**:\nAdd the normalizer\n\n**Acceptance Criteria**:\n- tests green"
 	path, err := p.Publish(context.Background(), []tools.PlanTaskInput{
 		{ID: "s1", Summary: "Normalize", Description: raw},
@@ -257,7 +322,7 @@ func TestPublish_NormalizesPlanDescriptions(t *testing.T) {
 	if !strings.Contains(string(md), want) {
 		t.Errorf("plan file must carry the normalized description;\nwant fragment %q\n--- file ---\n%s", want, md)
 	}
-	if strings.Contains(string(md), "## What") || strings.Contains(string(md), "AC:") {
+	if strings.Contains(string(md), "## What") || strings.Contains(string(md), "AC:") || strings.Contains(string(md), "- [ ]") {
 		t.Errorf("plan file still carries unnormalized text:\n%s", md)
 	}
 

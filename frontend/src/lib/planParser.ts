@@ -82,12 +82,27 @@ function extractFields(block: string): Record<string, string> {
     }
 
     if (currentField) {
-      contentLines.push(trimmed)
+      contentLines.push(stripCheckbox(trimmed))
     }
   }
   flushField()
 
   return result
+}
+
+// Task-list checkboxes are not part of the canonical plan grammar (AC are a
+// plain unordered list — the Go normalizer strips them at publish, see
+// core/plan_description.go stripPlanTaskMarkers). Stripping here mirrors that
+// rule so legacy checkbox-bearing plans stay checkbox-free across a PlanEditor
+// round-trip. Checkboxed ordered items demote to plain bullets.
+function stripCheckbox(line: string): string {
+  let out = line
+  for (;;) {
+    const m = /^([-*+]|\d+[.)]) \[( |x|X)\] ?(.*)$/.exec(out)
+    if (!m) return out
+    const bullet = /^\d/.test(m[1]!) ? '-' : m[1]!
+    out = `${bullet} ${m[3]!}`.trimEnd()
+  }
 }
 
 function detectFieldHeader(line: string): { name: string; inlineContent: string } | null {
