@@ -14,9 +14,9 @@ interface GitHistoryRowProps {
   date: string
   /**
    * Per-commit changed-file counts from GetGitHistory (`commits.stats`):
-   * added / modified / deleted, rendered as a compact colored cell at the
-   * end of the row. Optional so a stale-bindings backend that omits the
-   * field simply renders rows without the cell.
+   * added / modified / deleted, rendered as a compact colored cell after the
+   * refs (before the short SHA). Optional so a stale-bindings backend that
+   * omits the field simply renders rows without the cell.
    */
   stats?: CommitStats
   /** Open the read-only commit-diff review page for this commit's SHA. */
@@ -24,14 +24,12 @@ interface GitHistoryRowProps {
 }
 
 /**
- * A single commit row in the unified history+graph view. A fixed
- * ROW_SPACING-pixel two-line row (message + refs + short SHA + stats on the
- * first line, author + relative time on the second) so the SVG lane node
- * stays aligned with the message line — rows never expand inline, so the
- * lane layout is constant. Hovering reveals a tooltip carrying the full
- * commit date and the commit subject. Clicking the short SHA opens the
- * commit's read-only diff review in the file viewer; the row body itself
- * is inert.
+ * A single commit row in the compact history view. A fixed ROW_SPACING-pixel
+ * two-line row (message + refs + stats + short SHA on the first line, author
+ * + relative time on the second). Rows never expand inline. Hovering reveals
+ * a tooltip carrying the full commit date and the commit subject. Clicking
+ * the short SHA opens the commit's read-only diff review in the file viewer;
+ * the row body itself is inert.
  */
 export function GitHistoryRow({
   node,
@@ -66,6 +64,16 @@ export function GitHistoryRow({
                   {ref.replace(/^tag:\s*/, '')}
                 </span>
               ))}
+              {stats && (
+                <span
+                  className="flex shrink-0 items-center gap-1 font-mono text-xs leading-none select-none"
+                  title={`${stats.added} added, ${stats.modified} modified, ${stats.deleted} deleted`}
+                >
+                  <span className={statColorClass('added')}>+{stats.added}</span>
+                  <span className={statColorClass('modified')}>~{stats.modified}</span>
+                  <span className={statColorClass('deleted')}>-{stats.deleted}</span>
+                </span>
+              )}
               {onShaClick ? (
                 <span
                   role="button"
@@ -79,16 +87,6 @@ export function GitHistoryRow({
                 </span>
               ) : (
                 <span className="shrink-0 font-mono text-xs text-info select-text">{shortSha(node.sha)}</span>
-              )}
-              {stats && (
-                <span
-                  className="flex shrink-0 items-center gap-1 font-mono text-xs leading-none select-none"
-                  title={`${stats.added} added, ${stats.modified} modified, ${stats.deleted} deleted`}
-                >
-                  <span className={statColorClass('added')}>+{stats.added}</span>
-                  <span className={statColorClass('modified')}>~{stats.modified}</span>
-                  <span className={statColorClass('deleted')}>-{stats.deleted}</span>
-                </span>
               )}
             </div>
             <div className="flex items-center text-xs leading-none text-muted-foreground">

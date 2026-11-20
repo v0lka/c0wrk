@@ -51,9 +51,9 @@ export function edgePath(x1: number, y1: number, x2: number, y2: number): string
   return `M ${x1} ${y1} C ${x1} ${ym} ${x2} ${ym} ${x2} ${y2}`
 }
 
-/** Color a ref decoration: HEAD → highlight, tag → warning, branch → info. */
+/** Color a ref decoration: HEAD → highlight, tag → warning, branch → keyword. */
 export function refColor(ref: string): string {
   if (ref.startsWith('HEAD')) return 'text-highlight'
   if (ref.startsWith('tag:')) return 'text-warning'
-  return 'text-info'
+  return 'text-hljs-keyword'
 }

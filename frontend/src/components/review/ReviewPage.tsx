@@ -15,9 +15,16 @@ interface ReviewPageProps {
   sessionId?: string
   /** Commit SHA — when set, renders a read-only view of that commit's diff. */
   commitSha?: string
+  /**
+   * Commit-review only: restrict the rendered diff to ONE file of the
+   * commit (post-commit path, or the rename source via `old_path` — the
+   * same matching rule as the graph page's sliceDiffByPath). The commit's
+   * full diff is still fetched once; only the list is narrowed.
+   */
+  onlyFile?: string
 }
 
-export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
+export function ReviewPage({ sessionId, commitSha, onlyFile }: ReviewPageProps) {
   const readOnly = !!commitSha
   const [diff, setDiff] = useState<reviewApi.ReviewFileDiff[]>([])
   /** Mirrors `diff` for the fetchDiff no-op guard (stable callback, no stale closure). */
@@ -36,15 +43,21 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       const result = commitSha
         ? await reviewApi.getCommitDiff(commitSha)
         : await reviewApi.getReviewDiff()
+      // Commit-file mode narrows the fetched commit diff to the one file
+      // (post-commit path first, then the rename source). Interactive
+      // working-tree review never sets onlyFile — the list passes through.
+      const filtered = onlyFile && commitSha
+        ? result.filter((f) => f.path === onlyFile || f.old_path === onlyFile)
+        : result
       // No-op guard: when the re-fetch is structurally identical to what is
       // already rendered (the common case for background events that did not
       // actually change the tree), keep the previous state objects. This
       // preserves referential identity for every memo/prop downstream, so
       // nothing re-renders and an in-progress text selection survives.
-      const unchanged = sameReviewDiff(diffRef.current, result)
+      const unchanged = sameReviewDiff(diffRef.current, filtered)
       if (!unchanged) {
-        diffRef.current = result
-        setDiff(result)
+        diffRef.current = filtered
+        setDiff(filtered)
       }
       // Only an explicit (non-silent) load resets the hunk cursor. A silent
       // background re-fetch (git stage/discard/commit during a review) must
@@ -58,7 +71,7 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
         // recomputes from the DOM shortly after, so this is just to avoid a
         // transient out-of-range indicator value.
         setCurrentHunk((prev) => {
-          const total = result.reduce((count, file) => count + file.hunks.length, 0)
+          const total = filtered.reduce((count, file) => count + file.hunks.length, 0)
           return total === 0 ? 0 : Math.min(prev, total - 1)
         })
       }
@@ -71,7 +84,7 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       // load's spinner, nor can two in-flight requests race on setLoading.
       if (!silent) setLoading(false)
     }
-  }, [commitSha])
+  }, [commitSha, onlyFile])
 
   useEffect(() => {
     void fetchDiff()

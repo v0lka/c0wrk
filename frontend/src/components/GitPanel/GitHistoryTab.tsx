@@ -1,36 +1,30 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Loader2, AlertCircle, GitGraph } from 'lucide-react'
-import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/gitGraphLayout'
+import { computeGraphLayout, type GraphNode } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
 import { useGitPanelStore, GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { Button } from '@/components/ui/button'
-import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor } from './gitGraphRender'
-import { GitGraphGutter } from './GitGraphGutter'
+import { ROW_SPACING } from './gitGraphRender'
 import { GitHistoryRow } from './GitHistoryRow'
 import { GitHistoryContextMenu } from './GitHistoryContextMenu'
 
 /**
- * Unified commit history + graph tab: an SVG lane gutter alongside fixed
- * ROW_SPACING commit rows that carry every field from both former tabs
- * (message, refs, short SHA, per-commit changed-file stats, author, date).
- * Rows never expand inline — heights are constant, so the lane layout is
- * trivial — and the full-width DAG inspection lives in the file viewer:
- * the graph button beside the filter bar opens the GIT_GRAPH_TAB_PATH tab.
- * Clicking a commit's short SHA opens its read-only diff review in the
- * viewer as well.
+ * Compact commit history: fixed ROW_SPACING rows carrying every field from
+ * the former tabs (message, refs, per-commit changed-file stats, short SHA,
+ * author, date). Rows never expand inline; the lane-graph inspection lives
+ * in the file viewer — the history button beside the filter bar opens the
+ * GIT_GRAPH_TAB_PATH tab. Clicking a commit's short SHA opens its read-only
+ * diff review in the viewer as well.
  *
  * Data comes from a single paginated source (`useGitHistory` →
  * `GetGitHistory`); the next page is loaded on scroll-to-end or via the
- * "Load more" button.
- *
- * A glob/regex file filter (shared with the file-tree panel via `FilterBar`)
- * narrows the list to commits that touched matching files. While a filter is
- * active the lane graph is hidden and the remaining rows take the full width
- * (pushed left), since a filtered subset no longer forms a connected graph.
+ * "Load more" button. A glob/regex file filter (shared with the file-tree
+ * panel via `FilterBar`) narrows the list to commits that touched matching
+ * files.
  */
 export function GitHistoryTab() {
   const { commits, isLoading, isLoadingMore, hasMore, error, reload, loadMore } = useGitHistory()
@@ -92,7 +86,8 @@ export function GitHistoryTab() {
     }
   }, [pendingHistoryFilter, setFilterText, clearPendingHistoryFilter])
 
-  // Lane layout over the full commit set (used only while the graph shows).
+  // Graph layout is still computed per commit (the rows consume GraphNodes);
+  // only the SVG gutter rendering left this tab — it lives in the viewer.
   const nodes = useMemo(() => computeGraphLayout(commits), [commits])
   const shaToNode = useMemo(() => {
     const map = new Map<string, GraphNode>()
@@ -100,19 +95,11 @@ export function GitHistoryTab() {
     return map
   }, [nodes])
 
-  // Rows are fixed-height (no inline expansion), so the lane layout is
-  // trivial: every row is ROW_SPACING tall and the SVG node always sits
-  // NODE_OFFSET below the row top.
-  const rowY = useMemo(
-    () => computeRowYLayout(nodes.map(() => ROW_SPACING), ROW_SPACING, NODE_OFFSET),
-    [nodes],
-  )
-
-  // Open the commit-graph tab in the file viewer. The pseudo-path is opened
+  // Open the history page in the file viewer. The pseudo-path is opened
   // as a VIRTUAL file (the canonical openResearch/openPaper pattern): the
   // virtual flag keeps the viewer's data loader, the tree_changed reload and
   // persistence from ever treating the tab as an on-disk file. The viewer is
-  // expanded so the graph is visible.
+  // expanded so the page is visible.
   const handleOpenGraph = useCallback(() => {
     const { openVirtualFile, setCollapsed } = useFileViewerStore.getState()
     openVirtualFile(GIT_GRAPH_TAB_PATH)
@@ -131,32 +118,16 @@ export function GitHistoryTab() {
 
   // ── Virtualization ───────────────────────────────────────────────────
   // Only visible rows are mounted — essential now that GetGitHistory loads
-  // large histories a page at a time. Two virtualizers are created (one per
-  // rendering mode); the inactive one has count 0 so it produces no items.
-  // Both share the same scroll element. Heights are constant (ROW_SPACING),
+  // large histories a page at a time. Heights are constant (ROW_SPACING),
   // so sizing needs no DOM measurement (which returns 0 in jsdom anyway).
   const scrollRef = useRef<HTMLDivElement>(null)
-
-  // SVG gutter width — needed to offset the row column past the graph.
-  const svgWidth = useMemo(() => {
-    if (nodes.length === 0) return 0
-    const maxLane = nodes.reduce((m, n) => Math.max(m, n.lane), 0)
-    return xFor(maxLane) + LANE_SPACING
-  }, [nodes])
-
-  const fullVirtualizer = useVirtualizer({
-    count: isFiltering ? 0 : nodes.length,
+  const visibleCommits = isFiltering ? filteredCommits : commits
+  const virtualizer = useVirtualizer({
+    count: visibleCommits.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_SPACING,
     overscan: 8,
-    getItemKey: (i: number) => nodes[i]?.sha ?? i,
-  })
-  const filteredVirtualizer = useVirtualizer({
-    count: isFiltering ? filteredCommits.length : 0,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_SPACING,
-    overscan: 8,
-    getItemKey: (i: number) => filteredCommits[i]?.sha ?? i,
+    getItemKey: (i: number) => visibleCommits[i]?.sha ?? i,
   })
 
   // Infinite-scroll edge trigger: when the user scrolls near the bottom of
@@ -202,15 +173,15 @@ export function GitHistoryTab() {
   return (
     <div className="flex flex-col min-h-0 flex-1">
       <div className="flex shrink-0 items-center border-b border-border pl-1.5">
-        {/* Commit DAG inspection moved to the file viewer: this button opens
-            the graph pseudo-path tab full-width there. `title` is mandatory —
+        {/* Commit-graph inspection moved to the file viewer: this button opens
+            the history pseudo-path tab full-width there. `title` is mandatory —
             it is the button's only label (icon-only control). */}
         <Button
           variant="ghost"
           size="icon-xs"
           onClick={handleOpenGraph}
-          title="Open commit graph"
-          aria-label="Open commit graph"
+          title="Open history viewer"
+          aria-label="Open history viewer"
         >
           <GitGraph className="size-4" />
         </Button>
@@ -228,97 +199,55 @@ export function GitHistoryTab() {
         onScroll={handleScroll}
         className="flex flex-col min-h-0 flex-1 overflow-y-auto custom-scrollbar"
       >
-        {isFiltering ? (
-          // Filtered view: graph hidden, rows take the full width (left-aligned).
-          isInvalidFilter ? (
-            <p className="p-4 text-center text-xs text-destructive">Invalid regex</p>
-          ) : filteredCommits.length === 0 && !isResolvingFiles ? (
-            <p className="p-4 text-center text-xs text-muted-foreground">No matching commits</p>
-          ) : (
-            <>
-              <div
-                className="shrink-0"
-                style={{
-                  height: filteredVirtualizer.getTotalSize(),
-                  position: 'relative',
-                }}
-              >
-                {filteredVirtualizer.getVirtualItems().map((vi) => {
-                  const commit = filteredCommits[vi.index]
-                  if (!commit) return null
-                  const node = shaToNode.get(commit.sha)
-                  if (!node) return null
-                  return (
-                    <div
-                      key={vi.key}
-                      style={{
-                        position: 'absolute',
-                        top: vi.start,
-                        left: 0,
-                        right: 0,
-                        height: vi.size,
-                      }}
-                      onContextMenu={(e) =>
-                        handleRowContextMenu(e, node.sha, commit.refs)
-                      }
-                    >
-                      <GitHistoryRow
-                        node={node}
-                        author={commit.author}
-                        date={commit.date}
-                        stats={commit.stats}
-                        onShaClick={handleShaClick}
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-              {isResolvingFiles && (
-                <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" /> Resolving files…
-                </div>
-              )}
-            </>
-          )
+        {isFiltering && isInvalidFilter ? (
+          <p className="p-4 text-center text-xs text-destructive">Invalid regex</p>
+        ) : isFiltering && filteredCommits.length === 0 && !isResolvingFiles ? (
+          <p className="p-4 text-center text-xs text-muted-foreground">No matching commits</p>
         ) : (
-          // Full history + lane graph. The SVG gutter is absolutely
-          // positioned so it scrolls in sync with the virtualized rows
-          // beside it. Only visible rows are mounted; the gutter still
-          // renders all nodes/edges (SVG elements are far lighter than
-          // React component trees).
-          <div className="shrink-0" style={{ height: rowY.totalHeight, position: 'relative' }}>
-            <div style={{ position: 'absolute', left: 0, top: 0 }}>
-              <GitGraphGutter nodes={nodes} rowY={rowY} />
+          <>
+            <div
+              className="shrink-0"
+              style={{
+                height: virtualizer.getTotalSize(),
+                position: 'relative',
+              }}
+            >
+              {virtualizer.getVirtualItems().map((vi) => {
+                const commit = visibleCommits[vi.index]
+                if (!commit) return null
+                const node = shaToNode.get(commit.sha)
+                if (!node) return null
+                return (
+                  <div
+                    key={vi.key}
+                    style={{
+                      position: 'absolute',
+                      top: vi.start,
+                      left: 0,
+                      right: 0,
+                      height: vi.size,
+                    }}
+                    onContextMenu={(e) =>
+                      handleRowContextMenu(e, node.sha, commit.refs)
+                    }
+                  >
+                    <GitHistoryRow
+                      node={node}
+                      author={commit.author}
+                      date={commit.date}
+                      stats={commit.stats}
+                      onShaClick={handleShaClick}
+                    />
+                  </div>
+                )
+              })}
             </div>
-            {fullVirtualizer.getVirtualItems().map((vi) => {
-              const node = nodes[vi.index]
-              if (!node) return null
-              const commit = commits[vi.index]
-              return (
-                <div
-                  key={vi.key}
-                  style={{
-                    position: 'absolute',
-                    top: vi.start,
-                    left: svgWidth,
-                    right: 0,
-                    height: vi.size,
-                  }}
-                  onContextMenu={(e) =>
-                    handleRowContextMenu(e, node.sha, commit?.refs ?? [])
-                  }
-                >
-                  <GitHistoryRow
-                    node={node}
-                    author={commit?.author ?? ''}
-                    date={commit?.date ?? ''}
-                    stats={commit?.stats}
-                    onShaClick={handleShaClick}
-                  />
-                </div>
-              )
-            })}
-          </div>
+            {isResolvingFiles && (
+              <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" /> Resolving files…
+              </div>
+            )}
+          </>
         )}
         {hasMore && (
           <div className="flex items-center justify-center py-3">

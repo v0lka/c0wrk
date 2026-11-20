@@ -191,6 +191,42 @@ describe('ReviewPage — working-tree sync with the Git panel "Changes" section'
     })
     expect(reviewMocks.getCommitDiff).toHaveBeenCalledTimes(1)
   })
+
+  it('onlyFile narrows a commit diff to that one file', async () => {
+    reviewMocks.getCommitDiff.mockResolvedValue([
+      { path: 'src/a.ts', hunks: [{ old_start: 1, new_start: 1, raw: '@@ -1,1 +1,1 @@\n-old\n+new' }] },
+      { path: 'README.md', hunks: [{ old_start: 1, new_start: 1, raw: '@@ -1,1 +1,2 @@\n ctx\n+added' }] },
+    ])
+    render(
+      <TooltipProvider>
+        <ReviewPage commitSha="abc1234" onlyFile="README.md" />
+      </TooltipProvider>,
+    )
+    await flush()
+
+    // The FULL commit diff is still fetched once; only the list is narrowed.
+    expect(reviewMocks.getCommitDiff).toHaveBeenCalledTimes(1)
+    expect(reviewMocks.getCommitDiff).toHaveBeenCalledWith('abc1234')
+    expect(document.body.textContent).toContain('README.md')
+    expect(document.body.textContent).toContain('added')
+    expect(document.body.textContent).not.toContain('src/a.ts')
+  })
+
+  it('onlyFile matches a renamed file by its old_path too', async () => {
+    reviewMocks.getCommitDiff.mockResolvedValue([
+      { path: 'src/a.ts', hunks: [{ old_start: 1, new_start: 1, raw: '@@ -1,1 +1,1 @@\n-old\n+new' }] },
+      { path: 'src/renamed.ts', old_path: 'src/old.ts', hunks: [{ old_start: 1, new_start: 1, raw: '@@ -1,1 +1,1 @@\n-x\n+y' }] },
+    ])
+    render(
+      <TooltipProvider>
+        <ReviewPage commitSha="abc1234" onlyFile="src/old.ts" />
+      </TooltipProvider>,
+    )
+    await flush()
+
+    expect(document.body.textContent).toContain('src/renamed.ts')
+    expect(document.body.textContent).not.toContain('src/a.ts')
+  })
 })
 
 // ── Hunk navigation: tracker lifecycle + zoom-safe scroll ────────────────
