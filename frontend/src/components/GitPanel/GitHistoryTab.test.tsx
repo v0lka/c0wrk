@@ -159,23 +159,23 @@ function commitMessages(): string[] {
     .filter((m): m is string => m !== undefined)
 }
 
-/** The lane graph renders one <circle> per commit; it is unique to the gutter
- *  (the filter row's GitGraph icon button also draws an svg — excluded by its
- *  lucide class so the count stays per-commit). */
-function graphNodes(): number {
-  return container.querySelectorAll('svg:not([class*="lucide"]) circle').length
+/** The lane SVG gutter was removed from the panel (it lives in the viewer's
+ *  history page now); the only svg left here is the filter row's lucide icon
+ *  — excluded by its class — so a non-lucide SVG is a regression. */
+function laneSvg(): Element | null {
+  return container.querySelector('svg:not([class*="lucide"])')
 }
 
 describe('GitHistoryTab file filter', () => {
-  it('renders the lane graph and all commits before filtering', async () => {
+  it('renders all commits with no lane graph in the panel', async () => {
     renderTab()
     await flush()
     await flush()
-    expect(graphNodes()).toBe(3)
+    expect(laneSvg()).toBeNull()
     expect(commitMessages()).toEqual(['feat: x', 'docs: readme', 'init'])
   })
 
-  it('hides the graph and narrows to matching commits when filtering', async () => {
+  it('narrows to matching commits when filtering', async () => {
     renderTab()
     await flush()
     await flush()
@@ -183,8 +183,8 @@ describe('GitHistoryTab file filter', () => {
     await act(async () => { setInputValue(input, '*.ts') })
     await flush()
     await flush()
-    // Graph hidden while filtering; only the commit that touched src/a.ts.
-    expect(graphNodes()).toBe(0)
+    // No lane graph while filtering either; only the commit that touched src/a.ts.
+    expect(laneSvg()).toBeNull()
     expect(commitMessages()).toEqual(['feat: x'])
   })
 
@@ -197,10 +197,10 @@ describe('GitHistoryTab file filter', () => {
     await flush()
     await flush()
     expect(container.textContent).toContain('No matching commits')
-    expect(graphNodes()).toBe(0)
+    expect(laneSvg()).toBeNull()
   })
 
-  it('restores the graph and all commits when the filter is cleared', async () => {
+  it('restores all commits when the filter is cleared', async () => {
     renderTab()
     await flush()
     await flush()
@@ -208,11 +208,11 @@ describe('GitHistoryTab file filter', () => {
     await act(async () => { setInputValue(input, '*.ts') })
     await flush()
     await flush()
-    expect(graphNodes()).toBe(0)
+    expect(commitMessages()).toEqual(['feat: x'])
     await act(async () => { setInputValue(input, '') })
     await flush()
     await flush()
-    expect(graphNodes()).toBe(3)
+    expect(laneSvg()).toBeNull()
     expect(commitMessages()).toEqual(['feat: x', 'docs: readme', 'init'])
   })
 
@@ -226,7 +226,7 @@ describe('GitHistoryTab file filter', () => {
     await act(async () => { setInputValue(input, 'src/.*\\.ts') })
     await flush()
     await flush()
-    expect(graphNodes()).toBe(0)
+    expect(laneSvg()).toBeNull()
     expect(commitMessages()).toEqual(['feat: x'])
   })
 
@@ -241,7 +241,7 @@ describe('GitHistoryTab file filter', () => {
     await flush()
     expect(container.textContent).toContain('Invalid regex')
     expect(container.textContent).not.toContain('No matching commits')
-    expect(graphNodes()).toBe(0)
+    expect(laneSvg()).toBeNull()
   })
 })
 
@@ -257,8 +257,12 @@ describe('GitHistoryTab rendering', () => {
     renderTab()
     await flush()
     await flush()
-    // Both commits should render — the root commit has empty parents
-    expect(graphNodes()).toBe(2)
+    // Both commits should render — the root commit has empty parents. The
+    // custom messages are not in the module-level COMMITS lookup, so count
+    // the rows directly.
+    const rows = container.querySelectorAll('[data-commit-row]')
+    expect(rows).toHaveLength(2)
+    expect(container.textContent).toContain('root')
   })
 })
 
@@ -304,16 +308,16 @@ describe('GitHistoryTab commit SHA click', () => {
 })
 
 describe('GitHistoryTab commit graph button', () => {
-  it('opens the commit-graph tab in the file viewer and expands it', async () => {
+  it('opens the history page in the file viewer and expands it', async () => {
     renderTab()
     await flush()
     await flush()
 
-    // The graph button sits left of the filter bar, labelled only by its
+    // The history button sits left of the filter bar, labelled only by its
     // title/aria attributes (icon-only control).
-    const graphButton = container.querySelector('button[title="Open commit graph"]') as HTMLButtonElement
+    const graphButton = container.querySelector('button[title="Open history viewer"]') as HTMLButtonElement
     expect(graphButton).toBeTruthy()
-    expect(graphButton.getAttribute('aria-label')).toBe('Open commit graph')
+    expect(graphButton.getAttribute('aria-label')).toBe('Open history viewer')
 
     await act(async () => { graphButton.click() })
 
@@ -330,7 +334,7 @@ describe('GitHistoryTab commit graph button', () => {
 })
 
 describe('GitHistoryTab commit stats cell', () => {
-  it('renders the per-commit changed-file stats at the end of each row', async () => {
+  it('renders the per-commit changed-file stats before the short SHA', async () => {
     renderTab()
     await flush()
     await flush()
@@ -340,6 +344,14 @@ describe('GitHistoryTab commit stats cell', () => {
     expect(firstRow.textContent).toContain('+1')
     expect(firstRow.textContent).toContain('~1')
     expect(firstRow.textContent).toContain('-0')
+    // Column order: the stats cell precedes the SHA span in the DOM.
+    const statsCell = firstRow.querySelector('span[title="1 added, 1 modified, 0 deleted"]')
+    const shaSpan = firstRow.querySelector('span[title="View commit changes"]')
+    expect(statsCell).toBeTruthy()
+    expect(shaSpan).toBeTruthy()
+    expect(
+      statsCell!.compareDocumentPosition(shaSpan!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 
   it('omits the stats cell when the backend sent no stats (stale bindings)', async () => {
@@ -386,7 +398,7 @@ describe('GitHistoryTab pagination', () => {
     expect(gitMocks.getGitHistory).toHaveBeenCalledTimes(1)
     expect(gitMocks.getGitHistory).toHaveBeenCalledWith(300, 0)
     expect(commitMessages()).toEqual(['feat: x', 'docs: readme'])
-    expect(graphNodes()).toBe(2)
+    expect(laneSvg()).toBeNull()
     expect(loadMoreButton()).toBeTruthy()
   })
 
@@ -424,7 +436,7 @@ describe('GitHistoryTab pagination', () => {
     // All three commits are present, in order — the first page was appended
     // to, never rewritten.
     expect(commitMessages()).toEqual(['feat: x', 'docs: readme', 'init'])
-    expect(graphNodes()).toBe(3)
+    expect(laneSvg()).toBeNull()
     // The first-page row is still the SAME DOM node (no unmount/remount).
     expect(container.contains(firstRowBefore)).toBe(true)
     // Exhausted → Load more disappears.

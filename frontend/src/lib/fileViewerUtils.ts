@@ -41,10 +41,15 @@ export function isImageFilePath(path: string): boolean {
  * portion after the colon, title-cased.
  */
 export function fileNameFromPath(path: string): string {
-  // Commit review tab: "c0wrk:commit:<sha>" → "Commit <short-sha>"
+  // Commit review tab: "c0wrk:commit:<sha>" → "Commit <short-sha>"; the
+  // graph page's per-file variant "c0wrk:commit:<sha>/<path>" appends the
+  // file's basename — two file tabs of one commit stay distinguishable.
   if (path.startsWith('c0wrk:commit:')) {
-    const sha = path.slice('c0wrk:commit:'.length)
-    return `Commit ${sha.slice(0, 7)}`
+    const rest = path.slice('c0wrk:commit:'.length)
+    const slash = rest.indexOf('/')
+    if (slash === -1) return `Commit ${rest.slice(0, 7)}`
+    const file = rest.slice(slash + 1)
+    return `Commit ${rest.slice(0, 7)} · ${(file.split('/').pop() ?? file) || file}`
   }
   // Paper workspace tab: "c0wrk:paper:<slug>" → the slug (the workspace header
   // carries the full title once the record resolves).
@@ -52,11 +57,11 @@ export function fileNameFromPath(path: string): string {
     const slug = path.slice('c0wrk:paper:'.length)
     return slug || 'Paper'
   }
-  // Commit-graph viewer tab: "c0wrk:graph" → "Git Graph" (GIT_GRAPH_TAB_PATH
+  // History viewer tab: "c0wrk:graph" → "Git History" (GIT_GRAPH_TAB_PATH
   // in stores/gitPanelStore; the literal is inlined here so this lib stays
   // free of store imports).
   if (path === 'c0wrk:graph') {
-    return 'Git Graph'
+    return 'Git History'
   }
   if (path.startsWith('c0wrk:') && !path.includes('/')) {
     const label = path.slice('c0wrk:'.length)

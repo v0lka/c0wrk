@@ -1,46 +1,103 @@
-import { useState, useCallback, useMemo, useRef } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Loader2, AlertCircle, GitCommit } from 'lucide-react'
-import { computeGraphLayout, computeRowYLayout } from '@/lib/gitGraphLayout'
+import { Loader2, AlertCircle } from 'lucide-react'
+import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
-import { useCommitFiles } from '@/hooks/useCommitFiles'
+import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
 import { useReviewStore } from '@/stores/reviewStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitGraphStore } from '@/stores/gitGraphStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { getCommitMessage } from '@/api/git'
 import { getCommitDiff } from '@/api/review'
 import type { ReviewFileDiffLike } from '@/components/review/diffParsing'
 import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor } from '@/components/GitPanel/gitGraphRender'
 import { GitGraphGutter } from '@/components/GitPanel/GitGraphGutter'
 import { DiffViewModeToggle } from '@/components/diff/DiffViewModeToggle'
+import { FilterBar } from '@/components/ui/FilterBar'
+import { GitHistoryContextMenu } from '@/components/GitPanel/GitHistoryContextMenu'
+import { CommitFileContextMenu } from './CommitFileContextMenu'
 import { GitGraphCard } from './GitGraphCard'
 import { cardHeight, sliceDiffByPath, type CardExpansionState, type FileDiffUiState } from './gitGraphCardHeights'
 
 type FetchPhase = 'loading' | 'failed'
 
+/** Stable empty per-card file sets — the no-expansion fallback for the store read. */
+const EMPTY_EXPANDED_FILES: Record<string, ReadonlySet<string>> = {}
+
 /**
- * The file viewer's standalone Git-graph page: the unified lane-gutter
- * history (same layout engine as the Git panel's History tab) with richer
- * expandable commit cards — full commit message, changed files with status
- * + stats, and a per-file inline diff rendered with the review page's
- * tables (UnifiedDiffTable / SplitDiffTable), in the SHARED
- * reviewStore.diffViewMode driven by the header's DiffViewModeToggle.
+ * The file viewer's history page (the `c0wrk:graph` pseudo-tab): the lane
+ * gutter + expandable commit cards (full commit message, changed files with
+ * status + stats, per-file inline diffs via the review tables) driven by the
+ * SHARED reviewStore.diffViewMode (DiffViewModeToggle). The lane gutter
+ * renders here only — the Git panel's History tab is a plain full-width row
+ * list — and hides while the file filter is active, since a filtered subset
+ * is not a connected graph.
  *
  * Data comes from the same paginated source as the Git panel
  * (`useGitHistory` → GetGitHistory, next page on scroll-to-end / "Load
- * more") and from lazily-fetched per-commit detail: GetCommitFiles via the
- * shared useCommitFiles cache, the full message via getCommitMessage (one
- * fetch per SHA, cached), and the commit diff via getCommitDiff (ONE fetch
- * per SHA, cached, sliced per file). Every expansion height is a
- * deterministic function of this state (gitGraphCardHeights) so the SVG
- * gutter routes edges around expanded cards without any DOM measurement.
+ * more"), the same client-side glob/regex file filter
+ * (`useGitHistoryFilter` + `FilterBar`, which also owns the shared
+ * changed-files cache this page reads) and from lazily-fetched per-commit
+ * detail: GetCommitFiles via the shared useCommitFiles cache, the full
+ * message via getCommitMessage (one fetch per SHA, cached), and the commit
+ * diff via getCommitDiff (ONE fetch per SHA, cached, sliced per file). Every
+ * expansion height is a deterministic function of this state
+ * (gitGraphCardHeights) so the SVG gutter routes edges around expanded cards
+ * without any DOM measurement.
+ *
+ * The expand/collapse DECISIONS (which card is open, which files inside it)
+ * live in gitGraphStore — in-memory, keyed per project, scoped to the whole
+ * application session: closing/reopening the tab, collapsing the viewer or
+ * switching projects remounts this page with the same expansion (an app
+ * restart starts collapsed). The payload caches below stay page-local; a
+ * restored card re-fetches its message/files/diff through the deduped lazy
+ * loaders whenever the persisted SHA is present in the loaded history.
  */
 export function GitGraphPage() {
-  const { commits, isLoading, isLoadingMore, hasMore, error, loadMore } = useGitHistory()
-  const { filesBySha, fetchFiles, pendingShas } = useCommitFiles()
+  const { commits, isLoading, isLoadingMore, hasMore, error, reload, loadMore } = useGitHistory()
+  // The filter hook owns the shared changed-files cache (filesBySha /
+  // fetchFiles / pendingShas) — the same cache the card expansion reads.
+  const {
+    filterText,
+    filterMode,
+    setFilterText,
+    toggleFilterMode,
+    isFiltering,
+    isInvalidFilter,
+    isResolvingFiles,
+    filteredCommits,
+    filesBySha,
+    fetchFiles,
+    pendingShas,
+  } = useGitHistoryFilter(commits)
   const diffViewMode = useReviewStore((s) => s.diffViewMode)
+  // Current branch name — used by the commit context menu to label the
+  // "Reset <branch> to This Commit" submenu (the SAME menu the Git panel's
+  // History tab renders; this page owns its own instance).
+  const currentBranch = useGitPanelStore((s) => s.branch.name)
 
-  // ── Card expansion state ────────────────────────────────────────────
+  // ── Card expansion state (gitGraphStore — app-session scope) ────────
+  // The expansion decisions persist for the whole application session,
+  // keyed per project; the payload caches below stay page-local. The
+  // fallbacks are module-level constants — selectors/renders must never
+  // allocate fresh containers (Zustand snapshots compare by reference).
+  /** Expansion entry of the project whose history this page shows. */
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const expansion = useGitGraphStore((s) =>
+    activeProjectId !== null ? s.byProject[activeProjectId] : undefined,
+  )
   /** The single expanded commit card (null = all collapsed). */
-  const [expandedSha, setExpandedSha] = useState<string | null>(null)
+  const expandedSha = expansion?.expandedSha ?? null
+  /** Per-card set of file paths whose inline diff is open. */
+  const expandedFiles = expansion?.expandedFiles ?? EMPTY_EXPANDED_FILES
+  // Actions are stable (created once, never change identity), so reading
+  // them via getState() needs no subscription. An empty scope (no active
+  // project) makes every action a no-op — the page can't render a history
+  // without one anyway.
+  const { expandCard, collapseCard, toggleFile } = useGitGraphStore.getState()
+  const scope = activeProjectId ?? ''
   /** Full commit messages by SHA — the lazy getCommitMessage cache. */
   const [messagesBySha, setMessagesBySha] = useState<Record<string, string>>({})
   /** Fetch phase per SHA (entry present = message not (yet) cached). */
@@ -49,8 +106,6 @@ export function GitGraphPage() {
   const [diffsBySha, setDiffsBySha] = useState<Record<string, ReviewFileDiffLike[]>>({})
   /** Fetch phase per SHA (entry present = diff not (yet) cached). */
   const [diffPhases, setDiffPhases] = useState<Record<string, FetchPhase>>({})
-  /** Per-card set of file paths whose inline diff is open. */
-  const [expandedFiles, setExpandedFiles] = useState<Record<string, ReadonlySet<string>>>({})
 
   // Ref mirrors so the stable fetch callbacks see the latest caches
   // without being re-created (and re-triggering effects) on every render.
@@ -109,15 +164,15 @@ export function GitGraphPage() {
 
   const handleCardToggle = useCallback(
     (sha: string) => {
+      // Store-only: the lazy message/files fetches fire from the restore
+      // effect below, the same path a session-restored expansion takes.
       if (expandedSha === sha) {
-        setExpandedSha(null)
+        collapseCard(scope)
         return
       }
-      setExpandedSha(sha)
-      void fetchFiles(sha)
-      ensureMessage(sha)
+      expandCard(scope, sha)
     },
-    [expandedSha, fetchFiles, ensureMessage],
+    [expandedSha, scope, expandCard, collapseCard],
   )
 
   const handleFileToggle = useCallback(
@@ -125,18 +180,9 @@ export function GitGraphPage() {
       // The ensureDiff call dedupes against the cache and in-flight requests,
       // so it is safe to fire on every toggle (collapse included).
       ensureDiff(sha)
-      setExpandedFiles((prev) => {
-        const current = prev[sha] ?? new Set<string>()
-        const next = new Set(current)
-        if (next.has(path)) {
-          next.delete(path)
-        } else {
-          next.add(path)
-        }
-        return { ...prev, [sha]: next }
-      })
+      toggleFile(scope, sha, path)
     },
-    [ensureDiff],
+    [ensureDiff, scope, toggleFile],
   )
 
   // Per-file diff UI state for the expanded card (only open paths appear).
@@ -171,13 +217,96 @@ export function GitGraphPage() {
     [messagePhases, messagesBySha, pendingShas, filesBySha, expandedSha, activeFileDiffs],
   )
 
+  // ── Commit context menu (bespoke position-based; mirrors the Git panel's
+  // History tab: a single page-level instance fed by right-clicks). ──────
+  const [contextMenu, setContextMenu] = useState<{
+    sha: string
+    refs: string[]
+    x: number
+    y: number
+  } | null>(null)
+  const handleCardContextMenu = useCallback(
+    (e: React.MouseEvent, sha: string, refs: string[]) => {
+      e.preventDefault()
+      // A right-click places a text-selection range as the browser's
+      // mousedown default (notably on macOS). Clear it so opening the
+      // context menu doesn't leave the card's text highlighted.
+      window.getSelection()?.removeAllRanges()
+      setContextMenu({ sha, refs, x: e.clientX, y: e.clientY })
+    },
+    [],
+  )
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
+
+  // Per-file context menu inside an expanded card: right-clicking a changed
+  // file opens the single-entry "Open in Viewer" menu. The sha rides the
+  // state so the open action can build the commit-file pseudo-path.
+  const [fileMenu, setFileMenu] = useState<{
+    sha: string
+    path: string
+    x: number
+    y: number
+  } | null>(null)
+  const handleFileContextMenu = useCallback(
+    (e: React.MouseEvent, sha: string, path: string) => {
+      // The card wrapper carries the COMMIT context menu; the file row's
+      // menu wins — stop propagation so only one opens.
+      e.preventDefault()
+      e.stopPropagation()
+      window.getSelection()?.removeAllRanges()
+      setFileMenu({ sha, path, x: e.clientX, y: e.clientY })
+    },
+    [],
+  )
+  const closeFileMenu = useCallback(() => setFileMenu(null), [])
+
+  // Open the file's COMMIT-VERSION diff (not the current working-tree copy)
+  // as a virtual tab: "c0wrk:commit:<sha>/<path>" renders a read-only
+  // ReviewPage narrowed to that one file. The virtual flag keeps the viewer's
+  // data loader / tree_changed reload / persistence away from the pseudo-path.
+  const handleOpenFileInViewer = useCallback((sha: string, path: string) => {
+    const { openVirtualFile, setCollapsed } = useFileViewerStore.getState()
+    openVirtualFile(`c0wrk:commit:${sha}/${path}`)
+    setCollapsed(false)
+  }, [])
+
   // ── Lane layout over the full commit set ────────────────────────────
   const nodes = useMemo(() => computeGraphLayout(commits), [commits])
+  const shaToNode = useMemo(() => {
+    const map = new Map<string, GraphNode>()
+    for (const n of nodes) map.set(n.sha, n)
+    return map
+  }, [nodes])
+  const shaToCommit = useMemo(() => {
+    const map = new Map<string, (typeof commits)[number]>()
+    for (const c of commits) map.set(c.sha, c)
+    return map
+  }, [commits])
+
+  // ── Session-restored expansion: the single lazy-fetch trigger ───────
+  // A persisted expanded card either mounts already-expanded (tab reopen,
+  // viewer uncollapse, project switch back) or only scrolls into view
+  // later (a SHA sitting beyond the first page arrives via loadMore).
+  // Whenever the persisted SHA is present in the loaded history, fire the
+  // exact lazy fetches an interactive expand would. Every fetch dedupes
+  // (cache + in-flight guards in ensureMessage/fetchFiles/ensureDiff), so
+  // re-runs of this effect are no-ops, and a SHA absent from the history
+  // (rebased away, foreign project) fetches nothing.
+  useEffect(() => {
+    if (expandedSha === null || !shaToCommit.has(expandedSha)) return
+    void fetchFiles(expandedSha)
+    ensureMessage(expandedSha)
+    // Open file diffs of a restored card need the commit diff — the
+    // interactive path gets it from handleFileToggle, restoration here.
+    if ((expandedFiles[expandedSha]?.size ?? 0) > 0) ensureDiff(expandedSha)
+  }, [expandedSha, shaToCommit, expandedFiles, fetchFiles, ensureMessage, ensureDiff])
 
   const rowHeightFor = useCallback(
     (sha: string) => cardHeight(cardStateFor(sha), expandedSha === sha),
     [cardStateFor, expandedSha],
   )
+  // Heights over the FULL commit set — the gutter always spans every row
+  // (it renders only when the filter is off, i.e. over the full set).
   const rowHeights = useMemo(() => nodes.map((n) => rowHeightFor(n.sha)), [nodes, rowHeightFor])
   const rowY = useMemo(
     () => computeRowYLayout(rowHeights, ROW_SPACING, NODE_OFFSET),
@@ -191,17 +320,27 @@ export function GitGraphPage() {
     return xFor(maxLane) + LANE_SPACING
   }, [nodes])
 
+  // The rows the list renders: every commit normally, the matching subset
+  // while the filter is active (then the gutter is hidden — a filtered
+  // subset is not a connected graph).
+  const visibleNodes = useMemo(() => {
+    if (!isFiltering) return nodes
+    return filteredCommits
+      .map((c) => shaToNode.get(c.sha))
+      .filter((n): n is GraphNode => n !== undefined)
+  }, [isFiltering, nodes, filteredCommits, shaToNode])
+
   // ── Virtualization ─────────────────────────────────────────────────
   // Exact per-row heights (from the deterministic math) so the virtualizer
   // positions items without DOM measurement (which is unreliable for
   // dynamically expanded rows, and returns 0 in jsdom).
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
-    count: nodes.length,
+    count: visibleNodes.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i: number) => rowHeights[i] ?? ROW_SPACING,
+    estimateSize: (i: number) => rowHeightFor(visibleNodes[i]?.sha ?? ''),
     overscan: 8,
-    getItemKey: (i: number) => nodes[i]?.sha ?? i,
+    getItemKey: (i: number) => visibleNodes[i]?.sha ?? i,
   })
 
   // Infinite-scroll edge trigger (idempotent loadMore; see the Git panel's
@@ -243,57 +382,82 @@ export function GitGraphPage() {
 
   return (
     <div className="flex flex-1 flex-col min-h-0">
-      {/* Header: title + the SHARED unified/split toggle (reviewStore). */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/30 px-3 py-2">
-        <GitCommit className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-sm font-medium">Git History</span>
-        <DiffViewModeToggle className="ml-auto" />
+      {/* Toolbar: the file filter + the SHARED unified/split toggle. No page
+          title — the viewer's tab ("Git History") already names the page. */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/30 px-2 py-1.5">
+        <FilterBar
+          className="flex-1 min-w-0 border-b-0 py-0"
+          value={filterText}
+          onChange={setFilterText}
+          mode={filterMode}
+          onToggleMode={toggleFilterMode}
+          placeholder="Filter by file"
+        />
+        <DiffViewModeToggle />
       </div>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         className="flex flex-col min-h-0 flex-1 overflow-y-auto custom-scrollbar"
       >
-        <div className="shrink-0" style={{ height: rowY.totalHeight, position: 'relative' }}>
-          {/* Lane gutter scrolls in sync beside the virtualized rows; only
-              visible cards are mounted while the SVG renders all nodes. */}
-          <div style={{ position: 'absolute', left: 0, top: 0 }}>
-            <GitGraphGutter nodes={nodes} rowY={rowY} />
-          </div>
-          {virtualizer.getVirtualItems().map((vi) => {
-            const node = nodes[vi.index]
-            const commit = commits[vi.index]
-            if (!node || !commit) return null
-            return (
-              <div
-                key={vi.key}
-                style={{
-                  position: 'absolute',
-                  top: vi.start,
-                  left: svgWidth,
-                  right: 0,
-                  height: vi.size,
-                }}
-              >
-                <GitGraphCard
-                  node={node}
-                  commit={commit}
-                  height={rowHeightFor(node.sha)}
-                  expanded={expandedSha === node.sha}
-                  messageLoading={messagePhases[node.sha] === 'loading'}
-                  messageFailed={messagePhases[node.sha] === 'failed'}
-                  fullMessage={messagesBySha[node.sha]}
-                  files={filesBySha[node.sha]}
-                  filesLoading={pendingShas.has(node.sha) || filesBySha[node.sha] === undefined}
-                  fileDiffs={expandedSha === node.sha ? activeFileDiffs : {}}
-                  diffViewMode={diffViewMode}
-                  onToggle={() => handleCardToggle(node.sha)}
-                  onToggleFile={(path) => handleFileToggle(node.sha, path)}
-                />
+        {isFiltering && isInvalidFilter ? (
+          <p className="p-4 text-center text-xs text-destructive">Invalid regex</p>
+        ) : isFiltering && visibleNodes.length === 0 && !isResolvingFiles ? (
+          <p className="p-4 text-center text-xs text-muted-foreground">No matching commits</p>
+        ) : (
+          <div className="shrink-0" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {/* Lane gutter only over the FULL commit set; hidden while the
+                filter narrows the list. */}
+            {!isFiltering && (
+              <div style={{ position: 'absolute', left: 0, top: 0 }}>
+                <GitGraphGutter nodes={nodes} rowY={rowY} />
               </div>
-            )
-          })}
-        </div>
+            )}
+            {virtualizer.getVirtualItems().map((vi) => {
+              const node = visibleNodes[vi.index]
+              if (!node) return null
+              const commit = shaToCommit.get(node.sha)
+              if (!commit) return null
+              return (
+                <div
+                  key={vi.key}
+                  style={{
+                    position: 'absolute',
+                    top: vi.start,
+                    left: isFiltering ? 0 : svgWidth,
+                    right: 0,
+                    height: vi.size,
+                  }}
+                  onContextMenu={(e) =>
+                    handleCardContextMenu(e, node.sha, commit.refs)
+                  }
+                >
+                  <GitGraphCard
+                    node={node}
+                    commit={commit}
+                    height={rowHeightFor(node.sha)}
+                    expanded={expandedSha === node.sha}
+                    messageLoading={messagePhases[node.sha] === 'loading'}
+                    messageFailed={messagePhases[node.sha] === 'failed'}
+                    fullMessage={messagesBySha[node.sha]}
+                    files={filesBySha[node.sha]}
+                    filesLoading={pendingShas.has(node.sha) || filesBySha[node.sha] === undefined}
+                    fileDiffs={expandedSha === node.sha ? activeFileDiffs : {}}
+                    diffViewMode={diffViewMode}
+                    onToggle={() => handleCardToggle(node.sha)}
+                    onToggleFile={(path) => handleFileToggle(node.sha, path)}
+                    onFileContextMenu={(e, sha, path) => handleFileContextMenu(e, sha, path)}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {isResolvingFiles && (
+          <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" /> Resolving files…
+          </div>
+        )}
         {hasMore && (
           <div className="flex items-center justify-center py-3">
             <button
@@ -308,6 +472,22 @@ export function GitGraphPage() {
           </div>
         )}
       </div>
+      <GitHistoryContextMenu
+        sha={contextMenu?.sha ?? ''}
+        refs={contextMenu?.refs ?? []}
+        currentBranch={currentBranch}
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={closeContextMenu}
+        onAfterMutation={reload}
+      />
+      <CommitFileContextMenu
+        path={fileMenu?.path ?? ''}
+        position={fileMenu ? { x: fileMenu.x, y: fileMenu.y } : null}
+        onClose={closeFileMenu}
+        onOpenInViewer={(path) => {
+          if (fileMenu) handleOpenFileInViewer(fileMenu.sha, path)
+        }}
+      />
     </div>
   )
 }

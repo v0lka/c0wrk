@@ -43,11 +43,16 @@ export function FileViewerContent() {
   }
 
   // Commit review: read-only view of a commit's diff. The SHA is encoded in
-  // the synthetic path after "c0wrk:commit:". No active session is required —
-  // the commit diff is fetched directly from the repository.
+  // the synthetic path after "c0wrk:commit:", an optional "/<path>" suffix
+  // (the graph page's per-file "Open in Viewer" action) narrows the view to
+  // that one file of the commit. No active session is required — the commit
+  // diff is fetched directly from the repository.
   if (activeFile.startsWith('c0wrk:commit:')) {
-    const sha = activeFile.slice('c0wrk:commit:'.length)
-    return <ReviewPage commitSha={sha} />
+    const rest = activeFile.slice('c0wrk:commit:'.length)
+    const slash = rest.indexOf('/')
+    const sha = slash === -1 ? rest : rest.slice(0, slash)
+    const file = slash === -1 ? undefined : rest.slice(slash + 1)
+    return <ReviewPage commitSha={sha} onlyFile={file} />
   }
 
   // Git graph: the synthetic pseudo-path renders the standalone commit-graph

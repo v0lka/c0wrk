@@ -2,11 +2,23 @@ import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { formatRelativeTime } from '@/lib/formatters'
 import { shortSha, type GraphNode } from '@/lib/gitGraphLayout'
 import { statBucket, statColorClass, countFileStats, totalChanges } from '@/lib/commitStats'
+import { Markdown } from '@/lib/markdownConfig'
 import { cn } from '@/lib/utils'
 import { ROW_SPACING, refColor } from '@/components/GitPanel/gitGraphRender'
 import type { CommitFile, CommitStats, GitHistoryCommit } from '@/types/models'
 import { FILE_LINE_HEIGHT, EXPANDED_TOP_PAD, EXPANDED_BOTTOM_PAD, LOADING_LINE_HEIGHT, NO_FILES_HEIGHT, STATUS_LINE_HEIGHT, messageAreaHeight, fileDiffAreaHeight, type FileDiffUiState } from './gitGraphCardHeights'
 import { CommitFileDiff } from './CommitFileDiff'
+
+/** Render the full commit message as a Markdown blockquote: every line gets
+ *  the `> ` prefix, so the shared Markdown pipeline styles it via
+ *  `.prose blockquote` (muted text, left rule) and interprets any markdown
+ *  the message carries. */
+function asQuote(message: string): string {
+  return message
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n')
+}
 
 interface GitGraphCardProps {
   /** Lane-laid-out graph node (sha, message, refs, merge flag, parents). */
@@ -30,6 +42,13 @@ interface GitGraphCardProps {
   onToggle: () => void
   /** Toggle ONE file's inline diff (the parent lazily loads the commit diff). */
   onToggleFile: (path: string) => void
+  /**
+   * Right-click on a changed file row — opens the per-file context menu
+   * ("Open in Viewer" → the commit-version diff). Omitting it leaves the
+   * file rows context-menu-less. The handler must stop propagation so the
+   * card-level commit menu does not also fire.
+   */
+  onFileContextMenu?: (e: React.MouseEvent, sha: string, path: string) => void
 }
 
 /**
@@ -63,6 +82,7 @@ export function GitGraphCard({
   diffViewMode,
   onToggle,
   onToggleFile,
+  onFileContextMenu,
 }: GitGraphCardProps) {
   const messageHeight = messageAreaHeight({ messageLoading, messageFailed, fullMessage })
   const emptyText = node.isMerge
@@ -122,13 +142,12 @@ export function GitGraphCard({
       </button>
       {expanded && (
         <div className="pl-7 pr-2 overflow-hidden">
-          {/* Full commit message — capped scrollable box, or a placeholder. */}
+          {/* Full commit message — a Markdown quote in the same capped
+              scrollable box (the height estimate stays line-count based in
+              gitGraphCardHeights; overflow scrolls inside), or a placeholder. */}
           {fullMessage !== undefined ? (
-            <div
-              style={{ height: messageHeight }}
-              className="overflow-y-auto custom-scrollbar px-3 py-1 text-xs leading-4 whitespace-pre-wrap break-words select-text text-muted-foreground"
-            >
-              {fullMessage}
+            <div style={{ height: messageHeight }} className="overflow-y-auto custom-scrollbar px-3 py-1 select-text">
+              <Markdown compact className="prose-tooltip" content={asQuote(fullMessage)} />
             </div>
           ) : messageFailed ? (
             <PlaceholderLine textColor="text-destructive">Failed to load message</PlaceholderLine>
@@ -153,6 +172,7 @@ export function GitGraphCard({
                   <button
                     type="button"
                     onClick={() => onToggleFile(f.path)}
+                    onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(e, node.sha, f.path) : undefined}
                     aria-expanded={st?.expanded ?? false}
                     title={f.path}
                     className="flex w-full items-center gap-1.5 text-left"

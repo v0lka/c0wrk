@@ -40,9 +40,30 @@ vi.mock('@tanstack/react-virtual', () => ({
   },
 }))
 
+// Mock the file viewer store so the test can assert how the per-file
+// "Open in Viewer" action opens the commit-file pseudo-path tab.
+const { fileViewerMocks } = vi.hoisted(() => ({
+  fileViewerMocks: {
+    openFile: vi.fn(),
+    openVirtualFile: vi.fn(),
+    setCollapsed: vi.fn(),
+  },
+}))
+vi.mock('@/stores/fileViewerStore', () => ({
+  useFileViewerStore: {
+    getState: () => ({
+      openFile: fileViewerMocks.openFile,
+      openVirtualFile: fileViewerMocks.openVirtualFile,
+      setCollapsed: fileViewerMocks.setCollapsed,
+    }),
+  },
+}))
+
 import { GitGraphPage } from './GitGraphPage'
 import { cardHeight, expandedCardHeight, DIFF_ROW_HEIGHT, type CardExpansionState } from './gitGraphCardHeights'
 import { useReviewStore } from '@/stores/reviewStore'
+import { useGitGraphStore } from '@/stores/gitGraphStore'
+import { useProjectStore } from '@/stores/projectStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -84,6 +105,14 @@ function makePage(commits: typeof COMMITS, nextSkip: number, hasMore: boolean) {
 beforeEach(() => {
   localStorage.clear()
   useReviewStore.setState({ diffViewMode: 'unified' })
+  // The expansion store is app-session scoped module state — reset it so
+  // tests start all-collapsed (and don't leak expansions into each other).
+  useGitGraphStore.setState({ byProject: {} })
+  // The page scopes its expansion decisions to the active project.
+  useProjectStore.setState({ activeProjectId: 'proj-1' })
+  fileViewerMocks.openFile.mockReset()
+  fileViewerMocks.openVirtualFile.mockReset()
+  fileViewerMocks.setCollapsed.mockReset()
   apiMocks.getGitHistory.mockReset()
   apiMocks.getCommitFiles.mockReset()
   apiMocks.getCommitFilesBatch.mockReset()
@@ -128,6 +157,16 @@ function renderPage() {
   })
 }
 
+/** Swap the page out for a placeholder and back — a genuine unmount/remount
+ * in the same root: every page-local cache dies, only the app-session store
+ * (and the mocked stores) survive. */
+function remountPage() {
+  act(() => {
+    root.render(<div />)
+  })
+  renderPage()
+}
+
 /** The card header button carrying the given commit message. */
 function cardHeader(message: string): HTMLButtonElement {
   const btn = Array.from(container.querySelectorAll('button')).find((b) =>
@@ -163,14 +202,18 @@ function fileRow(path: string): HTMLButtonElement {
 }
 
 describe('GitGraphPage — shell', () => {
-  it('renders the header with the shared diff-view toggle and the lane graph', async () => {
+  it('renders the header with the filter bar + diff-view toggle and the lane graph, with no in-page title', async () => {
     renderPage()
     await flush()
     await flush()
 
-    expect(container.textContent).toContain('Git History')
+    // No in-page title: the viewer tab ("Git History") names the page.
+    expect(container.textContent).not.toContain('Git History')
     expect(container.querySelector('[data-testid="diff-view-unified"]')).toBeTruthy()
     expect(container.querySelector('[data-testid="diff-view-split"]')).toBeTruthy()
+    // The filter input + mode toggle render in the toolbar row.
+    expect(container.querySelector('input[placeholder^="Filter by file"]')).toBeTruthy()
+    expect(container.querySelector('button[title="Switch to regex"]')).toBeTruthy()
     // One SVG circle per commit — the lane gutter rendered.
     expect(gutterCircles()).toBe(3)
     expect(container.textContent).toContain('merge pr')
@@ -192,6 +235,101 @@ describe('GitGraphPage — shell', () => {
     await flush()
     await flush()
     expect(container.textContent).toContain('boom')
+  })
+})
+
+describe('GitGraphPage — file filter', () => {
+  /** Set a controlled input's value in a way React detects. */
+  function setInputValue(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    setter.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  it('narrows to matching commits and hides the lane gutter while filtering', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    const input = container.querySelector('input') as HTMLInputElement
+    await act(async () => { setInputValue(input, '*.ts') })
+    await flush()
+    await flush()
+
+    // Only the commit that touched src/a.ts; the gutter is hidden (a
+    // filtered subset is not a connected graph).
+    expect(gutterCircles()).toBe(0)
+    expect(container.textContent).toContain('feat: x')
+    expect(container.textContent).not.toContain('merge pr')
+    expect(container.textContent).not.toContain('init')
+  })
+
+  it('shows "No matching commits" and "Invalid regex" states', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    const input = container.querySelector('input') as HTMLInputElement
+    await act(async () => { setInputValue(input, '*.rs') })
+    await flush()
+    await flush()
+    expect(container.textContent).toContain('No matching commits')
+
+    // '[' is VALID glob syntax — flip to regex mode first, as the panel
+    // filter does.
+    const toggle = container.querySelector('button[title="Switch to regex"]') as HTMLButtonElement
+    await act(async () => { toggle.click() })
+    await act(async () => { setInputValue(input, '[') })
+    await flush()
+    expect(container.textContent).toContain('Invalid regex')
+    expect(container.textContent).not.toContain('No matching commits')
+  })
+
+  it('restores the full history and the gutter when the filter is cleared', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    const input = container.querySelector('input') as HTMLInputElement
+    await act(async () => { setInputValue(input, '*.ts') })
+    await flush()
+    await flush()
+    expect(gutterCircles()).toBe(0)
+
+    await act(async () => { setInputValue(input, '') })
+    await flush()
+    await flush()
+    expect(gutterCircles()).toBe(3)
+    expect(container.textContent).toContain('merge pr')
+    expect(container.textContent).toContain('init')
+  })
+})
+
+describe('GitGraphPage — commit context menu', () => {
+  it('right-clicking a card opens the shared commit context menu', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    const wrapper = rowWrapper('feat: x')
+    await act(async () => {
+      wrapper.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 12, clientY: 12 }),
+      )
+    })
+    await flush()
+
+    // The SAME menu component the Git panel's History tab renders.
+    const menu = container.querySelector('[role="menu"][aria-label="Commit actions"]')
+    expect(menu).toBeTruthy()
+    expect(menu!.textContent).toContain('View Commit')
+    expect(menu!.textContent).toContain('Reset HEAD to This Commit')
+
+    // Escape closes it.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    expect(container.querySelector('[role="menu"][aria-label="Commit actions"]')).toBeNull()
   })
 })
 
@@ -436,6 +574,40 @@ describe('GitGraphPage — deterministic heights', () => {
   })
 })
 
+describe('GitGraphPage — per-file context menu', () => {
+  it('right-clicking a changed file opens "Open in Viewer", which opens the commit-file diff tab', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    // Expand the card carrying src/a.ts.
+    await act(async () => { cardHeader('feat: x').click() })
+    await flush()
+    await flush()
+
+    const row = fileRow('src/a.ts')
+    await act(async () => {
+      row.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 }),
+      )
+    })
+    await flush()
+
+    // The FILE menu opened — and the card-level commit menu did NOT win.
+    const menu = container.querySelector('[role="menu"][aria-label="File actions"]')
+    expect(menu).toBeTruthy()
+    expect(menu!.textContent).toContain('Open in Viewer')
+    expect(container.querySelector('[role="menu"][aria-label="Commit actions"]')).toBeNull()
+
+    // The action opens the file's COMMIT-VERSION diff as a virtual tab.
+    await act(async () => {
+      ;(menu!.querySelector('button[role="menuitem"]') as HTMLButtonElement).click()
+    })
+    expect(fileViewerMocks.openVirtualFile).toHaveBeenCalledWith('c0wrk:commit:nnn/src/a.ts')
+    expect(fileViewerMocks.setCollapsed).toHaveBeenCalledWith(false)
+  })
+})
+
 describe('GitGraphPage — pagination', () => {
   it('loads the next page on "Load more" without replacing loaded commits', async () => {
     apiMocks.getGitHistory
@@ -465,5 +637,168 @@ describe('GitGraphPage — pagination', () => {
     expect(container.textContent).toContain('init')
     // Exhausted → button gone.
     expect(Array.from(container.querySelectorAll('button')).some((b) => (b.textContent ?? '').trim() === 'Load more')).toBe(false)
+  })
+})
+
+describe('GitGraphPage — expansion persistence (gitGraphStore, app-session scope)', () => {
+  it('restores the expanded card after unmount/remount within the app session', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    act(() => {
+      cardHeader('feat: x').click()
+    })
+    await flush()
+    await flush()
+    expect(container.textContent).toContain('Long body describing the change.')
+    const messageCallsAfterExpand = apiMocks.getCommitMessage.mock.calls.length
+
+    remountPage()
+    await flush()
+    await flush()
+
+    // The fresh instance mounts expanded: full message + file list back.
+    expect(rowWrapper('feat: x').style.height).not.toBe('32px')
+    expect(container.textContent).toContain('Long body describing the change.')
+    expect(container.textContent).toContain('src/a.ts')
+    // Payload caches are page-local — the restored card re-fetches them.
+    expect(apiMocks.getCommitMessage.mock.calls.length).toBe(messageCallsAfterExpand + 1)
+    expect(apiMocks.getCommitMessage).toHaveBeenLastCalledWith('nnn')
+    expect(apiMocks.getCommitFiles).toHaveBeenLastCalledWith('nnn')
+  })
+
+  it('restores the collapsed state after unmount/remount too', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    act(() => {
+      cardHeader('feat: x').click()
+    })
+    await flush()
+    await flush()
+    act(() => {
+      cardHeader('feat: x').click() // collapse
+    })
+    await flush()
+
+    remountPage()
+    await flush()
+    await flush()
+
+    expect(rowWrapper('feat: x').style.height).toBe('32px')
+    expect(container.textContent).not.toContain('Long body describing the change.')
+    // No expansion on the fresh instance → no lazy fetches there.
+    const callsAfterRemount = apiMocks.getCommitMessage.mock.calls.length
+    expect(callsAfterRemount).toBe(1) // only the pre-remount expand fetched
+  })
+
+  it('scopes the expansion per project', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    act(() => {
+      cardHeader('feat: x').click()
+    })
+    await flush()
+    await flush()
+
+    // Switch to a project with no persisted expansion → all collapsed.
+    act(() => {
+      useProjectStore.setState({ activeProjectId: 'proj-2' })
+    })
+    await flush()
+    expect(rowWrapper('feat: x').style.height).toBe('32px')
+    expect(container.textContent).not.toContain('Long body describing the change.')
+
+    // Back to the original project → expanded again, WITHOUT re-fetching
+    // the payloads (this page instance's caches never died).
+    const messageCalls = apiMocks.getCommitMessage.mock.calls.length
+    act(() => {
+      useProjectStore.setState({ activeProjectId: 'proj-1' })
+    })
+    await flush()
+    await flush()
+    expect(rowWrapper('feat: x').style.height).not.toBe('32px')
+    expect(container.textContent).toContain('Long body describing the change.')
+    expect(apiMocks.getCommitMessage.mock.calls.length).toBe(messageCalls)
+  })
+
+  it('restores open file diffs of the expanded card (fetches the commit diff)', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    act(() => {
+      cardHeader('feat: x').click()
+    })
+    await flush()
+    await flush()
+    act(() => {
+      fileRow('src/a.ts').click()
+    })
+    await flush()
+    await flush()
+    const diffCallsBeforeRemount = apiMocks.getCommitDiff.mock.calls.length
+
+    remountPage()
+    await flush()
+    await flush()
+
+    // The restored card re-fetches the commit diff for its open file
+    // (one fresh RPC on the new instance) and renders the slice.
+    expect(apiMocks.getCommitDiff.mock.calls.length).toBe(diffCallsBeforeRemount + 1)
+    expect(apiMocks.getCommitDiff).toHaveBeenLastCalledWith('nnn')
+    expect(container.textContent).toContain('export const x = 1')
+  })
+
+  it('keeps a persisted SHA beyond the first page dormant until its page loads', async () => {
+    apiMocks.getGitHistory
+      .mockResolvedValueOnce(makePage(COMMITS.slice(0, 2), 2, true))
+      .mockResolvedValueOnce(makePage(COMMITS.slice(2), 3, false))
+    useGitGraphStore.setState({
+      byProject: { 'proj-1': { expandedSha: 'ooo', expandedFiles: {} } },
+    })
+    renderPage()
+    await flush()
+    await flush()
+
+    // 'ooo' is not in the first page — no lazy fetches, no expansion.
+    expect(apiMocks.getCommitFiles).not.toHaveBeenCalled()
+    expect(apiMocks.getCommitMessage).not.toHaveBeenCalled()
+
+    const more = Array.from(container.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').trim() === 'Load more',
+    ) as HTMLButtonElement
+    await act(async () => {
+      more.click()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await flush()
+    await flush()
+
+    // The SHA arrived via loadMore → the restore effect fires its lazy
+    // fetches and the card renders expanded.
+    expect(apiMocks.getCommitFiles).toHaveBeenCalledWith('ooo')
+    expect(apiMocks.getCommitMessage).toHaveBeenCalledWith('ooo')
+    expect(rowWrapper('init').style.height).not.toBe('32px')
+  })
+
+  it('never fetches for a persisted SHA absent from the history', async () => {
+    useGitGraphStore.setState({
+      byProject: { 'proj-1': { expandedSha: 'zzz', expandedFiles: {} } },
+    })
+    renderPage()
+    await flush()
+    await flush()
+
+    expect(apiMocks.getCommitFiles).not.toHaveBeenCalled()
+    expect(apiMocks.getCommitMessage).not.toHaveBeenCalled()
+    expect(apiMocks.getCommitDiff).not.toHaveBeenCalled()
+    expect(rowWrapper('feat: x').style.height).toBe('32px')
   })
 })
