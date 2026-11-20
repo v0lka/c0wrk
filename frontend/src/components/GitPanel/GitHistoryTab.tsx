@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Loader2, AlertCircle, GitGraph } from 'lucide-react'
+import { Loader2, AlertCircle, Waypoints } from 'lucide-react'
 import { computeGraphLayout, type GraphNode } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
@@ -183,7 +183,7 @@ export function GitHistoryTab() {
           title="Open history viewer"
           aria-label="Open history viewer"
         >
-          <GitGraph className="size-4" />
+          <Waypoints className="size-4" />
         </Button>
         <FilterBar
           className="flex-1 shrink border-b-0"
