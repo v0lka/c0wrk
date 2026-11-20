@@ -150,7 +150,18 @@ func normalizePlanDescription(desc string) string {
 				continue
 			}
 			flushBlanks()
-			out = append(out, normalizePlanProseLine(line))
+			rewritten := normalizePlanProseLine(line)
+			out = append(out, rewritten)
+			// A canonical label line can carry the fence opener after the
+			// marker (`**How**: ```md` — the shape serializePlanMarkdown
+			// writes for multi-line field values); arm the fence state from
+			// it, mirroring planParser.ts extractFields, so the body that
+			// follows stays verbatim until the standalone close instead of
+			// being reinterpreted as prose (a `#` line would demote to a
+			// label, a bare ``` would open a new fence).
+			if marker, length, opens := planInlineFenceContent(rewritten); opens {
+				fences.in, fences.marker, fences.length = true, marker, length
+			}
 		}
 	}
 	if fences.in {
@@ -232,8 +243,10 @@ func stripPlanTaskMarker(body string) (string, bool) {
 		ordered = true
 		i++
 	}
-	// Exactly one space must separate the marker from the checkbox (the
-	// CommonMark task-list shape; "- [ ]foo" is plain text, not a task list).
+	// Exactly one space must separate the marker from the `[`: `-  [ ] x`
+	// (two spaces) and `-[ ] x` (none) are not checkbox shapes. No space is
+	// required after the `]`: `- [ ]foo` still reads as a checkbox, so it is
+	// stripped anyway.
 	if i >= len(body) || body[i] != ' ' {
 		return body, false
 	}
@@ -274,47 +287,188 @@ func planHeaderSplit(s string) (depth int, text string, ok bool) {
 	return depth, text, true
 }
 
-// planBoldLabelLine rewrites a `**Known label**…` line to the canonical
-// `**Label**:` marker. A line whose label already carries the canonical
-// display name is returned untouched, which anchors idempotency.
-func planBoldLabelLine(s string) (string, bool) {
+// planBoldLabelParts parses a `**Label**…` line into the raw label text,
+// its canonical display name and the inline content following the marker
+// token; ok is false when the line is not a recognized bold label line.
+func planBoldLabelParts(s string) (rawLabel, canon, content string, ok bool) {
 	if !strings.HasPrefix(s, "**") {
-		return "", false
+		return "", "", "", false
 	}
 	end := strings.Index(s[2:], "**")
 	if end < 0 {
-		return "", false
+		return "", "", "", false
 	}
-	label := strings.TrimRight(s[2:2+end], ":")
-	canon := normalizePlanLabel(label)
+	rawLabel = strings.TrimRight(s[2:2+end], ":")
+	canon = normalizePlanLabel(rawLabel)
 	if canon == "" {
+		return "", "", "", false
+	}
+	return rawLabel, canon, planBoldLabelContent(s, end), true
+}
+
+// planInlineFenceContent reports whether a canonical `**Label**: ```lang`
+// marker line carries a code-fence opener in its inline content, returning
+// the opener's marker and run length. serializePlanMarkdown writes
+// multi-line field values exactly this way, and planParser.ts arms its
+// fence state from the same inline content, so the Go normalizer treats the
+// following lines as fence body — not prose — until the standalone close.
+// planBoldLabelContent already consumed one separator; a dash spelling that
+// survives it (`**How**: - ```sh` — the collapse shape serializePlanMarkdown
+// writes when the parsed value itself starts with `- ```sh`) must still arm,
+// or the body is re-parsed as prose and the standalone ``` opens a phantom
+// fence that swallows the rest of the description.
+func planInlineFenceContent(line string) (marker byte, length int, ok bool) {
+	_, _, content, isLabel := planBoldLabelParts(strings.TrimLeft(line, " \t"))
+	if !isLabel || content == "" {
+		return 0, 0, false
+	}
+	content = strings.TrimLeft(content, ":- \t")
+	return fenceOpens(content)
+}
+
+// planBoldLabelLine rewrites a `**Known label**…` line to the canonical
+// `**Label**:` marker. A line whose label already carries the canonical
+// display name is returned untouched, which anchors idempotency — unless the
+// inline content carries a task-list checkbox, which the AC contract bans
+// even on canonical lines.
+func planBoldLabelLine(s string) (string, bool) {
+	label, canon, content, ok := planBoldLabelParts(s)
+	if !ok {
 		return "", false
 	}
 	if label == canon {
+		if content != "" {
+			if stripped := stripLabelContentCheckboxes(content); stripped != content {
+				if stripped == "" {
+					return "**" + canon + "**:", true
+				}
+				return "**" + canon + "**: " + stripped, true
+			}
+		}
 		return s, true
 	}
-	content := strings.TrimSpace(s[2+end+2:])
-	if strings.HasPrefix(content, ":") || strings.HasPrefix(content, "-") {
-		content = strings.TrimSpace(content[1:])
-	}
+	content = stripLabelContentCheckboxes(content)
 	if content == "" {
 		return "**" + canon + "**:", true
 	}
 	return "**" + canon + "**: " + content, true
 }
 
+// planBoldLabelContent extracts the inline content following the `**Label**`
+// token: leading `:` or `-` separators are consumed (a checkboxed item's
+// `- ` marker is eaten here, leaving a bare box for the checkbox strip).
+func planBoldLabelContent(s string, end int) string {
+	content := strings.TrimSpace(s[2+end+2:])
+	if strings.HasPrefix(content, ":") || strings.HasPrefix(content, "-") {
+		content = strings.TrimSpace(content[1:])
+	}
+	return content
+}
+
 // planLabelLine rewrites a line that starts with a known field label —
 // `What: x`, `AC - x`, or (for headers) a bare `Acceptance Criteria` — into
-// the canonical marker plus the content carried after the separator.
+// the canonical marker plus the content carried after the separator, with
+// any leading task-list checkbox stripped from that content.
 func planLabelLine(s string, allowBare bool) (string, bool) {
 	canon, rest, ok := planLabelMatch(s, allowBare)
 	if !ok {
 		return "", false
 	}
+	rest = stripLabelContentCheckboxes(rest)
 	if rest == "" {
 		return "**" + canon + "**:", true
 	}
 	return "**" + canon + "**: " + rest, true
+}
+
+// stripLabelContentCheckboxes strips task-list checkboxes from the inline
+// content carried after a field-label marker: label lines can collect the
+// first AC item inline (`**Acceptance Criteria**: - [ ] foo`), and the
+// checkbox rules of stripPlanTaskMarkers apply to that content too. A
+// checkbox whose list marker was already consumed by label parsing (the
+// `AC - [ ] foo` separator shape arrives as a bare box) loses the box via
+// stripBarePlanCheckbox. A separator run left in front of the box (`:
+// - [ ] foo` — planBoldLabelContent consumes exactly one leading `:` or
+// `-`, so a doubled spelling like `**Acceptance Criteria**:: - [ ] foo`
+// arrives here with the residue) is dropped by stripSeparatorsToCheckbox,
+// mirroring the `[*: ]`-class strip the TS mirror applies to the same
+// label content before stripInlineCheckboxes. All strips repeat to a fixed
+// point — one strip can expose another checkbox (`[ ] [x] foo`, `:: -
+// [ ] [x] foo`), and a leftover would break the fixed-point guarantee of
+// normalizePlanDescription — mirroring the loop in stripPlanTaskMarkers.
+func stripLabelContentCheckboxes(content string) string {
+	for {
+		out, changed := stripPlanTaskMarkers(content)
+		if changed {
+			content = out
+			continue
+		}
+		out, changed = stripBarePlanCheckbox(content)
+		if changed {
+			content = out
+			continue
+		}
+		out, changed = stripSeparatorsToCheckbox(content)
+		if !changed {
+			return content
+		}
+		content = out
+	}
+}
+
+// stripSeparatorsToCheckbox drops a leading run of label-separator and
+// emphasis characters (`:`, `*`, spaces, tabs) from label content when — and
+// only when — the remainder starts with a strippable checkbox, applying that
+// strip. The gate keeps prose that legitimately starts with `:` or `*`
+// (`**How**: :: intro`, `**How**: **bold** intro`) untouched: the run drops
+// only as a side effect of removing a checkbox, which is where the TS
+// mirror's `[*: ]`-class strip and stripInlineCheckboxes meet on
+// checkbox-bearing label content. The tab extends the TS class by one
+// character; TS trims the same tab at the edges of the same rest
+// (planParser.ts: `[*: ]` strip, then `.trim()`), so the shapes both
+// scanners parse behave identically, and shapes only the Go label path
+// reaches (`What: :\t[ ] x`) still lose the box.
+func stripSeparatorsToCheckbox(content string) (string, bool) {
+	j := 0
+	for j < len(content) {
+		switch content[j] {
+		case ':', '*', ' ', '\t':
+			j++
+			continue
+		}
+		break
+	}
+	if j == 0 || j >= len(content) {
+		return content, false
+	}
+	tail := content[j:]
+	if out, changed := stripPlanTaskMarkers(tail); changed {
+		return out, true
+	}
+	if out, changed := stripBarePlanCheckbox(tail); changed {
+		return out, true
+	}
+	return content, false
+}
+
+// stripBarePlanCheckbox strips one leading `[ ]`/`[x]`/`[X]` token from
+// content and reports whether anything changed. It backs the label-content
+// path, where the list marker may have been eaten as the label separator
+// before the content reaches a checkbox strip.
+func stripBarePlanCheckbox(content string) (string, bool) {
+	if len(content) < 3 || content[0] != '[' || content[2] != ']' {
+		return content, false
+	}
+	switch content[1] {
+	case ' ', 'x', 'X':
+	default:
+		return content, false
+	}
+	rest := strings.TrimSpace(content[3:])
+	if rest == "" {
+		return "", true
+	}
+	return rest, true
 }
 
 // planLabelMatch parses s as [known label][separator][rest]: the separator is
