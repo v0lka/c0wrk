@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -412,5 +413,72 @@ func TestScanGitConfigRemoteTransportKeysDeriveDefaultProgramPins(t *testing.T) 
 		if !slices.Contains(argv, want) {
 			t.Errorf("neutralizing argv = %q, want %q", argv, want)
 		}
+	}
+}
+
+// TestRemoteTransportPinSubcommandFirstConvention pins the argv position of
+// the remote-side transport pin for ALL FOUR transport subcommands (the pin
+// must sit right after the subcommand), and the convention tripwire that
+// keeps the pin's subcommand-first keying from failing silently open: a call
+// that puts a global option before the subcommand gets NO pin — git's
+// last-option-wins would otherwise let a caller's own transport flag be
+// overridden — and must WARN instead (the load-bearing convention made
+// visible; review Issue: the pin keyed on args[0] with nothing pinning the
+// shape).
+func TestRemoteTransportPinSubcommandFirstConvention(t *testing.T) {
+	f := newCanaryFixture(t, "hello\n")
+
+	cases := []struct {
+		name string
+		args []string
+		pin  string
+	}{
+		{"fetch", []string{"fetch", "origin"}, "--upload-pack=git-upload-pack"},
+		{"pull", []string{"pull", "origin"}, "--upload-pack=git-upload-pack"},
+		{"ls-remote", []string{"ls-remote", "origin"}, "--upload-pack=git-upload-pack"},
+		{"push", []string{"push", "origin", "HEAD"}, "--receive-pack=git-receive-pack"},
+	}
+	for _, tc := range cases {
+		argv := pinGitCmdArgv(f.ctx, t, f.repo.Root, tc.args...)
+		// The hardened baseline prepends -c overrides, so the subcommand is
+		// not at a fixed index; the pin must sit IMMEDIATELY after it, with
+		// the caller's operands following unchanged.
+		sub := slices.Index(argv, tc.args[0])
+		if sub < 0 {
+			t.Fatalf("%s: subcommand %q missing from argv %q", tc.name, tc.args[0], argv)
+		}
+		if sub+1 >= len(argv) || argv[sub+1] != tc.pin {
+			t.Errorf("%s: argv = %q, want the transport pin %q immediately after the subcommand", tc.name, argv, tc.pin)
+		}
+		if !slices.Equal(argv[sub+2:], tc.args[1:]) {
+			t.Errorf("%s: operands after the pin = %q, want %q (args must flow through unchanged)", tc.name, argv[sub+2:], tc.args[1:])
+		}
+	}
+
+	// Flag-before-subcommand: no pin (by design), and the tripwire WARNs
+	// with the exact subcommand and argv. Intercepted and asserted here so
+	// the expected diagnostic never reaches the default handler.
+	logger := expectedDiagnostics(t, diagnosticExpectation{
+		level:   slog.LevelWarn,
+		message: "git transport subcommand is not in the first argv position; the remote-side transport pin was not applied (remote.<n>.uploadpack/receivepack are unneutralized for this spawn — keep the subcommand first)",
+		attrs:   map[string]string{"subcommand": "fetch", "position": "2"},
+	})
+	ctx := gitDiagnosticContext(f.ctx, logger)
+	argv := pinGitCmdArgv(ctx, t, f.repo.Root, "-c", "test.convention.probe=value", "fetch", "origin")
+	if slices.Contains(argv, "--upload-pack=git-upload-pack") {
+		t.Errorf("argv = %q, must not carry the transport pin when a global flag precedes the subcommand", argv)
+	}
+	if !slices.Contains(argv, "fetch") {
+		t.Errorf("argv = %q, the subcommand and operands must flow through unchanged", argv)
+	}
+
+	// A non-transport call with a value that merely LOOKS like a transport
+	// subcommand must not trip the wire (an option value is never a
+	// subcommand): "-c key=pull status" stays silent.
+	logger = expectedDiagnostics(t)
+	ctx = gitDiagnosticContext(f.ctx, logger)
+	argv = pinGitCmdArgv(ctx, t, f.repo.Root, "-c", "test.convention.probe=pull", "status", "--porcelain")
+	if slices.Contains(argv, "--receive-pack=git-receive-pack") || slices.Contains(argv, "--upload-pack=git-upload-pack") {
+		t.Errorf("argv = %q, a status call must never carry a transport pin", argv)
 	}
 }

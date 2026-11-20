@@ -1118,6 +1118,15 @@ func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, age
 func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithDelegationRegistry(ctx, nil)
 	ctx = tools.WithDelegationLauncher(ctx, nil)
+	// Strip an inherited dispatch catalog: the delegating conduit (the goal
+	// verifier, a redelegating subagent) labeled its delegate tool call with
+	// ITS catalog, and the label inherits downward through Launch — without
+	// this clear the child's own catalog decorator would see a catalog
+	// already present, skip its write, and Gate 2c would enforce the PARENT's
+	// grant over the child's own (verifier-only names dispatchable, the
+	// child's granted names refused). The child's decorator is the writer
+	// closest to the model; first-writer-wins needs an actually-empty start.
+	ctx = tools.ClearDelegationCatalog(ctx)
 	ctx = tools.WithPlanPublisher(ctx, nil)
 	ctx = tools.WithPlanStepExecutor(ctx, nil)
 	ctx = tools.WithStepCompleteFunc(ctx, nil)
@@ -1279,6 +1288,11 @@ func (l *conductorLauncher) relaunchRegularLeg(ctx context.Context, t tools.Dele
 func (l *conductorLauncher) redelegTaskCtx(ctx context.Context, childReg *tools.DelegationRegistry) context.Context {
 	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
 	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
+	// Strip the inherited dispatch catalog (see subagentCtx): the delegating
+	// conduit's label must never survive into a redelegating child's own
+	// tool-call contexts, or Gate 2c would enforce the parent's grant over
+	// this child's own.
+	taskCtx = tools.ClearDelegationCatalog(taskCtx)
 	// Also inject into the sp4rk-level context key so the sp4rk Conductor's
 	// finish guard (executor.SetFinishGuard) can find the child registry and
 	// reject finish while sub-delegations are still pending.
@@ -2206,14 +2220,32 @@ func delegationCatalogFor(ctx context.Context, taskTools []sdktools.ToolDescript
 // into every tool call's context before the inner executor sees it; the
 // registry's Gate 2c refuses names outside the catalog, so the dispatch
 // surface can never exceed what the delegation granted (the descriptor strip
-// alone only shapes the prompt).
+// alone only shapes the prompt). The injection is first-writer-wins: the
+// decorator closest to the model — the FIRST to run on each call's context —
+// writes the catalog the registry reads. A verifier-delegated child runs
+// through TWO decorators (the verifier's executor is already catalog-wrapped
+// when the delegation launcher builds the child, and buildSubAgentTask wraps
+// it again with the child's own grant); with plain WithValue semantics the
+// second wrap would overwrite the child's catalog with the verifier's and the
+// child would dispatch under the wrong grant in both directions
+// (over-permissive: verifier-only names; over-restrictive: the child's full
+// grant gated by the narrower verifier set). Two mechanisms keep the child's
+// grant authoritative at any depth: the launcher's context builders strip an
+// INHERITED label (subagentCtx / redelegTaskCtx clear what rode in on the
+// delegate call's context), and this decorator writes only when nothing is
+// present — so a nested wrap never overwrites the label the child's own wrap
+// already wrote. The verifier's own pass (a single decorator) keeps its
+// catalog, and the Conductor's main children (also single) are unaffected.
 type delegationCatalogToolExec struct {
 	inner   agent.ToolExecutor
 	catalog tools.DelegationCatalog
 }
 
 func (d *delegationCatalogToolExec) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
-	return d.inner.Execute(tools.WithDelegationCatalog(ctx, d.catalog), name, input)
+	if _, ok := tools.DelegationCatalogFromContext(ctx); !ok {
+		ctx = tools.WithDelegationCatalog(ctx, d.catalog)
+	}
+	return d.inner.Execute(ctx, name, input)
 }
 func (d *delegationCatalogToolExec) GetToolSource(name string) string {
 	return d.inner.GetToolSource(name)

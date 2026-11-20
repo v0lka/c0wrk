@@ -215,6 +215,11 @@ type GitConfigInfo struct {
 	// (specs/decisions/070-git-semantic-trust.md). Source = rawSources index
 	// of the layer the record was parsed from.
 	records []gitConfigRecord
+	// includesResolved records that ResolveIncludes already ran on this
+	// info: repeated calls are exact no-ops — the first resolution (its
+	// depth and file-count bounds included) is the identity, never re-read,
+	// never extended.
+	includesResolved bool
 }
 
 // NeutralizingArgvErr is NeutralizingArgv with the spawn gate attached: a
@@ -742,6 +747,16 @@ func SemanticFingerprintFromSnapshot(raw []byte, loggers ...*slog.Logger) (finge
 // still revoke trust; reimplementing wildmatch() risks skipping a file git
 // reads). Bounded; missing → empty source, unreadable → marker, never an
 // error, so later changes still show as drift.
+//
+// The call is append-only AND idempotent — the load-bearing invariant the
+// spawn layer's drift path builds on: plainCheckoutRawEligible resolves
+// includes on a memoized scan and the hardened path then derives its
+// neutralizing overrides from the same GitConfigInfo, so findings, records,
+// and the Includes directive list must stay untouched, and
+// a repeated call is an exact no-op — the FIRST resolution (its depth and
+// file-count bounds included) is the identity, so SemanticSnapshot and
+// SemanticFingerprint return byte-identical results however many times the
+// caller repeats the call (pinned by TestResolveIncludes_DoubleCallInvariant).
 func (info *GitConfigInfo) ResolveIncludes(loggers ...*slog.Logger) {
 	if info == nil {
 		return
@@ -750,12 +765,20 @@ func (info *GitConfigInfo) ResolveIncludes(loggers ...*slog.Logger) {
 	if len(loggers) > 0 && loggers[0] != nil {
 		logger = loggers[0]
 	}
+	if info.includesResolved {
+		// Exact idempotency: the FIRST resolution on this info — its bounds
+		// included — is the identity; a repeated call must neither re-read
+		// targets (duplicating sources) nor extend the resolution past a
+		// limit the first call already hit.
+		return
+	}
 	r := &includeResolver{
 		logger:  logger,
 		visited: make(map[string]bool, len(info.Includes)),
 		info:    info,
 	}
 	r.resolveIncludes(info.Includes, 0)
+	info.includesResolved = true
 }
 
 // includeResolver walks include directives depth-first (bounded depth, file

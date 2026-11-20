@@ -115,11 +115,21 @@ var scanGitConfigFn = func(repoRoot string) (*GitConfigInfo, error) {
 //   - a linked worktree's own config.worktree overlay, plantable after the
 //     trust decision. Raw git runs from the worktree only while a fresh scan
 //     shows the overlay contributing nothing dangerous; anything else — a
-//     failed scan included — takes the hardened baseline below. The overlay
-//     stays on its own scan gate rather than the fingerprint: the recorded
-//     identity covers the MAIN checkout's scan, so comparing it against a
-//     linked worktree's source set would evict on every benign per-worktree
-//     overlay.
+//     failed scan included — takes the hardened baseline below.
+//
+//   - the COMMON configuration drifting after the decision, caught from the
+//     worktree too (the one place the plain path's fingerprint check never
+//     reached): the common config — system, global, the shared config file,
+//     its include targets — is read by every checkout of the repository, but
+//     the recorded identity describes the MAIN checkout's scan, so comparing
+//     it against the LINKED worktree's own source set would evict on every
+//     benign per-worktree overlay and its path spellings. Instead the
+//     worktree spawn re-derives the identity from the trust root itself —
+//     the exact plain-checkout pipeline, fresh scan plus include resolution,
+//     compared against the stored fingerprint — and drift evicts exactly as
+//     on the plain path; the worktree's own overlay stays judged by the
+//     overlay gate above. A fingerprint-less entry and a failing trust-root
+//     scan refuse the raw spawn, fail-closed, like the plain path.
 //
 // Lives below the commit gate (prompting here cannot re-key the trust
 // entry). See specs/decisions/034-git-trust-opt-out.md and
@@ -132,7 +142,16 @@ func trustedRootRawEligible(scan *gitScanMemo, trustedRoot string) bool {
 	if err != nil {
 		return false
 	}
-	return info.WorktreeOverlayClean()
+	if !info.WorktreeOverlayClean() {
+		return false
+	}
+	// Common-config identity: re-derive the trust root's fingerprint on its
+	// own memo — the worktree memo's scan (already taken for the overlay
+	// gate) describes a different source set and must never feed the
+	// identity comparison; its hardened-path reuse below is unaffected.
+	rootScan := newGitScanMemo(trustedRoot)
+	rootScan.logger = scan.logger
+	return plainCheckoutRawEligible(rootScan, trustedRoot)
 }
 
 // plainCheckoutRawEligible binds a plain-checkout trusted spawn to the exact
@@ -199,6 +218,66 @@ func remoteTransportPin(args []string) []string {
 	return nil
 }
 
+// transportSubcommands are the remote-op subcommands remoteTransportPin pins.
+// Kept in one place with it: the tripwire below must flag exactly the calls
+// whose pin was skipped.
+var transportSubcommands = map[string]bool{
+	"fetch":     true,
+	"pull":      true,
+	"push":      true,
+	"ls-remote": true,
+}
+
+// globalValueFlags are the git GLOBAL options that take a separate value
+// token; a token following one of these is an option value, never the
+// subcommand.
+var globalValueFlags = map[string]bool{
+	"-c":             true,
+	"-C":             true,
+	"--git-dir":      true,
+	"--work-tree":    true,
+	"--namespace":    true,
+	"--super-prefix": true,
+}
+
+// warnMispositionedTransportSubcommand is the convention tripwire for the
+// subcommand-first argv form remoteTransportPin keys on: it WARNs when a
+// call puts global options before a transport subcommand — the shape where
+// the pin is (by design) not applied, so the caller is silently unprotected
+// against remote.<n>.uploadpack/receivepack. It never changes argv: a
+// subcommand-first call is normal, a non-transport subcommand is another
+// command entirely, and an option value following a global flag is not a
+// subcommand. Noise-tolerant by intent — a false negative would hide a
+// fail-open, a false positive is one WARN line.
+func warnMispositionedTransportSubcommand(logger *slog.Logger, args []string) {
+	if logger == nil || len(args) == 0 || !strings.HasPrefix(args[0], "-") {
+		// Subcommand-first: the convention holds. A leading non-flag token
+		// is the subcommand; if it is not a transport one, the pin does not
+		// apply and there is nothing to warn about.
+		return
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if globalValueFlags[arg] && i+1 < len(args) {
+			i++ // the value token — never the subcommand
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		// First positional token: git reads it as the subcommand.
+		if transportSubcommands[arg] {
+			// The subcommand name and its position identify the call site
+			// without logging the argv itself: a transport operand may be a
+			// credentialed remote URL, and the default handler persists WARN
+			// output into the long-lived stderr log.
+			logger.Warn("git transport subcommand is not in the first argv position; the remote-side transport pin was not applied (remote.<n>.uploadpack/receivepack are unneutralized for this spawn — keep the subcommand first)",
+				"subcommand", arg, "position", strconv.Itoa(i))
+		}
+		return
+	}
+}
+
 // withRemoteTransportPin inserts the transport pin right after the
 // subcommand (git accepts options among the positionals); args flow through
 // unchanged for every other subcommand.
@@ -217,6 +296,14 @@ func withRemoteTransportPin(args []string) []string {
 // gitCmdInRepoScanned is GitCmdInRepo over an operation-scoped scan memo;
 // the memo's path is the command's working directory.
 func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string) (*exec.Cmd, error) {
+	// Convention tripwire first: the transport pin below keys on the
+	// subcommand-first argv form, so a caller that put global flags first
+	// must surface loudly instead of silently skipping the pin.
+	tripLogger := scan.logger
+	if tripLogger == nil {
+		tripLogger = slog.Default()
+	}
+	warnMispositionedTransportSubcommand(tripLogger, args)
 	args = withRemoteTransportPin(args)
 	// Trusted repository: spawn raw git — no baseline, no neutralizing argv,
 	// no GIT_EDITOR pin — so it behaves exactly as outside c0wrk, hooks/

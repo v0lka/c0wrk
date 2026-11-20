@@ -53,6 +53,19 @@ const gitConfigDriftReason = "This repository was previously trusted, but its co
 // snapshot): revoked fail-closed; re-trusting re-captures a fresh snapshot.
 const gitConfigTrustUnverifiableReason = "This repository was previously trusted, but the git-config snapshot recorded at trust time could no longer be read or interpreted, so the trust cannot be carried over. The trust has been revoked and the repository is hardened again; review the repository's current git configuration and re-trust it only if it is the configuration you originally trusted."
 
+// gitConfigTransientDriftReason is the Reason when a spawn-caught trust drift
+// has rolled back before the drift handler's recheck: the config reproduces
+// the trusted identity again, the record stays, but the attempt (and the one
+// hardened spawn it caused) must still reach the user instead of vanishing
+// into the recheck's dedup.
+const gitConfigTransientDriftReason = "This repository is trusted, and a git operation caught its command-bearing configuration differing from the state recorded at trust time — that operation ran with the hardened settings. By the time the change was rechecked, the configuration matched the trusted state again, so the trust record was kept. If you did not make this change, review the repository's git configuration."
+
+// gitConfigTransientDriftNotice is the standing note for the transient-drift
+// notification: unlike the intake and eviction warnings, the trust record
+// SURVIVES this incident (the config matched the trusted state again at
+// recheck), so the hooks-do-not-run notice would be false here.
+const gitConfigTransientDriftNotice = "This repository remains trusted: one git operation ran with the hardened settings after a caught configuration mismatch, and the configuration matched the trusted state again by the time the change was rechecked."
+
 // GitConfigRiskFinding is one detected danger, as delivered to the frontend.
 type GitConfigRiskFinding struct {
 	// Key is the full dotted config key ("core.fsmonitor",
@@ -490,7 +503,7 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 		displayPath = root
 	}
 	if trusted, ok := f.trustedGitRepoEntryFor(path); ok {
-		f.recheckTrustedGitRepo(source, displayPath, trusted)
+		f.recheckTrustedGitRepo(source, displayPath, trusted, false)
 		return
 	}
 	info, err := workspace.ScanGitConfig(path, f.log())
@@ -531,7 +544,14 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 // records are migrated from their raw snapshot first
 // (migrateTrustedGitRepoRecord); unrecoverable identity fails closed. The
 // scan runs on displayPath — trust is fingerprinted under the resolved root.
-func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted config.TrustedGitRepo) {
+//
+// driftCaught marks a recheck that follows the spawn layer's EvictDrifted
+// (the drift handler path): in that case even a RESTORED config must not
+// vanish into the two silent branches below — the drift was real, evicted
+// the registry trust, and hardened one spawn, so the minimal spawn-source
+// notification is emitted before the dedup (Finding: a transient drift
+// otherwise left no user-visible trace at all).
+func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted config.TrustedGitRepo, driftCaught bool) {
 	f.seedAcquire()
 	// v1→v2 migration first: an unrecoverable record fails closed below.
 	if trusted.SemanticFingerprint == "" {
@@ -561,12 +581,34 @@ func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted 
 	}
 
 	if err == nil && scanned.SemanticFingerprint() == trusted.SemanticFingerprint {
+		if driftCaught {
+			// The spawn layer evicted this repository after catching a
+			// semantic fingerprint mismatch; the config now reproduces the
+			// trusted identity again. Both branches below are silent, so
+			// without this emission the whole incident — a caught drift and
+			// one hardened spawn — would leave no user-visible trace.
+			f.emitEvent(EventGitConfigRisk, GitConfigRiskData{
+				Path:   displayPath,
+				Source: source,
+				Notice: gitConfigTransientDriftNotice,
+				Reason: gitConfigTransientDriftReason,
+				Findings: []GitConfigRiskFinding{{
+					Key:         "(transient drift)",
+					Description: "A git operation caught this trusted repository's command-bearing configuration differing from the state recorded at trust time; that operation ran with the hardened settings. The configuration matched the trusted state again by the time it was rechecked, so no trust action was taken.",
+				}},
+			})
+		}
 		if scanned.Fingerprint() == trusted.Fingerprint {
-			f.log().Debug("git-config risk warning suppressed: trusted repository unchanged", "path", displayPath)
+			if driftCaught {
+				f.log().Debug("spawn-caught git trust drift was transient; the config matches the trusted state again", "path", displayPath)
+			} else {
+				f.log().Debug("git-config risk warning suppressed: trusted repository unchanged", "path", displayPath)
+			}
 			return
 		}
-		// Bytes moved, meaning did not: inert by construction. Follow
-		// silently, no event.
+		// Bytes moved, meaning did not: inert by construction. The raw
+		// snapshot refresh itself stays silent (a driftCaught incident was
+		// already notified above).
 		f.refreshTrustedGitRepoRawSnapshot(displayPath, trusted, scanned)
 		return
 	}
@@ -728,7 +770,10 @@ func (f *FrontendAPI) evictTrustedGitRepo(trusted config.TrustedGitRepo) {
 // registry entry. Route through the same recheck the intake paths run, so
 // the config record leaves the list — a stale record would re-mirror the
 // evicted trust on the next registry sync — and the user receives the same
-// reasoned drift warning (diff included) an open-time eviction produces.
+// reasoned drift warning (diff included) an open-time eviction produces;
+// a drift that rolled back before this recheck emits the minimal
+// transient-drift notification instead of vanishing into the dedup
+// (recheckTrustedGitRepo's driftCaught branches).
 // Runs on git-operation goroutines: the registry lock is released before the
 // handler fires, and this method takes only configMu, so the lock order
 // (registry → config) stays one-directional.
@@ -741,7 +786,7 @@ func (f *FrontendAPI) onGitTrustDrift(root string) {
 		f.log().Debug("git trust drift for a root with no trusted record", "path", root)
 		return
 	}
-	f.recheckTrustedGitRepo(GitConfigRiskSourceSpawn, root, entry)
+	f.recheckTrustedGitRepo(GitConfigRiskSourceSpawn, root, entry, true)
 }
 
 // buildGitConfigFindings renders a scan result into the findings slice the

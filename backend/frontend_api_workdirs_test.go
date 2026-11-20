@@ -592,6 +592,43 @@ func TestAutoAddPromptWorkDirs_RejectsContainmentWidening(t *testing.T) {
 	}
 }
 
+// TestAutoAddPromptWorkDirs_SkipsNonDirectories pins the shape of the
+// existence filter the auto-add runs BEFORE containment: a prompt mention of
+// a path that does not exist, and of an existing REGULAR FILE inside an
+// approved root (containment alone would let it through), are both skipped —
+// a work directory is a directory by definition. Neither may land in the
+// records or fire the change event.
+func TestAutoAddPromptWorkDirs_SkipsNonDirectories(t *testing.T) {
+	h := newWorkDirsHarness(t)
+	// The approval root the user added explicitly: candidates inside it pass
+	// the containment check, so only the directory-shape filter can skip.
+	root := h.existingDir(t)
+	if err := h.api.AddWorkDirectory("session", h.sessionID, root, "manual root"); err != nil {
+		t.Fatalf("manual add: %v", err)
+	}
+	// The manual add emitted its own change event; the auto-add pass below
+	// must add nothing and therefore emit nothing further.
+	emissionsAfterManualAdd := h.emitCount(EventWorkDirsChanged)
+	regularFile := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(regularFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write regular file: %v", err)
+	}
+	nonexistent := filepath.Join(root, "does-not-exist")
+
+	h.api.autoAddPromptWorkDirs(h.sessionID, "", "read "+regularFile+" and "+nonexistent)
+
+	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected only the manual root record, got %#v", recs)
+	}
+	if h.emitCount(EventWorkDirsChanged) != emissionsAfterManualAdd {
+		t.Errorf("expected no emission from the auto-add pass, got %d total", h.emitCount(EventWorkDirsChanged))
+	}
+}
+
 // TestAutoAddPromptWorkDirs_AllowsInsideWorkspace pins the allow side of the
 // containment rule: a directory inside the session's workspace is eligible —
 // it adds no new read scope, the workspace is already a root — so a prose

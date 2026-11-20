@@ -1,11 +1,78 @@
 package workspace
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestResolveIncludes_DoubleCallInvariant pins the load-bearing invariant the
+// spawn layer's drift path builds on (plainCheckoutRawEligible resolves
+// includes on a memoized scan, then the hardened path derives its overrides
+// from the SAME GitConfigInfo): a repeated call must be append-only and
+// idempotent — findings, records, and the Includes directive list are
+// untouched, the include-source set stays a single resolution, and the
+// semantic fingerprint/snapshot are exactly what the first call produced. A
+// future edit that mutates records/findings or re-reads (and duplicates)
+// resolved targets would silently desynchronize the hardened path's override
+// derivation from a fresh scan's identity.
+func TestResolveIncludes_DoubleCallInvariant(t *testing.T) {
+	root := writeTempRepo(t, "", true, "[core]\n\tfsmonitor = /tmp/evil.sh\n[include]\n\tpath = ../extra.conf\n")
+	extra := filepath.Join(root, "extra.conf")
+	if err := os.WriteFile(extra, []byte("[filter \"x\"]\n\tclean = /tmp/inc.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(4, "../extra.conf"))
+
+	info, err := ScanGitConfig(root, logger)
+	if err != nil {
+		t.Fatalf("ScanGitConfig: %v", err)
+	}
+	findingsBefore := info.Findings
+	recordsBefore := info.records
+	includesBefore := info.Includes
+
+	info.ResolveIncludes(logger)
+	firstFingerprint := info.SemanticFingerprint()
+	firstSnapshot := info.SemanticSnapshot()
+	sourcesAfterFirst := len(info.includeSources)
+	if sourcesAfterFirst == 0 {
+		t.Fatal("the first ResolveIncludes call must resolve the include target")
+	}
+
+	// The double call: nothing may change.
+	info.ResolveIncludes(logger)
+	if len(info.includeSources) != sourcesAfterFirst {
+		t.Errorf("includeSources = %d entries after the second call, want the single resolution's %d (no duplicated targets)",
+			len(info.includeSources), sourcesAfterFirst)
+	}
+	if got := info.SemanticFingerprint(); got != firstFingerprint {
+		t.Errorf("SemanticFingerprint changed across the double call: %q != %q", got, firstFingerprint)
+	}
+	if !bytes.Equal(info.SemanticSnapshot(), firstSnapshot) {
+		t.Error("SemanticSnapshot changed across the double call")
+	}
+	if !reflect.DeepEqual(info.Findings, findingsBefore) {
+		t.Errorf("Findings mutated across the double call: %#v != %#v", info.Findings, findingsBefore)
+	}
+	if !reflect.DeepEqual(info.records, recordsBefore) {
+		t.Error("records mutated across the double call")
+	}
+	if !reflect.DeepEqual(info.Includes, includesBefore) {
+		t.Errorf("Includes mutated across the double call: %#v != %#v", info.Includes, includesBefore)
+	}
+
+	// The resolved identity still binds the included bytes: a fingerprint
+	// including the target proves idempotency did not degenerate into
+	// skipping resolution altogether.
+	if !strings.Contains(string(firstSnapshot), "/tmp/inc.sh") {
+		t.Error("the semantic snapshot must still carry the included file's bytes")
+	}
+}
 
 // TestResolveIncludes_FingerprintsIncludeTargets pins the core of the
 // include-hidden drift fix: a repo whose config includes another file has that

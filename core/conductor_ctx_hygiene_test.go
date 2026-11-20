@@ -203,6 +203,41 @@ func TestRedelegTaskCtx_ClearsGoalStateAndRoster(t *testing.T) {
 	}
 }
 
+// TestSubagentCtxAndRedelegTaskCtx_StripsInheritedDelegationCatalog pins the
+// delegation-boundary catalog strip: a delegating conduit (the goal
+// verifier's own pass, a redelegating subagent) labels its own delegate tool
+// call with ITS catalog, and that label inherits downward through Launch
+// into every child tool-call context. Without the strip the child's own
+// catalog decorator would see a catalog already present, skip its write, and
+// Gate 2c would enforce the PARENT's grant over the child's own — the exact
+// dispatch-surface hole the catalog gate exists to close, in both directions
+// (verifier-only names dispatchable, the child's granted names refused).
+// Both context builders that build child contexts must clear it.
+func TestSubagentCtxAndRedelegTaskCtx_StripsInheritedDelegationCatalog(t *testing.T) {
+	parentCatalog := coretools.DelegationCatalog{Names: map[string]struct{}{"parent_only": {}}}
+	ctx := coretools.WithDelegationCatalog(context.Background(), parentCatalog)
+
+	if _, ok := coretools.DelegationCatalogFromContext(ctx); !ok {
+		t.Fatal("fixture: the parent context must carry the catalog before the boundary")
+	}
+
+	if _, ok := coretools.DelegationCatalogFromContext(subagentCtx(ctx)); ok {
+		t.Fatal("subagentCtx must strip an inherited dispatch catalog: the child must start from an empty label")
+	}
+
+	// The redelegating boundary keeps the child delegation machinery but
+	// strips the inherited label the same way.
+	l := &conductorLauncher{}
+	childReg := coretools.NewDelegationRegistryWithDepth(1)
+	redelegCtx := l.redelegTaskCtx(coretools.WithDelegationCatalog(context.Background(), parentCatalog), childReg)
+	if _, ok := coretools.DelegationCatalogFromContext(redelegCtx); ok {
+		t.Fatal("redelegTaskCtx must strip an inherited dispatch catalog: the redelegating child must start from an empty label")
+	}
+	if reg := coretools.DelegationRegistryFrom(redelegCtx); reg != childReg {
+		t.Error("the catalog strip must not remove the re-injected child delegation registry")
+	}
+}
+
 // --- execute_plan is conductor-only at dispatch, not just at descriptor level ---
 
 // TestSubagentCtx_StripsPlanStepExecutor: the PlanStepExecutor handoff is

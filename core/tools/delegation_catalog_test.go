@@ -107,9 +107,13 @@ func TestRegistryDelegationCatalogGate_EmptyCatalogBlocksEverything(t *testing.T
 }
 
 // TestRegistryDelegationCatalogGate_NoCatalogUnrestricted pins the scope of
-// the gate: a context WITHOUT a catalog is not under a delegated subagent —
-// the Conductor's own dispatches, the E2S loop, and verifier executors stay
-// unrestricted (each has its own grant/validation mechanism).
+// the gate: a context WITHOUT a catalog is not under a catalog-gated conduit —
+// only the Conductor's own dispatches and the E2S loop stay unrestricted
+// (each is self-consistent: the advertised set is the full session registry
+// it dispatches into). The goal verifier's own pass carries its own catalog,
+// and a verifier-delegated child carries its own — see the doc comment of
+// DelegationCatalogFromContext in delegation_catalog.go, the single source of
+// truth for the gate's scope.
 func TestRegistryDelegationCatalogGate_NoCatalogUnrestricted(t *testing.T) {
 	r := NewToolRegistry()
 	r.RegisterWithSource(newCatalogProbeTool("probe"), "core")

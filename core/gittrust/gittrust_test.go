@@ -100,3 +100,51 @@ func TestSnapshotIsDefensiveCopy(t *testing.T) {
 		t.Fatal("registry lost its root")
 	}
 }
+
+// TestEvictDrifted_ReportsOnlyTheEvictingCaller pins the transition-gated
+// drift reporting: only the call that actually removed an entry fires the
+// registered handler and reports true — a racing second spawn catching the
+// same drift (the entry already gone) must neither re-fire the handler nor
+// claim the eviction, or one incident would warn the user twice. Also pins
+// Untrust's existed-detection across both path spellings.
+func TestEvictDrifted_ReportsOnlyTheEvictingCaller(t *testing.T) {
+	Clear()
+	t.Cleanup(func() {
+		SetDriftHandler(nil)
+		Clear()
+	})
+
+	root := filepath.Join(t.TempDir(), "repo")
+	alternate := root + string(filepath.Separator) // the second spelling
+	var fired []string
+	SetDriftHandler(func(r string) { fired = append(fired, r) })
+
+	// Unknown root: no eviction, no report.
+	if EvictDrifted(root) {
+		t.Fatal("EvictDrifted on an unregistered root must report false")
+	}
+	if len(fired) != 0 {
+		t.Fatalf("handler fired for an unregistered root: %v", fired)
+	}
+
+	// First eviction: the entry existed under the alternate spelling too →
+	// true, handler fired exactly once with the cleaned root.
+	Trust(root)
+	if !EvictDrifted(alternate) {
+		t.Fatal("EvictDrifted via the alternate spelling must detect the entry and report true")
+	}
+	if len(fired) != 1 || fired[0] != root {
+		t.Fatalf("handler = %v, want exactly one call with the cleaned root %q", fired, root)
+	}
+
+	// Racing second eviction: the entry is gone → false, no duplicate report.
+	if EvictDrifted(root) {
+		t.Fatal("a second EvictDrifted with no entry must report false")
+	}
+	if len(fired) != 1 {
+		t.Fatalf("handler fired %d times, want exactly 1 (the transition-gated report)", len(fired))
+	}
+	if IsTrusted(root) || IsTrusted(alternate) {
+		t.Fatal("the evicted root must be gone under both spellings")
+	}
+}

@@ -1187,8 +1187,11 @@ func (o *Orchestrator) defaultGoalVerifier(
 	// call context with the advertised set; the registry's Gate 2c refuses
 	// names outside it — the same mechanism that binds delegated subagents
 	// to their grant (delegation_catalog.go). The verifier's delegations
-	// re-wrap per child in buildSubAgentTask, so each child's own catalog
-	// replaces this one on its call contexts.
+	// re-wrap per child in buildSubAgentTask: the launcher's context builders
+	// strip the label this decorator wrote onto the delegate call (it must
+	// never inherit downward), and the decorator is first-writer-wins, so
+	// each child's own catalog stays authoritative on its call contexts,
+	// never this one.
 	deps.toolExec = &delegationCatalogToolExec{
 		inner:   deps.toolExec,
 		catalog: tools.CatalogFromDescriptors(verifierTools),

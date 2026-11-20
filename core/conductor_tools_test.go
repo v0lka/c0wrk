@@ -1,8 +1,10 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -492,6 +494,112 @@ func TestDelegationCatalogFor_RedelegatingLauncherExtendsCatalog(t *testing.T) {
 	if catalog.Allows("declare_plan") || catalog.Allows("execute_plan") || catalog.Allows("reflect") {
 		t.Error("the launcher extension must not re-admit the other conductor-only tools")
 	}
+}
+
+// TestDelegationCatalogToolExec_NestedVerifierChildKeepsOwnGrant pins the
+// verifier→child catalog handoff end to end (Issue: verifier-delegated
+// children dispatched under the verifier's catalog). Two defects produce
+// that outcome, and both are pinned here: (1) the label the verifier's
+// decorator writes onto its own `delegate` tool call INHERITS downward
+// through Launch into the child's tool-call contexts — subagentCtx must
+// strip it at the boundary; (2) the child's executor runs through TWO
+// decorators (buildSubAgentTask wraps the already catalog-wrapped verifier
+// executor) — with plain context-overwrite semantics the second wrap would
+// overwrite the child's catalog, so the decorator must be
+// first-writer-wins. With either mechanism broken the child dispatches under
+// the VERIFIER's grant in both directions: a narrowed child could fire
+// verifier-only names (secret_probe), and a full-grant child would lose
+// names the verifier's set lacks (read_only_probe). The chain below
+// dispatches through a REAL registry, so the assertions exercise Gate 2c
+// exactly as production does.
+func TestDelegationCatalogToolExec_NestedVerifierChildKeepsOwnGrant(t *testing.T) {
+	var logs bytes.Buffer
+	reg := tools.NewToolRegistry()
+	reg.SetLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	reg.RegisterWithSource(newCatalogGateProbeTool("read_only_probe"), "core")
+	reg.RegisterWithSource(newCatalogGateProbeTool("secret_probe"), "core")
+
+	// The verifier's grant: its own probe plus the secret name; the child's
+	// grant: the read-only probe only.
+	verifierCatalog := tools.CatalogFromDescriptors([]sdktools.ToolDescriptor{
+		{Name: "secret_probe", Group: sdktools.GroupSystem},
+	})
+	childCatalog := tools.CatalogFromDescriptors([]sdktools.ToolDescriptor{
+		{Name: "read_only_probe", Group: sdktools.GroupSystem},
+	})
+	verifierExec := &delegationCatalogToolExec{inner: reg, catalog: verifierCatalog}
+	childExec := &delegationCatalogToolExec{inner: verifierExec, catalog: childCatalog}
+
+	// The REAL launch lineage: the verifier's delegate call context carries
+	// the verifier's catalog (its decorator labeled it), and runRegularBlocking
+	// narrows it through subagentCtx — the boundary strip must remove the
+	// inherited label so the child's decorator starts from an empty context.
+	delegateCallCtx := tools.WithDelegationCatalog(context.Background(), verifierCatalog)
+	childRunCtx := subagentCtx(delegateCallCtx)
+
+	// Over-permissive direction (the finding): the child's call for a name
+	// only the VERIFIER's catalog carries must be blocked by Gate 2c — the
+	// inherited label must not survive the boundary, and the inner wrap must
+	// not overwrite the child's own grant.
+	res, err := childExec.Execute(childRunCtx, "secret_probe", nil)
+	if err != nil {
+		t.Fatalf("child Execute(secret_probe) returned a hard error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("child Execute(secret_probe) = %+v, want blocked under the child's catalog", res)
+	}
+	if !strings.Contains(res.Content, "not part of this delegated subagent's tool catalog") {
+		t.Errorf("blocked content = %q, want the catalog refusal", res.Content)
+	}
+
+	// Over-restrictive direction: the child's own grant must still dispatch
+	// even though the verifier's catalog lacks the name — the child's
+	// delegation stays functional.
+	res, err = childExec.Execute(childRunCtx, "read_only_probe", nil)
+	if err != nil {
+		t.Fatalf("child Execute(read_only_probe): %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("child Execute(read_only_probe) = %+v, want success under the child's own grant", res)
+	}
+	if !strings.Contains(res.Content, "read_only_probe executed") {
+		t.Errorf("child content = %q, want the executed probe", res.Content)
+	}
+
+	// The verifier's OWN pass (a single decorator, no boundary strip) keeps
+	// its catalog: the secret name dispatches for the verifier itself.
+	res, err = verifierExec.Execute(context.Background(), "secret_probe", nil)
+	if err != nil {
+		t.Fatalf("verifier Execute(secret_probe): %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("verifier Execute(secret_probe) = %+v, want success under the verifier's catalog", res)
+	}
+
+	// Exactly one security WARN total: the child's blocked secret_probe call
+	// (the two successful dispatches stay silent).
+	if n := strings.Count(logs.String(), `"level":"WARN"`); n != 1 {
+		t.Errorf("security WARN emissions = %d, want exactly 1 (the blocked child call): %s", n, logs.String())
+	}
+}
+
+// newCatalogGateProbeTool builds a minimal GroupSystem + AlwaysAllow probe:
+// Gate 3 bypasses every policy check for it, so only the delegation-catalog
+// gate (Gate 2c) can stop a call outside the catalog under test.
+func newCatalogGateProbeTool(name string) *catalogGateProbeTool {
+	return &catalogGateProbeTool{BaseTool: &sdktools.BaseTool{
+		ToolGroup:       sdktools.GroupSystem,
+		ToolName:        name,
+		ToolDescription: "catalog gate probe",
+		Schema:          json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		Policy:          sdktools.PolicyAlwaysAllow,
+	}}
+}
+
+type catalogGateProbeTool struct{ *sdktools.BaseTool }
+
+func (t *catalogGateProbeTool) Execute(ctx context.Context, raw json.RawMessage) (sdktools.ToolResult, error) {
+	return sdktools.ToolResult{Content: t.Name() + " executed"}, nil
 }
 
 // stubCatalogToolExec is a minimal agent.ToolExecutor capturing the context

@@ -66,13 +66,20 @@ func TrustWithFingerprint(root, semanticFingerprint string) {
 	mu.Unlock()
 }
 
-// Untrust removes root from the trusted set (both spellings).
-func Untrust(root string) {
+// Untrust removes root from the trusted set (both spellings) and reports
+// whether an entry existed (either spelling) — the signal the drift eviction
+// uses to tell the caller that performed the eviction from a racing second.
+func Untrust(root string) bool {
 	mu.Lock()
+	existed := false
 	for _, spelling := range spellings(root) {
+		if _, ok := roots[spelling]; ok {
+			existed = true
+		}
 		delete(roots, spelling)
 	}
 	mu.Unlock()
+	return existed
 }
 
 // IsTrusted reports whether root is trusted under either spelling.
@@ -160,18 +167,26 @@ func SetDriftHandler(fn func(root string)) {
 }
 
 // EvictDrifted evicts a repository the spawn layer caught drifting from its
-// recorded trust decision (both spellings) and reports the drift to the
-// registered handler outside the registry lock — the handler mirrors config
-// state and may re-enter Replace. The registry eviction stands even with no
-// handler: raw git refuses immediately, fail-closed.
-func EvictDrifted(root string) {
-	Untrust(root)
+// recorded trust decision (both spellings) and — when THIS call performed
+// the eviction — reports the drift to the registered handler outside the
+// registry lock; the handler mirrors config state and may re-enter Replace.
+// The registry eviction stands even with no handler: raw git refuses
+// immediately, fail-closed. Gating the report on the eviction transition
+// keeps a racing second spawn (both caught the same drift, one entry) from
+// firing the handler twice — a duplicate user warning for one incident.
+// Returns whether this call performed the eviction.
+func EvictDrifted(root string) bool {
+	evicted := Untrust(root)
+	if !evicted {
+		return false
+	}
 	mu.RLock()
 	fn := driftHandler
 	mu.RUnlock()
 	if fn != nil {
 		fn(filepath.Clean(root))
 	}
+	return true
 }
 
 // Clear removes every trusted root. For tests sharing the process-wide
