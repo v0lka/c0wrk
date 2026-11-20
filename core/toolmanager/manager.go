@@ -269,8 +269,9 @@ func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, i
 	return status
 }
 
-// NeedsInstall returns tools with a version mismatch or a missing binary —
-// the startup layer's splash-screen decision input.
+// NeedsInstall returns tools with a version mismatch, a requirements-lock
+// hash mismatch, or a missing binary — the startup layer's splash-screen
+// decision input.
 func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
 	versions, err := ReadVersions(m.ToolsDir)
 	if err != nil {
