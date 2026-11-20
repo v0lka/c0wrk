@@ -13,7 +13,9 @@ import (
 // versionsFileName tracks installed tool versions inside the tools directory.
 const versionsFileName = ".versions"
 
-// ToolVersions maps tool names to their installed version strings.
+// ToolVersions maps tool names to their installed version strings, plus
+// "<name>-lock" keys recording the requirements-lock hash an install was
+// built from (see lockVersionsKey).
 type ToolVersions map[string]string
 
 // ReadVersions reads .versions; a missing file yields an empty map, nil error.

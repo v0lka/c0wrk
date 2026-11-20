@@ -2,6 +2,8 @@ package toolmanager
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -171,9 +173,12 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context, opts EnsureOptions) (
 
 	statuses := make([]ToolStatus, 0, len(tools))
 	for _, tool := range tools {
-		status := m.reconcileTool(ctx, tool, versions[tool.Name], cacheDir, opts)
+		status := m.reconcileTool(ctx, tool, versions[tool.Name], versions[lockVersionsKey(tool.Name)], cacheDir, opts)
 		if status.Ready && status.Installed {
 			versions[tool.Name] = tool.Version
+			if lockHash := lockHashFor(tool); lockHash != "" {
+				versions[lockVersionsKey(tool.Name)] = lockHash
+			}
 			if writeErr := WriteVersions(m.ToolsDir, versions); writeErr != nil {
 				m.Logger.Warn("failed to write versions file", "error", writeErr)
 			}
@@ -191,14 +196,35 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context, opts EnsureOptions) (
 	return statuses, nil
 }
 
+// lockVersionsKey is the .versions key recording the SHA256 of the embedded
+// requirements lock an install was built from ("markitdown-lock"). The extra
+// key is invisible to per-tool version lookups (keyed by tool name only).
+func lockVersionsKey(toolName string) string {
+	return toolName + "-lock"
+}
+
+// lockHashFor returns the hex SHA256 of the tool's embedded requirements
+// lock — the content identity the reconciliation fast path compares against
+// the recorded value, so a lock-only refresh (new transitive pins, e.g. a
+// vulnerability fix) reaches already-installed machines without a version
+// bump; "" for tools without a lock (every StaticBinary spec).
+func lockHashFor(tool ToolSpec) string {
+	if tool.RequirementsLock == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tool.RequirementsLock))
+	return hex.EncodeToString(sum[:])
+}
+
 // reconcileTool brings one tool to its pinned version under the spec's
-// reconciliation guarantees (forced reinstall on pin change, probe-backed
-// staleness detection, secure-bytes-before-destroy).
+// reconciliation guarantees (forced reinstall on pin change or on an
+// embedded-lock content change, probe-backed staleness detection,
+// secure-bytes-before-destroy).
 // See specs/domains/tool-manager.md.
-func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, cacheDir string, opts EnsureOptions) ToolStatus {
+func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, installedLockHash, cacheDir string, opts EnsureOptions) ToolStatus {
 	status := ToolStatus{Tool: tool, Ready: true}
 
-	if installed == tool.Version {
+	if installed == tool.Version && installedLockHash == lockHashFor(tool) {
 		// .versions can outlive the binary (manual deletion) — verify on disk.
 		binPath := m.binaryPath(tool.Name, tool.Type)
 		if _, statErr := os.Stat(binPath); statErr == nil {
@@ -214,6 +240,14 @@ func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, c
 		} else {
 			m.Logger.Warn("version file present but binary missing, re-installing", "tool", tool.Name)
 		}
+	} else if installed == tool.Version {
+		// The pinned version is unchanged but the install was built from a
+		// different requirements lock — a lock-only refresh must not ride the
+		// fast path: installPython tears the wrapper+venv down and re-resolves
+		// the whole tree from the new embedded lock. Installs predating the
+		// lock-hash recording have no key at all, which mismatches the same
+		// way — exactly the one-time rebuild this ship-out wants.
+		m.Logger.Warn("requirements lock changed since install, reinstalling", "tool", tool.Name)
 	}
 
 	// The tool needs (re)installation.
@@ -235,8 +269,9 @@ func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, c
 	return status
 }
 
-// NeedsInstall returns tools with a version mismatch or a missing binary —
-// the startup layer's splash-screen decision input.
+// NeedsInstall returns tools with a version mismatch, a requirements-lock
+// hash mismatch, or a missing binary — the startup layer's splash-screen
+// decision input.
 func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
 	versions, err := ReadVersions(m.ToolsDir)
 	if err != nil {
@@ -248,7 +283,8 @@ func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
 	}
 	var needed []ToolSpec
 	for _, tool := range tools {
-		if versions[tool.Name] != tool.Version {
+		if versions[tool.Name] != tool.Version ||
+			versions[lockVersionsKey(tool.Name)] != lockHashFor(tool) {
 			needed = append(needed, tool)
 			continue
 		}
@@ -485,10 +521,11 @@ func (m *Manager) installPython(ctx context.Context, tool ToolSpec) error {
 	return nil
 }
 
-// removeStalePythonEnv deletes the wrapper and venv so a version bump forces
-// a full rebootstrap — a kept wrapper would ride InstallPythonPackage's
-// existence short-circuit past the upgrade (a silent security gap). The
-// uv-managed interpreter (python/install/) stays, reinstalled idempotently.
+// removeStalePythonEnv deletes the wrapper and venv so a version bump or a
+// requirements-lock refresh forces a full rebootstrap — a kept wrapper would
+// ride InstallPythonPackage's existence short-circuit past the upgrade (a
+// silent security gap). The uv-managed interpreter (python/install/) stays,
+// reinstalled idempotently.
 func (m *Manager) removeStalePythonEnv(tool ToolSpec) {
 	wrapperPath := m.binaryPath(tool.Name, tool.Type)
 	if err := os.Remove(wrapperPath); err != nil && !os.IsNotExist(err) {
