@@ -4513,6 +4513,8 @@ export namespace tools {
 	export class AskUserOption {
 	    label: string;
 	    value: string;
+	    description?: string;
+	    recommended?: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new AskUserOption(source);
@@ -4522,6 +4524,8 @@ export namespace tools {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
 	        this.value = source["value"];
+	        this.description = source["description"];
+	        this.recommended = source["recommended"];
 	    }
 	}
 	export class AskUserQuestion {
