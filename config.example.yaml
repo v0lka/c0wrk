@@ -287,7 +287,7 @@ llm:
 # ---------------------------------------------------------------------------
 # The optional in-app local model. On an explicit user action (Settings → LLM →
 # Embedded LLM → Install) c0wrk downloads a pinned inference runtime — the
-# PrismML-Eng/llama.cpp fork at release `prism-b10735-842b188`, because stock
+# PrismML-Eng/llama.cpp fork at release `prism-b12128-d7b2896`, because stock
 # llama.cpp rejects the PQ2_0/PTQ1_0 ternary packings and silently produces
 # garbage on Q2_0 — plus the Ternary-Bonsai-2-27B weights, provisions both for
 # THIS machine, supervises `llama-server` as a loopback OpenAI-compatible
@@ -425,7 +425,7 @@ llm:
 #   # Default: "".
 #   model_file: ""
 #   # The pinned runtime release the installed runtime came from: the
-#   # llama.cpp fork tag (e.g. "prism-b10735-842b188"), or the MTPLX version
+#   # llama.cpp fork tag (e.g. "prism-b12128-d7b2896"), or the MTPLX version
 #   # under the mtplx engine. A pin change forces a runtime re-download and
 #   # keeps the weights. Default: "".
 #   runtime_version: ""

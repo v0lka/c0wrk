@@ -142,6 +142,9 @@ func TestManager_EnsureCriticalTools_AllUpToDate(t *testing.T) {
 	versions := ToolVersions{}
 	for _, tool := range tools {
 		versions[tool.Name] = tool.Version
+		if lockHash := lockHashFor(tool); lockHash != "" {
+			versions[lockVersionsKey(tool.Name)] = lockHash
+		}
 		if tool.Type == StaticBinary {
 			copySelfBinary(t, mgr.binaryPath(tool.Name, tool.Type))
 		} else {
@@ -271,6 +274,9 @@ func TestManager_NeedsInstall_AllUpToDate(t *testing.T) {
 	}
 	for _, tool := range tools {
 		versions[tool.Name] = tool.Version
+		if lockHash := lockHashFor(tool); lockHash != "" {
+			versions[lockVersionsKey(tool.Name)] = lockHash
+		}
 		// Create a fake binary at the path NeedsInstall checks (binaryPath).
 		binPath := mgr.binaryPath(tool.Name, tool.Type)
 		if err := os.WriteFile(binPath, []byte("fake"), 0o755); err != nil {
@@ -414,6 +420,207 @@ func TestManager_EnsureCriticalTools_PythonVersionBumpRebuildsEnv(t *testing.T) 
 		t.Error("stale venv marker still present after version bump; env was not rebuilt")
 	}
 }
+
+// TestManager_EnsureCriticalTools_LockRefreshRebuildsEnv verifies the
+// lock-only refresh path: .versions records the pinned markitdown version but
+// not the requirements-lock hash the install was built from — the legacy
+// layout every install predating lock-hash recording carries, and the shape
+// of any install facing a regenerated lock. The fast path must refuse it and
+// the bootstrap must tear the stale wrapper+venv down: the mechanism that
+// delivers regenerated transitive pins (e.g. a CVE fix in a dependency) to
+// already-installed machines without a markitdown version bump.
+func TestManager_EnsureCriticalTools_LockRefreshRebuildsEnv(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pythonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &Manager{
+		ToolsDir:   toolsDir,
+		BinDir:     binDir,
+		PythonDir:  pythonDir,
+		Downloader: DownloadFunc(stubDownload),
+		Installer:  &stubInstaller{},
+		Logger:     slog.New(slog.DiscardHandler),
+	}
+
+	markitdown := toolSpec(t, "markitdown")
+
+	// A healthy-looking install under the OLD lock: wrapper and venv exist,
+	// .versions records the current pinned version but no lock hash.
+	wrapperPath := mgr.binaryPath(markitdown.Name, PythonPackage)
+	if err := os.WriteFile(wrapperPath, []byte("stale wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	venvMarker := filepath.Join(pythonDir, "venv", "marker")
+	if err := os.MkdirAll(filepath.Dir(venvMarker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(venvMarker, []byte("old venv"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteVersions(toolsDir, ToolVersions{markitdown.Name: markitdown.Version}); err != nil {
+		t.Fatal(err)
+	}
+	setFakeToolVersion(t, "uv", toolSpec(t, "uv").Version)
+	setFakeToolVersion(t, "rg", toolSpec(t, "rg").Version)
+
+	statuses, err := mgr.EnsureCriticalTools(context.Background(), EnsureOptions{AllowNetwork: true})
+	if err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+	status := findStatus(t, statuses, markitdown.Name)
+	if !status.Ready || !status.Installed {
+		t.Fatalf("markitdown after lock refresh: Ready=%v Installed=%v Err=%v; want a completed rebuild",
+			status.Ready, status.Installed, status.Err)
+	}
+
+	// The stale env must be gone so the rebuild is real, and the fresh
+	// install must record the lock hash it was built from.
+	if _, err := os.Stat(wrapperPath); err == nil {
+		t.Error("stale markitdown wrapper still present after lock refresh; env was not rebuilt")
+	}
+	if _, err := os.Stat(venvMarker); err == nil {
+		t.Error("stale venv marker still present after lock refresh; env was not rebuilt")
+	}
+	versions, err := ReadVersions(toolsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := versions[lockVersionsKey(markitdown.Name)]; got != lockHashFor(markitdown) {
+		t.Errorf(".versions[%s] = %q, want the embedded-lock hash %q",
+			lockVersionsKey(markitdown.Name), got, lockHashFor(markitdown))
+	}
+}
+
+// TestManager_EnsureCriticalTools_MatchingLockSkipsRebuild verifies the
+// complementary half: when .versions records both the pinned version and the
+// current embedded-lock hash, the fast path must accept the install — the
+// wrapper and venv survive untouched (installPython's teardown would
+// otherwise strip a healthy environment on every startup). The failing
+// downloader proves nothing was reinstalled anywhere in the pass.
+func TestManager_EnsureCriticalTools_MatchingLockSkipsRebuild(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &Manager{
+		ToolsDir:   toolsDir,
+		BinDir:     binDir,
+		PythonDir:  pythonDir,
+		Downloader: DownloadFunc(failingDownload),
+		Installer:  &stubInstaller{},
+		Logger:     slog.New(slog.DiscardHandler),
+	}
+
+	markitdown := toolSpec(t, "markitdown")
+
+	// Healthy env: wrapper + venv marker exist; .versions carries the pinned
+	// version AND the hash of the embedded lock.
+	wrapperPath := mgr.binaryPath(markitdown.Name, PythonPackage)
+	if err := os.WriteFile(wrapperPath, []byte("wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	venvMarker := filepath.Join(pythonDir, "venv", "marker")
+	if err := os.MkdirAll(filepath.Dir(venvMarker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(venvMarker, []byte("venv"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteVersions(toolsDir, ToolVersions{
+		markitdown.Name:                  markitdown.Version,
+		lockVersionsKey(markitdown.Name): lockHashFor(markitdown),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Static tools take the fast path through real stand-in probes.
+	copySelfBinary(t, mgr.binaryPath("uv", StaticBinary))
+	copySelfBinary(t, mgr.binaryPath("rg", StaticBinary))
+	setFakeToolVersion(t, "uv", toolSpec(t, "uv").Version)
+	setFakeToolVersion(t, "rg", toolSpec(t, "rg").Version)
+
+	if _, err := mgr.EnsureCriticalTools(context.Background(), EnsureOptions{AllowNetwork: true}); err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+
+	if _, err := os.Stat(wrapperPath); err != nil {
+		t.Errorf("healthy markitdown wrapper was removed; fast path did not accept the matching lock: %v", err)
+	}
+	if _, err := os.Stat(venvMarker); err != nil {
+		t.Errorf("healthy venv was removed; fast path did not accept the matching lock: %v", err)
+	}
+}
+
+// TestManager_NeedsInstall_LockHashMismatch verifies NeedsInstall surfaces a
+// requirements-lock refresh to the startup layer: a PythonPackage tool whose
+// recorded version matches the pin is still reported needed when the recorded
+// lock hash is absent (legacy install) or stale, and accepted only when it
+// matches the embedded lock.
+func TestManager_NeedsInstall_LockHashMismatch(t *testing.T) {
+	markitdown := toolSpec(t, "markitdown")
+
+	cases := []struct {
+		name     string
+		hashSpec *string // nil → no key recorded (legacy install layout)
+	}{
+		{name: "missing hash (legacy install)", hashSpec: nil},
+		{name: "stale hash", hashSpec: ptrFor("deadbeef")},
+		{name: "current hash", hashSpec: ptrFor(lockHashFor(markitdown))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			toolsDir, binDir, pythonDir := makeTestDirs(t)
+			mgr := &Manager{
+				ToolsDir:   toolsDir,
+				BinDir:     binDir,
+				PythonDir:  pythonDir,
+				Downloader: DownloadFunc(stubDownload),
+				Installer:  &stubInstaller{},
+				Logger:     slog.New(slog.DiscardHandler),
+			}
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			versions := ToolVersions{markitdown.Name: markitdown.Version}
+			if tc.hashSpec != nil {
+				versions[lockVersionsKey(markitdown.Name)] = *tc.hashSpec
+			}
+			if err := WriteVersions(toolsDir, versions); err != nil {
+				t.Fatal(err)
+			}
+			// The wrapper must exist so the lock hash is the only
+			// discriminating signal for markitdown's membership.
+			if err := os.WriteFile(mgr.binaryPath(markitdown.Name, PythonPackage), []byte("wrapper"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			needed, err := mgr.NeedsInstall()
+			if err != nil {
+				t.Fatalf("NeedsInstall failed: %v", err)
+			}
+			found := slices.ContainsFunc(needed, func(s ToolSpec) bool { return s.Name == markitdown.Name })
+			wantNeeded := tc.hashSpec == nil || *tc.hashSpec != lockHashFor(markitdown)
+			hash := "<none>"
+			if tc.hashSpec != nil {
+				hash = *tc.hashSpec
+			}
+			if found != wantNeeded {
+				t.Errorf("markitdown in needed list = %v, want %v (hash %q)", found, wantNeeded, hash)
+			}
+		})
+	}
+}
+
+// ptrFor is a small helper for the table in
+// TestManager_NeedsInstall_LockHashMismatch.
+func ptrFor(s string) *string { return &s }
 
 // TestManager_EnsureCriticalTools_StaticVersionBumpReplacesBinary reproduces
 // the incident: a .versions entry from an older release alongside a

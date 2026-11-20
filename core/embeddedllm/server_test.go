@@ -984,7 +984,7 @@ func TestLoadFailsFastWhenTheProcessDiesWhileLoading(t *testing.T) {
 
 // The two lines below are the fit pass's two verdicts in the fork's own
 // spelling. The success line is verbatim from a fit trace captured 2026-09-26
-// from the pin this package ships (`prism-b10735-842b188`, darwin-arm64,
+// from `prism-b10735-842b188` (the then-shipped pin), darwin-arm64,
 // projected 24450 MiB against 109950 MiB free); the failure line is the same
 // sentence in the abort spelling `fitFailureMarker` exists to detect. They
 // differ by one word, which is why the scanner matches the failure sentence
