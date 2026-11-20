@@ -23,8 +23,17 @@ describe('fileNameFromPath', () => {
     expect(fileNameFromPath(`c0wrk:commit:${sha}`)).toBe('Commit 0123456')
   })
 
-  it('renders "Git Graph" for the c0wrk:graph viewer tab', () => {
-    expect(fileNameFromPath('c0wrk:graph')).toBe('Git Graph')
+  it('appends the basename for the commit-file variant', () => {
+    expect(fileNameFromPath('c0wrk:commit:abcdef1234567890/src/deep/Button.tsx')).toBe(
+      'Commit abcdef1 · Button.tsx',
+    )
+    expect(fileNameFromPath('c0wrk:commit:abcdef1234567890/README.md')).toBe(
+      'Commit abcdef1 · README.md',
+    )
+  })
+
+  it('renders "Git History" for the c0wrk:graph viewer tab', () => {
+    expect(fileNameFromPath('c0wrk:graph')).toBe('Git History')
   })
 
   it('renders the slug for a c0wrk:paper:<slug> path', () => {

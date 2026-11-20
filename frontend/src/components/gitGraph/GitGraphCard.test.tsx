@@ -160,6 +160,15 @@ describe('GitGraphCard — expanded card', () => {
     expect(expected).toBeGreaterThan(0)
   })
 
+  it('renders the full message as a Markdown blockquote (the shared quote styling)', () => {
+    render({ state: base({ fullMessage: 'subject\n\nbody with **bold**' }), expanded: true })
+    const quote = container.querySelector('blockquote')
+    expect(quote).toBeTruthy()
+    // The `> ` prefix is consumed by markdown — the raw text stays.
+    expect(quote!.textContent).toContain('body with bold')
+    expect(container.textContent).not.toContain('> subject')
+  })
+
   it('shows a loading placeholder for the message while it is fetched', () => {
     render({ state: base({ messageLoading: true }), expanded: true })
     expect(container.textContent).toContain('Loading message…')

@@ -20,8 +20,8 @@ import (
 //
 // Every fixture below is output of the pinned fork runtime in its EXACT wire
 // spelling, on an Apple M4 Max (Mac16,6) with 128 GiB of unified memory. The
-// darwin/Metal fixtures are VERBATIM captures, re-captured from the pin this
-// package actually ships: the `prism-b10735-842b188` macOS arm64 archive was
+// darwin/Metal fixtures are VERBATIM captures, re-captured from
+// `prism-b10735-842b188` (the then-shipped pin): the macOS arm64 archive was
 // downloaded from its registry URL on both 2026-09-25 and 2026-09-26, its
 // SHA256 verified against `registry.go`, extracted, and `--version` reported
 // "0.2.0-dev (build 10735, commit 842b18804)" before the inventory was read —

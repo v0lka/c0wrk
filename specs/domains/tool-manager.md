@@ -15,7 +15,7 @@ Offline operation is a hard product requirement for the steady state, not a trad
 - `core/toolmanager/manager.go` — `Manager.EnsureCriticalTools(ctx, EnsureOptions) ([]ToolStatus, error)` reconciliation (one invocation per pass: `AllowNetwork=false` → strictly local; `AllowNetwork=true` → network retry), per-tool failure isolation, `removeStalePythonEnv`, `PrependToPATH`, `VenvPythonPath` (pure probe for the managed venv interpreter at `<toolsDir>/python/venv`)
 - `core/toolmanager/install.go` — `FSInstaller`: archive extraction (`StaticBinary`), Python bootstrap (`uv python install` → `uv venv` → `uv pip install`), wrapper-script creation, zip-bomb guard
 - `core/toolmanager/download.go` — HTTP downloader with retry and post-download SHA256 verification; `DownloadMode` (`DownloadOnline` / `DownloadCacheOnly`) and the `ErrCacheUnavailable` sentinel make the offline pass a downloader-level contract (CacheOnly never performs network I/O)
-- `core/toolmanager/versions.go` — `ToolVersions` map and `.versions` JSON read/write
+- `core/toolmanager/versions.go` — `ToolVersions` map and `.versions` JSON read/write (tool version strings plus `<name>-lock` keys recording the requirements-lock hash an install was built from)
 - `core/toolmanager/platform.go` — `Platform()` / `PlatformTriple()` canonical naming
 - `core/toolmanager/manager_diskcheck_unix.go` / `manager_diskcheck_windows.go` — best-effort pre-download disk-space guard
 - `core/toolmanager/probe_transient_other.go` / `probe_transient_windows.go` — `isTransientSpawnError`: classifies a `--version` probe failure as the kernel's transient refusal to spawn a freshly written binary (Unix `ETXTBSY`; Windows `ERROR_ACCESS_DENIED`/`ERROR_SHARING_VIOLATION`/`ERROR_LOCK_VIOLATION` from an antivirus or other short-lived holder without `FILE_SHARE_EXECUTE`), which `probeBinaryVersion` retries (`probeTransientAttempts` 3, `probeRetryBackoff` 100 ms) before reporting a mismatch; a permanently unusable binary fails every attempt identically
@@ -52,7 +52,7 @@ type ToolSpec struct {
 	Checksums               map[string]string
 }
 
-type ToolVersions map[string]string  // tool name -> installed version, persisted to .versions
+type ToolVersions map[string]string  // tool name -> installed version, plus "<name>-lock" keys recording the installed requirements-lock hash; persisted to .versions
 
 type EnsureOptions struct {
 	AllowNetwork bool // false → strictly local reconciliation (offline startup pass)
@@ -87,8 +87,12 @@ startup Phase 2: initTools()
 │   ├─ checkDiskSpace(toolsDir, 200 MiB)        [best-effort; no-op on Windows]
 │   ├─ ReadVersions(.versions)
 │   └─ for each tool in ManagedTools() (dependency order: uv, rg, markitdown):
-│         ├─ .versions matches AND binary present AND its --version probe
-│         │      matches the pin (static binaries only) → skip (Ready)
+│         ├─ .versions matches (version + recorded requirements-lock hash)
+│         │      AND binary present AND its --version probe matches the pin
+│         │      (static binaries only) → skip (Ready)
+│         ├─ lock-hash mismatch (lock refreshed, version unchanged) →
+│         │      reinstall ATTEMPT (Python: deferred to pass 2 offline —
+│         │      wrapper and venv stay until the network pass rebuilds)
 │         ├─ probe mismatch → reinstall ATTEMPT; the old binary stays in
 │         │      place until replacement bytes are secured
 │         └─ installOne:
@@ -144,6 +148,7 @@ startup Phase 2: initTools()
 **Reconciliation correctness:**
 
 - A pinned-version change always forces a reinstall. For `StaticBinary` tools the binary-presence check triggers a re-download; for `PythonPackage` tools `removeStalePythonEnv` rebuilds the wrapper and virtual environment, because the wrapper-existence short-circuit in `InstallPythonPackage` would otherwise leave the previous package in place.
+- A requirements-lock content change forces the same rebuild without a version bump: a successful Python install records the SHA256 of the embedded lock it was built from in `.versions` (the `<name>-lock` key), and the fast path additionally compares that recording against the shipped lock. Installs predating the recording carry no key, which mismatches the same way — the one-time rebuild that delivers regenerated transitive pins (e.g. a CVE fix in a dependency) to already-installed machines. `NeedsInstall` applies the same comparison, so the startup layer's splash decision accounts for the rebuild; the offline pass defers it like any Python install and the stale environment stays untouched until the network pass rebuilds it.
 - Stale artifacts are destroyed only after the bytes that replace them are secured: the static binary is removed after the verified archive is on disk, the Python wrapper+venv immediately before the bootstrap runs. An offline failure therefore never leaves the machine with less than it had before.
 - A binary that fails the post-install version probe is removed from disk; `.versions` is left untouched for the failed tool so the next run retries.
 - The `.versions` file is rewritten after each successful tool install, so a partially completed bootstrap resumes on the next launch.
