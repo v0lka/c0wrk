@@ -581,3 +581,154 @@ func TestAskUserTool_Execute_EmptyOptionLabel(t *testing.T) {
 		t.Errorf("expected 'empty label' in validation error, got %q", result.Content)
 	}
 }
+
+// --- ADR-133: option-level description hints; recommended stays question-level ---
+
+func TestAskUserTool_Execute_OptionDescriptionAccepted(t *testing.T) {
+	var got AskUserRequest
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		got = req
+		return AskUserResponse{Answers: []AskUserAnswer{{ID: "q1", Selected: []string{"rest"}}}}, nil
+	}
+	tool := NewAskUserTool(fn)
+
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "REST or GraphQL?",
+				"options": []map[string]any{
+					{"label": "REST", "value": "rest", "description": "Simpler tooling, wide adoption"},
+					{"label": "GraphQL", "value": "graphql"},
+				},
+			},
+		},
+	})
+
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false, got true. Content: %s", result.Content)
+	}
+	if len(got.Questions) != 1 || len(got.Questions[0].Options) != 2 {
+		t.Fatalf("expected one question with two options, got %+v", got)
+	}
+	if desc := got.Questions[0].Options[0].Description; desc != "Simpler tooling, wide adoption" {
+		t.Errorf("expected description to reach the ask callback, got %q", desc)
+	}
+	if desc := got.Questions[0].Options[1].Description; desc != "" {
+		t.Errorf("expected empty description on the second option, got %q", desc)
+	}
+}
+
+func TestAskUserTool_Execute_OptionRecommendedRejected(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "REST or GraphQL?",
+				"options": []map[string]any{
+					{"label": "REST", "value": "rest", "recommended": []string{"rest"}},
+					{"label": "GraphQL", "value": "graphql"},
+				},
+			},
+		},
+	})
+
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for option-level recommended, got false. Content: %s", result.Content)
+	}
+	// The rejection must name the question-level placement, not just refuse.
+	if !strings.Contains(result.Content, "not accepted inside an option") {
+		t.Errorf("expected 'not accepted inside an option' in validation error, got %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "put recommended at the question level") {
+		t.Errorf("expected the question-level placement hint in validation error, got %q", result.Content)
+	}
+	if !strings.Contains(result.Content, `question "q1"`) {
+		t.Errorf("expected the offending question id in validation error, got %q", result.Content)
+	}
+}
+
+// TestAskUserTool_Schema_OptionDescriptionAdmitted pins the schema side of
+// ADR-133: the closed-set pre-dispatch validator (Gate 1) must admit the
+// optional option-level description so the key reaches Execute and the UI.
+func TestAskUserTool_Schema_OptionDescriptionAdmitted(t *testing.T) {
+	tool := NewAskUserTool(nil)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "REST or GraphQL?",
+				"options": []map[string]any{
+					{"label": "REST", "value": "rest", "description": "hint"},
+				},
+			},
+		},
+	})
+	if verr := sdktools.ValidateToolInput("ask_user", tool.InputSchema(), input); verr != nil {
+		t.Fatalf("Gate 1 must admit the option-level description, got: %v", verr)
+	}
+}
+
+// TestAskUserTool_Schema_OptionRecommendedRoutedToTool pins the deliberate
+// schema declaration of option-level `recommended` (ADR-133): the key is
+// admitted past Gate 1 — the generic unknown-parameter rejection cannot name
+// the question-level placement — so Execute itself produces the actionable
+// error (covered by TestAskUserTool_Execute_OptionRecommendedRejected).
+func TestAskUserTool_Schema_OptionRecommendedRoutedToTool(t *testing.T) {
+	tool := NewAskUserTool(nil)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "REST or GraphQL?",
+				"options": []map[string]any{
+					{"label": "REST", "value": "rest", "recommended": []string{"rest"}},
+				},
+			},
+		},
+	})
+	if verr := sdktools.ValidateToolInput("ask_user", tool.InputSchema(), input); verr != nil {
+		t.Fatalf("option-level recommended must pass Gate 1 and reach Execute's specific rejection, got: %v", verr)
+	}
+}
+
+// TestAskUserTool_Schema_UnknownOptionKeyRejected pins the other half of the
+// contract: description is a targeted relaxation only — any other undeclared
+// option key is still rejected by the closed-set validator.
+func TestAskUserTool_Schema_UnknownOptionKeyRejected(t *testing.T) {
+	tool := NewAskUserTool(nil)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "REST or GraphQL?",
+				"options": []map[string]any{
+					{"label": "REST", "value": "rest", "title": "REST"},
+				},
+			},
+		},
+	})
+	verr := sdktools.ValidateToolInput("ask_user", tool.InputSchema(), input)
+	if verr == nil {
+		t.Fatal("expected the unknown option key to be rejected by Gate 1, got nil")
+	}
+	var inve *sdktools.InputValidationError
+	if !errors.As(verr, &inve) {
+		t.Fatalf("expected *sdktools.InputValidationError, got %T", verr)
+	}
+	if msg := verr.Error(); !strings.Contains(msg, `unknown parameter "title"`) {
+		t.Errorf("expected 'unknown parameter' in validation error, got %q", msg)
+	}
+	if msg := verr.Error(); !strings.Contains(msg, "questions[0].options[0]") {
+		t.Errorf("expected the option path in validation error, got %q", msg)
+	}
+}

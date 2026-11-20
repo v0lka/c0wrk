@@ -94,9 +94,14 @@ export interface ToolConfirmData {
   disable_judge?: boolean
 }
 
+export interface AskUserOption {
+  label: string; value: string
+  /** Optional one-line hint rendered under the option label in the form. */
+  description?: string
+}
 export interface AskUserQuestion {
   id: string; question: string
-  options: Array<{ label: string; value: string }>
+  options: AskUserOption[]
   multi_select?: boolean; recommended?: string[]
 }
 export interface AskUserData { request_id: string; questions: AskUserQuestion[] }
@@ -323,6 +328,9 @@ export interface AgentMetricsCounters {
   readonly fruitless: number
   readonly parse: number
   readonly truncation: number
+  /** Schema-validation rejections (sp4rk `input for "…` renders and the
+   *  batch pre-flight aggregate); serialized by Go even when zero. */
+  readonly validation: number
 }
 
 export interface AgentMetricsModelProfiles {
@@ -1211,6 +1219,7 @@ export function isAskUserQuestion(v: unknown): v is AskUserQuestion {
 }
 function isAskUserOption(v: unknown): v is AskUserQuestion['options'][number] {
   return isObj(v) && typeof v.label === 'string' && typeof v.value === 'string'
+    && (v.description === undefined || typeof v.description === 'string')
 }
 export function isAskUserData(d: unknown): d is AskUserData {
   // `questions` is a required array of well-formed questions: the answer form
@@ -1456,7 +1465,8 @@ function isAgentMetricsCounters(v: unknown): v is AgentMetricsCounters {
     typeof v.same_tool === 'number' &&
     typeof v.fruitless === 'number' &&
     typeof v.parse === 'number' &&
-    typeof v.truncation === 'number'
+    typeof v.truncation === 'number' &&
+    typeof v.validation === 'number'
   )
 }
 
@@ -1495,7 +1505,8 @@ export function isAgentMetricsData(d: unknown): d is AgentMetricsData {
 /**
  * Normalize a persisted `agent_metrics` payload for history-load, tolerating
  * fields added after the row was saved. Older rows predate
- * `invalid_tool_calls`, the `truncation` abort counter, and the model_profiles
+ * `invalid_tool_calls`, the `truncation` and `validation` counters, and the
+ * model_profiles
  * `profile`/`profile_kind` identity fields; the counters are defaulted to 0
  * and the profile fields are omitted when absent or malformed. They may also
  * predate the `small_llm` → `slm` → `model_profiles` container-key renames, so
@@ -1529,6 +1540,7 @@ export function normalizeAgentMetricsData(d: unknown): AgentMetricsData | undefi
       fruitless: v.fruitless,
       parse: v.parse,
       truncation: typeof v.truncation === 'number' ? v.truncation : 0,
+      validation: typeof v.validation === 'number' ? v.validation : 0,
     }
   }
   const nudges = counters(d.nudges)

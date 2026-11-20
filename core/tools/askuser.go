@@ -14,12 +14,12 @@ import (
 // resolves to this explicit non-blocking result. See specs/decisions/053-silent-mode.md.
 const askUserUnavailableContent = "ask_user is not available in this mode"
 
-const toolAskUserDescription = `Purpose: ask the user one or more questions with selectable answer options — the sole channel for user-directed questions.
-Use when: requirements are ambiguous, several valid approaches compete, or a decision genuinely belongs to the user. Batch related questions into a single call instead of drip-feeding them.
-Inputs: questions — an array of {id (unique non-empty), question, options: [{label, value}] — exactly these two keys per option, no others; option values unique within the question; multi_select (default false = exclusive choice) and recommended (optional array of option values) live on the question, not inside an option}.
-Outputs: the user's selections — predefined values or custom free text — keyed by question id.
-Example: one question with options "REST" and "GraphQL", recommended ["REST"].
-Anti-example: unavailable in non-interactive (CLI) mode; not for progress reports or rhetorical questions (say it in your reply); do not ask what the codebase itself answers — search first; options[0].description / options[0].recommended are rejected; put recommended at question level.`
+const toolAskUserDescription = `Purpose: ask the user one or more questions with selectable answer options — the sole channel for user-directed questions; each option is {label, value} plus an optional description hint.
+Use when: requirements are ambiguous, several valid approaches compete, or a decision genuinely belongs to the user. Batch related questions into one call instead of drip-feeding them.
+Inputs: questions — an array of {id (unique non-empty), question, options: [{label, value, description?}]; option values unique per question; multi_select (default false = exclusive choice) and recommended (optional array of option values) live on the question, not inside an option}.
+Outputs: the user's selections (predefined values or custom free text), keyed by question id.
+Example: {"questions":[{"id":"q1","question":"REST or GraphQL?","options":[{"label":"REST","value":"rest"},{"label":"GraphQL","value":"graphql"}],"recommended":["rest"]}]}
+Anti-example: unavailable in non-interactive (CLI) mode; not for progress reports or rhetorical questions (say it in your reply); do not ask what the codebase itself answers; search first; options[0].recommended is rejected — put recommended at question level.`
 
 // AskUserTool asks the user a question and returns their answer.
 type AskUserTool struct {
@@ -50,7 +50,11 @@ func NewAskUserTool(fn AskUserFunc) *AskUserTool {
 								"type": "object",
 								"properties": {
 									"label": {"type": "string", "description": "Display label for the option"},
-									"value": {"type": "string", "description": "Unique non-empty value identifier for the option. Must be unique within the question — do NOT reuse the same value across options."}
+									"value": {"type": "string", "description": "Unique non-empty value identifier for the option. Must be unique within the question — do NOT reuse the same value across options."},
+									"description": {"type": "string", "description": "Optional one-line hint shown under the option label in the ask-user form"},
+									"recommended": {
+										"description": "Not accepted inside an option — always rejected; put recommended at the question level"
+									}
 								},
 								"required": ["label", "value"]
 							},
@@ -126,6 +130,12 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (sdkto
 		}
 		seenValues := make(map[string]struct{}, len(q.Options))
 		for _, opt := range q.Options {
+			if opt.Recommended != nil {
+				return sdktools.ToolResult{
+					Content: fmt.Sprintf("validation error: question %q has an option with \"recommended\" — recommended is not accepted inside an option; put recommended at the question level", q.ID),
+					IsError: true,
+				}, nil
+			}
 			if strings.TrimSpace(opt.Label) == "" {
 				return sdktools.ToolResult{
 					Content: fmt.Sprintf("validation error: question %q has an option with empty label", q.ID),

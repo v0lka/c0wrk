@@ -114,8 +114,8 @@ describe('isAgentMetricsData', () => {
     const valid = {
         finish: 'full',
         parse_errors: 2,
-        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0 },
-        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 0 },
+        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0, validation: 2 },
+        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 0, validation: 1 },
         steps: 12,
         output_tokens: 3400,
         invalid_tool_calls: 2,
@@ -156,6 +156,10 @@ describe('isAgentMetricsData', () => {
         expect(isAgentMetricsData({ ...valid, aborts: { repeat: 'x', same_tool: 1, fruitless: 1, parse: 1 } })).toBe(false)
         expect(isAgentMetricsData({ ...valid, nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1 } })).toBe(false)
         expect(isAgentMetricsData({ ...valid, aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: '0' } })).toBe(false)
+        // `validation` is part of the strict contract (Go serializes it even
+        // when zero): missing or mistyped must fail.
+        expect(isAgentMetricsData({ ...valid, nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0 } })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 0, validation: '1' } })).toBe(false)
     })
 
     it('rejects wrong scalar types', () => {
@@ -186,8 +190,8 @@ describe('normalizeAgentMetricsData', () => {
     const full = {
         finish: 'full',
         parse_errors: 2,
-        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0 },
-        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 1 },
+        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0, validation: 2 },
+        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 1, validation: 1 },
         steps: 12,
         output_tokens: 3400,
         invalid_tool_calls: 2,
@@ -205,11 +209,20 @@ describe('normalizeAgentMetricsData', () => {
         expect(got?.invalid_tool_calls).toBe(0)
     })
 
-    it('defaults the truncation counter to 0 for legacy rows', () => {
+    it('defaults the truncation and validation counters to 0 for legacy rows', () => {
         const legacy = { ...full, nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1 }, aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0 } }
         const got = normalizeAgentMetricsData(legacy)
         expect(got?.nudges.truncation).toBe(0)
         expect(got?.aborts.truncation).toBe(0)
+        expect(got?.nudges.validation).toBe(0)
+        expect(got?.aborts.validation).toBe(0)
+    })
+
+    it('preserves non-zero validation counters', () => {
+        const row = { ...full, nudges: { ...full.nudges, validation: 3 }, aborts: { ...full.aborts, validation: 2 } }
+        const got = normalizeAgentMetricsData(row)
+        expect(got?.nudges.validation).toBe(3)
+        expect(got?.aborts.validation).toBe(2)
     })
 
     it('preserves non-zero legacy-adjacent values', () => {

@@ -419,6 +419,7 @@ describe('lastAgentMetricsFromHistory / isAgentMetricsRow', () => {
     expect(got?.invalid_tool_calls).toBe(0)
     expect(got?.nudges.truncation).toBe(0)
     expect(got?.aborts.truncation).toBe(0)
+    expect(got?.nudges.validation).toBe(0)
   })
 })
 

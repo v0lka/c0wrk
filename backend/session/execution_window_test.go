@@ -63,27 +63,30 @@ func TestExecutionWindow_SharedAcrossScopedCopies(t *testing.T) {
 func TestExecutionWindow_CountersFromResultsStepsAndDiagnostics(t *testing.T) {
 	e, _ := newWindowTestEmitter()
 
-	e.ToolCall(1, 0, "bash", "{}", "core")                     // counts one tool call
-	e.ToolResult(1, 0, 4, "boom", true)                        // counts one tool error
-	e.ToolResult(1, 1, 20, "validation error: bad arg", false) // counts one invalid tool call
-	e.StepComplete(1, 0)                                       // counts one step
-	e.ExecutorDiagnostic(2, "fruitless_abort", nil)            // counts one abort
-	e.ExecutorDiagnostic(2, "repeated_tool_call_nudge", nil)   // counts one nudge
-	e.ExecutorDiagnostic(3, "parse_error_abort", nil)          // counts one abort and one parse error
-	e.ExecutorDiagnostic(3, "checklist_stale_nudge", nil)      // informational, ignored
+	e.ToolCall(1, 0, "bash", "{}", "core")                        // counts one tool call
+	e.ToolResult(1, 0, 4, "boom", true)                           // counts one tool error
+	e.ToolResult(1, 1, 20, "validation error: bad arg", false)    // counts one invalid tool call
+	e.ToolResult(1, 2, 0, obsBatchGlobMissingPatternReject, true) // batch aggregate: second invalid tool call
+	e.StepComplete(1, 0)                                          // counts one step
+	e.ExecutorDiagnostic(2, "fruitless_abort", nil)               // counts one abort
+	e.ExecutorDiagnostic(2, "repeated_tool_call_nudge", nil)      // counts one nudge
+	e.ExecutorDiagnostic(3, "parse_error_abort", nil)             // counts one abort and one parse error
+	e.ExecutorDiagnostic(4, "validation_error_nudge", nil)        // counts one nudge
+	e.ExecutorDiagnostic(4, "validation_error_abort", nil)        // counts one abort
+	e.ExecutorDiagnostic(3, "checklist_stale_nudge", nil)         // informational, ignored
 
 	c := e.ExecutionWindowSnapshot().Counters
-	if c.ToolCalls != 1 || c.ToolErrors != 1 || c.InvalidToolCalls != 1 {
+	if c.ToolCalls != 1 || c.ToolErrors != 2 || c.InvalidToolCalls != 2 {
 		t.Errorf("tool counters = %+v", c)
 	}
 	if c.Steps != 1 {
 		t.Errorf("Steps = %d, want 1", c.Steps)
 	}
-	if c.Aborts != 2 {
-		t.Errorf("Aborts = %d, want 2", c.Aborts)
+	if c.Aborts != 3 {
+		t.Errorf("Aborts = %d, want 3", c.Aborts)
 	}
-	if c.Nudges != 1 {
-		t.Errorf("Nudges = %d, want 1 (informational diagnostics excluded)", c.Nudges)
+	if c.Nudges != 2 {
+		t.Errorf("Nudges = %d, want 2 (informational diagnostics excluded)", c.Nudges)
 	}
 	if c.ParseErrors != 1 {
 		t.Errorf("ParseErrors = %d, want 1", c.ParseErrors)

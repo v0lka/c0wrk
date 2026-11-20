@@ -9,6 +9,17 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 )
 
+// In-week schema-rejection observation texts, byte-faithful to the sp4rk
+// renderers: *tools.InputValidationError.Error (nested unknown-parameter form,
+// `input for "TOOL" is invalid at <path>: …`) and the executor's batch
+// pre-flight aggregate (`batch rejected: …`, embedding per-sub-call renders) —
+// the two model-fault families the invalid-tool-call classifier was missing.
+const (
+	obsAskUserOptionsDescriptionReject = `input for "ask_user" is invalid at options[0]: unknown parameter "description" (not accepted by this tool; check the tool's parameter list); valid parameters: label, value. Required parameters: label (string), value (string). Minimal example: {"label":"<string>","value":"<string>"}`
+	obsBatchGlobMissingPatternReject   = "batch rejected: no sub-call was executed because 1 of 2 sub-call inputs failed schema validation. Fix the calls listed below and resend the ENTIRE batch.\n" +
+		`- calls[1] ("glob"): input for "glob" is invalid: missing required parameter "pattern"; valid parameters: path, pattern. Required parameters: pattern (string). Minimal example: {"pattern":"<string>"}`
+)
+
 // TestAgentMetrics_ExecutorDiagnosticsToPayload feeds the emitter with the
 // executor diagnostic stream of a representative task run (all loop-detector
 // nudges and aborts from the sp4rk agent.Executor, plus step/token/session
@@ -31,13 +42,15 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 	emitter.ExecutorDiagnostic(2, "same_tool_repeat_nudge", nil)
 	emitter.ExecutorDiagnostic(3, "fruitless_nudge", nil)
 	emitter.ExecutorDiagnostic(4, "parse_error_nudge", map[string]any{"tool": "finish"})
-	emitter.ExecutorDiagnostic(5, "same_tool_repeat_abort", nil)
-	emitter.ExecutorDiagnostic(6, "fruitless_abort", nil)
-	emitter.ExecutorDiagnostic(7, "parse_error_abort", nil)
-	emitter.ExecutorDiagnostic(8, "truncation_abort", nil)
+	emitter.ExecutorDiagnostic(5, "validation_error_nudge", map[string]any{"tool": "ask_user", "consecutive_validation_errors": 1})
+	emitter.ExecutorDiagnostic(6, "same_tool_repeat_abort", nil)
+	emitter.ExecutorDiagnostic(7, "fruitless_abort", nil)
+	emitter.ExecutorDiagnostic(8, "parse_error_abort", nil)
+	emitter.ExecutorDiagnostic(9, "validation_error_abort", map[string]any{"tool": "glob", "consecutive_validation_errors": 3})
+	emitter.ExecutorDiagnostic(10, "truncation_abort", nil)
 	// Informational diagnostics must not affect quality counters.
-	emitter.ExecutorDiagnostic(9, "executor_finish_nudge", nil)
-	emitter.ExecutorDiagnostic(10, "pre_compaction_nudge", nil)
+	emitter.ExecutorDiagnostic(11, "executor_finish_nudge", nil)
+	emitter.ExecutorDiagnostic(12, "pre_compaction_nudge", nil)
 
 	// Steps: two conductor steps plus one subagent step emitted through a
 	// plan-scoped copy — the copy must share the session-level counters.
@@ -51,8 +64,8 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 	want := AgentMetricsData{
 		Finish:       "full",
 		ParseErrors:  2,
-		Nudges:       AgentMetricsCounters{Repeat: 1, SameTool: 1, Fruitless: 1, Parse: 1},
-		Aborts:       AgentMetricsCounters{SameTool: 1, Fruitless: 1, Parse: 1, Truncation: 1},
+		Nudges:       AgentMetricsCounters{Repeat: 1, SameTool: 1, Fruitless: 1, Parse: 1, Validation: 1},
+		Aborts:       AgentMetricsCounters{SameTool: 1, Fruitless: 1, Parse: 1, Validation: 1, Truncation: 1},
 		Steps:        3,
 		OutputTokens: 1200,
 		ModelProfiles: ModelProfilesMetaInfo{
@@ -308,6 +321,10 @@ func TestIsInvalidToolCall(t *testing.T) {
 		"batch parse error: unexpected end of JSON",
 		"batch: no calls provided (empty calls array)",
 		"error: batch cannot be nested inside another batch call",
+		// The two real in-week schema-rejection texts (sp4rk
+		// *tools.InputValidationError render + batch pre-flight aggregate).
+		obsAskUserOptionsDescriptionReject,
+		obsBatchGlobMissingPatternReject,
 	}
 	for _, c := range valid {
 		if !isInvalidToolCall(c) {
@@ -324,6 +341,15 @@ func TestIsInvalidToolCall(t *testing.T) {
 		"policy denied: tool not allowed",
 		"user confirmation required",
 		"error: something went wrong at runtime", // generic "error:" prefix must not match
+		// Validation-flavored text WITHOUT the `input for "` discriminator must
+		// not count (mirrors sp4rk's own isValidationError discriminator rule):
+		`{"error": "payload is invalid: missing id"}`,                                      // MCP server echoing a validation-flavored error
+		"error: value is invalid: expected one of a, b, c",                                 // CLI stderr with the joint but no discriminator
+		`request failed: upstream page said "this field is invalid at line 42" (HTTP 400)`, // web content quoting the joint
+		// The discriminator WITHOUT the joint must not count either — sp4rk's
+		// tracker test pins exactly this negative (a user-rejection render
+		// sharing the `input for "` prefix but no "is invalid" joint):
+		`input for "x" was rejected by the user`,
 	}
 	for _, c := range notInvalid {
 		if isInvalidToolCall(c) {
@@ -346,16 +372,21 @@ func TestMetricsState_ObserveToolResult(t *testing.T) {
 	emitter.ToolResult(1, 3, 0, "batch parse error: bad input", true)
 	emitter.ToolResult(1, 4, 0, "batch: no calls provided (empty calls array)", true)
 	emitter.ToolResult(1, 5, 0, "error: batch cannot be nested inside another batch call", true)
+	// The two real in-week schema-rejection texts must count too.
+	emitter.ToolResult(1, 6, 0, obsAskUserOptionsDescriptionReject, true)
+	emitter.ToolResult(1, 7, 0, obsBatchGlobMissingPatternReject, true)
 
 	// Runtime / security / policy refusals and non-error results must not count.
-	emitter.ToolResult(1, 6, 0, "error executing command: exit status 1", true)
-	emitter.ToolResult(1, 7, 0, "file not found: /tmp/missing", true)
-	emitter.ToolResult(1, 8, 0, "policy denied: tool not allowed", true)
-	emitter.ToolResult(1, 9, 0, "failed to parse input: bad json", false)
+	emitter.ToolResult(1, 8, 0, "error executing command: exit status 1", true)
+	emitter.ToolResult(1, 9, 0, "file not found: /tmp/missing", true)
+	emitter.ToolResult(1, 10, 0, "policy denied: tool not allowed", true)
+	emitter.ToolResult(1, 11, 0, "failed to parse input: bad json", false)
+	emitter.ToolResult(1, 12, 0, `{"error": "payload is invalid: missing id"}`, true) // no input-for discriminator
+	emitter.ToolResult(1, 13, 0, obsBatchGlobMissingPatternReject, false)
 
 	got := emitter.EmitAgentMetrics("full")
-	if got.InvalidToolCalls != 6 {
-		t.Fatalf("expected 6 invalid tool calls, got %d: %+v", got.InvalidToolCalls, got)
+	if got.InvalidToolCalls != 8 {
+		t.Fatalf("expected 8 invalid tool calls, got %d: %+v", got.InvalidToolCalls, got)
 	}
 
 	// Counter resets after snapshot: a second emission reports zero.
