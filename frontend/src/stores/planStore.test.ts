@@ -6,8 +6,8 @@ import type { PlanGroup, PlanItem } from '@/types/models'
 const metrics: AgentMetricsData = {
   finish: 'full',
   parse_errors: 1,
-  nudges: { repeat: 1, same_tool: 0, fruitless: 0, parse: 1, truncation: 0 },
-  aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
+  nudges: { repeat: 1, same_tool: 0, fruitless: 0, parse: 1, truncation: 0, validation: 0 },
+  aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0, validation: 0 },
   steps: 7,
   output_tokens: 1234,
   invalid_tool_calls: 0,

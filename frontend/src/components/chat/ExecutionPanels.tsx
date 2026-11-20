@@ -11,12 +11,14 @@ import { DAGGraph } from './DAGGraph'
 import { PlanView } from './PlanView'
 import { ExecutionStatePanel } from './ExecutionStatePanel'
 
-/** Summarizes one nudges/aborts counter block as "2 (1r·1s·0f·0p)"; the
- *  truncation "·Nt" segment is omitted while it is zero (nudges never emit it). */
+/** Summarizes one nudges/aborts counter block as "2 (1r·1s·0f·0p·2v)"; the
+ *  truncation "·Nt" and validation "·Nv" segments are omitted while zero
+ *  (nudges never emit truncation; validation is often 0). */
 function countersSummary(c: AgentMetricsCounters): string {
-  const total = c.repeat + c.same_tool + c.fruitless + c.parse + c.truncation
+  const total = c.repeat + c.same_tool + c.fruitless + c.parse + c.truncation + c.validation
   const parts = [`${c.repeat}r`, `${c.same_tool}s`, `${c.fruitless}f`, `${c.parse}p`]
   if (c.truncation !== 0) parts.push(`${c.truncation}t`)
+  if (c.validation !== 0) parts.push(`${c.validation}v`)
   return `${total} (${parts.join('·')})`
 }
 

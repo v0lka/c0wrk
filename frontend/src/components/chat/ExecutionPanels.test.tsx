@@ -21,8 +21,8 @@ import type { PlanGroup } from '@/types/models'
 const metrics: AgentMetricsData = {
   finish: 'full',
   parse_errors: 0,
-  nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
-  aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
+  nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0, validation: 0 },
+  aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0, validation: 2 },
   steps: 3,
   output_tokens: 1200,
   invalid_tool_calls: 0,
@@ -95,6 +95,10 @@ describe('ExecutionPanels render guard', () => {
     expect(container.textContent).toContain('finish: full')
     expect(container.textContent).toContain('steps: 3')
     expect(container.textContent).toContain('out tokens: 1200')
+    // The `·Nv` segment renders when non-zero and stays hidden at zero,
+    // same rule as `·Nt`:
+    expect(container.textContent).toContain('aborts: 2 (0r·0s·0f·0p·2v)')
+    expect(container.textContent).toContain('nudges: 0 (0r·0s·0f·0p)')
   })
 
   it('renders the plan section without the stats row when display is off', () => {

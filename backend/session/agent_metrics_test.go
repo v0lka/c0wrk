@@ -346,6 +346,10 @@ func TestIsInvalidToolCall(t *testing.T) {
 		`{"error": "payload is invalid: missing id"}`,                                      // MCP server echoing a validation-flavored error
 		"error: value is invalid: expected one of a, b, c",                                 // CLI stderr with the joint but no discriminator
 		`request failed: upstream page said "this field is invalid at line 42" (HTTP 400)`, // web content quoting the joint
+		// The discriminator WITHOUT the joint must not count either — sp4rk's
+		// tracker test pins exactly this negative (a user-rejection render
+		// sharing the `input for "` prefix but no "is invalid" joint):
+		`input for "x" was rejected by the user`,
 	}
 	for _, c := range notInvalid {
 		if isInvalidToolCall(c) {
