@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Info, ScrollText } from 'lucide-react'
+import { ScrollText } from 'lucide-react'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { getLogLevel, setLogLevel as apiSetLogLevel } from '@/api/config'
 import { logger } from '@/lib/logger'
@@ -46,15 +46,14 @@ export function LogLevelSelector() {
         <ScrollText className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">Log Level</span>
       </div>
-      {/* The shared app-wide segmented control (radio semantics, same chrome
-          as Security → Autonomy mode). String labels are the segments' static
-          visible text — the SegmentedControl renders them inside a <span>, so
-          the buttonTitleInvariant scan never sees a bare <button> here. */}
+      {/* Radio semantics and the primitive's own compact, content-width track —
+          no `fullWidth`/`flex-1`, which stretched the segments and was the
+          only chrome difference from Security → Autonomy mode. String labels
+          stay the segments' static visible text inside the primitive's
+          <span>, so the buttonTitleInvariant scan never sees a bare <button>. */}
       <SegmentedControl<LogLevel>
         semantic="radio"
-        fullWidth
         ariaLabel="Log level"
-        itemClassName="flex-1"
         items={logLevelOptions.map((option) => ({
           value: option.value,
           label: option.label,
@@ -62,12 +61,6 @@ export function LogLevelSelector() {
         value={logLevel}
         onValueChange={(level) => void handleLogLevelChange(level)}
       />
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
-        <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-        <p>
-          Changes apply to new sessions only.
-        </p>
-      </div>
     </div>
   )
 }

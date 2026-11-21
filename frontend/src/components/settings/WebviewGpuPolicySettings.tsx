@@ -57,16 +57,15 @@ export function WebviewGpuPolicySettings() {
         <Monitor className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">Webview GPU Acceleration</span>
       </div>
-      {/* The shared app-wide segmented control (radio semantics, same chrome
-          as Security → Autonomy mode). Each item keeps its stable
-          `webview-gpu-*` test hook; the string label doubles as the native
-          title (the primitive's default), matching the former buttons. */}
+      {/* Radio semantics and the primitive's own compact, content-width track —
+          no `fullWidth`/`flex-1`, which stretched the segments and was the
+          only chrome difference from Security → Autonomy mode. Each item keeps
+          its stable `webview-gpu-*` test hook; the string label doubles as the
+          native title (the primitive's default). */}
       <SegmentedControl<WebviewGpuPolicySetting>
         semantic="radio"
-        fullWidth
         ariaLabel="Webview GPU acceleration"
         disabled={busy}
-        itemClassName="flex-1"
         items={POLICY_OPTIONS.map((option) => ({
           value: option.value,
           label: option.label,

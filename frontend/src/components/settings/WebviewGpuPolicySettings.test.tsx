@@ -182,4 +182,27 @@ describe('WebviewGpuPolicySettings', () => {
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith('Failed to set webview GPU policy:', expect.any(Error))
   })
+
+  it('renders the compact Autonomy-mode track — no fullWidth/flex-1 stretch', async () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    getPolicyMock.mockResolvedValue(makeInfo())
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Security → Autonomy mode uses the primitive's default track: content
+    // width (`inline-flex`) with intrinsically sized segments. `fullWidth` +
+    // `itemClassName="flex-1"` stretched both, which was the reported visual
+    // mismatch.
+    const group = container.querySelector('[role="radiogroup"]')
+    expect(group).not.toBeNull()
+    expect(group?.className).toContain('inline-flex')
+    expect(group?.className).not.toContain('w-full')
+    const items = container.querySelectorAll('[role="radio"]')
+    expect(items.length).toBe(4)
+    for (const item of items) {
+      expect(item.className).not.toContain('flex-1')
+    }
+  })
 })
