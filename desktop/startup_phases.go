@@ -84,11 +84,12 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 // splash-denominator store and the fatal modal+quit actions.
 func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, toolsOK bool) {
 	toolDeps := backend.ToolPhaseDeps{
-		Progress:      a.emitToolManagerProgress,
-		ShowWindow:    a.showWindow,
-		SetToolsTotal: func(total int64) { a.toolSplashTotal.Store(total) },
-		Emit:          a.emit,
-		Fatal:         a.buildToolFatalActions(),
+		Progress:        a.emitToolManagerProgress,
+		ShowWindow:      a.showWindow,
+		SetToolsTotal:   func(total int64) { a.toolSplashTotal.Store(total) },
+		SetPendingTools: a.setToolInstallPending,
+		Emit:            a.emit,
+		Fatal:           a.buildToolFatalActions(),
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -127,6 +128,18 @@ func (a *App) emitToolManagerProgress(p toolmanager.ToolProgress) {
 		"error":       p.Error,
 		"tools_total": a.toolSplashTotal.Load(),
 	})
+}
+
+// setToolInstallPending mirrors one ToolPhaseDeps pending-list transition
+// into the FrontendAPI's transport-neutral install store, so a
+// tool_manager:start lost to the webview-subscription race stays recoverable
+// through GetToolInstallStatus (specs/contracts/desktop-frontend.md). The
+// instance is resolved through a.frontendAPI() at CALL time — the pointer
+// publishes once in NewApp and is initialized in place by buildFrontendAPI,
+// never swapped — so Phase 2 writes and later RPC reads always meet the same
+// store, whatever the startup interleaving.
+func (a *App) setToolInstallPending(tools []toolmanager.ToolSpec) {
+	a.frontendAPI().SetToolInstallPending(tools)
 }
 
 // buildToolFatalActions returns the production fatal actions: the native

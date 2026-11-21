@@ -4,6 +4,7 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { subscribe } from '@/api/runtime'
 import { listProjects } from '@/api/projects'
+import { getToolInstallStatus } from '@/api/toolmanager'
 import { AlertCircle, X } from 'lucide-react'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { WorkDirsModal } from '@/components/chat/WorkDirsModal'
@@ -230,6 +231,28 @@ function App() {
         return prev
       })
     })
+  }, [])
+
+  // ── Safety net: recover a lost tool_manager:start from the RPC snapshot ─
+  // Wails drops events emitted before the webview subscribes, so the startup
+  // tool_manager:start can be lost and the splash would sit on the minimal
+  // spinner until progress events rebuild the list. GetToolInstallStatus is
+  // the transport-neutral snapshot written next to every start/done emission
+  // (specs/contracts/desktop-frontend.md, "Tool Manager"): active=true
+  // populates the full splash — pending list + tools_total — without waiting
+  // for any event. A failed/inactive read is a no-op: the event handlers
+  // above stay the other writers, and populating splashTools is exactly what
+  // keeps the listProjects safety net below from bouncing an active install
+  // to main (its splashTools !== null guard).
+  useEffect(() => {
+    let cancelled = false
+    void getToolInstallStatus().then((status) => {
+      if (cancelled || status === null || !status.active) return
+      setSplashTools(status.pending)
+      setSplashToolsTotal(prev => Math.max(prev, status.tools_total))
+      setPhase('splash')
+    })
+    return () => { cancelled = true }
   }, [])
 
   // ── Safety net: try RPC on mount to detect already-ready backend ─────

@@ -137,15 +137,27 @@ func (a *App) reloadFrontend(ctx context.Context) {
 // window setup, making it the one reveal that can never be overtaken by that
 // setup (reveal ordering documented in specs/architecture/data-flow.md).
 // It fires again on every frontend reload — wake recovery only, where
-// raise/focus is the expected outcome.
+// raise/focus is the expected outcome. Every firing also logs the webview-boot
+// diagnostic; a reload re-logs with a larger elapsed_ms — harmless.
 func (a *App) DomReady(ctx context.Context) {
 	a.log().Debug("frontend DOM ready")
+	// Diagnostic closing the webview-boot blind spot: time from Startup entry
+	// to a ready webview. No anchor (DomReady without a prior Startup — only
+	// reachable in tests) stays silent rather than logging a zero-time
+	// elapsed; a reload re-logs harmlessly without changing behavior.
+	if boot := a.bootStartTime(); !boot.IsZero() {
+		a.log().Info("webview ready", "elapsed_ms", time.Since(boot).Milliseconds())
+	}
 	a.showWindow(ctx)
 	a.startWebviewGpuWatchdog()
 }
 
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
+	// Webview-boot diagnostic anchor: DomReady reports time-to-ready from
+	// here (elapsed_ms), so it must be captured before any startup work.
+	a.setBootStartedAt(time.Now())
+
 	// Catch any unrecovered panic during startup so a stack trace lands in
 	// the session log (if available) or the wails.log fallback before exit.
 	defer func() {

@@ -258,6 +258,14 @@ The Kimi for Coding subscription sign-in uses the shared `backend/providerauth` 
 | `StopTerminal`       | sessionID             | error                        | Stop terminal       |
 | `GetTerminalHistory` | sessionID             | ([]TerminalCommand, error)   | Get command history |
 
+### Tool Manager (`backend/frontend_api_toolmanager.go`)
+
+Transport-neutral status of the startup managed-tool install (ADR-100): `tool_manager:start` can be dropped by Wails when it fires before the webview subscribes, so the install store behind this RPC is the RPC-recoverable twin of that event — `backend.ToolPhaseDeps.SetPendingTools` sits next to every `tool_manager:start` / `tool_manager:done` emission in `reconcileToolsWithSplash` and the desktop host binds the hook to the store (mutex-guarded; writes copy the caller's slice, reads return a copy). `ToolInstallStatusDTO` carries `active` (bool), `pending` (always non-null array of `{name, version}`, NeedsInstall order) and `tools_total` (the splash denominator the progress events carry — `len(pending)` while active, `0` otherwise).
+
+| Method                 | Parameters | Returns              | Description |
+| ---------------------- | ---------- | -------------------- | ----------- |
+| `GetToolInstallStatus` | —          | ToolInstallStatusDTO | Read-only getter (no error) mirroring the current install-splash state: while the install runs `active=true` with the full pending list; the NeedsInstall-probe-failure fallback reports `active=true` with an empty `pending` and `tools_total=0` (the splash is up, nothing is known — exactly the shape of that path's start event); after every `tool_manager:done` (including the fatal-dialog and toast-degradation outcomes) and in a no-install launch the steady state is `active=false` with an empty list. The getter deliberately does NOT wait for the startup seed: the store is written during Phase 2, before `Init` publishes the seed, and the RPC exists precisely for the lost-start-event window inside that phase |
+
 ### Vector (`backend/frontend_api_vector.go`)
 
 | Method                | Parameters                                                    | Returns                       | Description                                         |

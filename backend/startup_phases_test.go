@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -267,13 +268,18 @@ func (f *fatalRecorder) assertSilent(t *testing.T) {
 
 // toolFlow carries the fixtures of one tool-flow test: the injected deps, the
 // payload recorder, the ordering journal, the fatal recorder and the splash
-// denominator store.
+// denominator store. api is the REAL transport-neutral install store the
+// SetPendingTools hook drives; statusSnapshots captures the store state after
+// each transition, so tests can assert the mid-flow active window without
+// racing the synchronous flow.
 type toolFlow struct {
-	deps    ToolPhaseDeps
-	rec     *emitRecorder
-	journal *toolFlowJournal
-	fatal   *fatalRecorder
-	splash  atomic.Int64
+	deps            ToolPhaseDeps
+	rec             *emitRecorder
+	journal         *toolFlowJournal
+	fatal           *fatalRecorder
+	splash          atomic.Int64
+	api             *FrontendAPI
+	statusSnapshots []ToolInstallStatusDTO
 }
 
 // setupToolFlow wires ToolPhaseDeps whose emissions land in both the payload
@@ -284,10 +290,20 @@ func setupToolFlow(t *testing.T) *toolFlow {
 		rec:     &emitRecorder{},
 		journal: &toolFlowJournal{},
 		fatal:   &fatalRecorder{},
+		api:     &FrontendAPI{},
 	}
 	tf.fatal.journal = tf.journal
 	tf.deps = ToolPhaseDeps{
 		SetToolsTotal: func(total int64) { tf.splash.Store(total) },
+		SetPendingTools: func(tools []toolmanager.ToolSpec) {
+			tf.api.SetToolInstallPending(tools)
+			if tools == nil {
+				tf.journal.add("pending:clear")
+			} else {
+				tf.journal.add(fmt.Sprintf("pending:set(%d)", len(tools)))
+			}
+			tf.statusSnapshots = append(tf.statusSnapshots, tf.api.GetToolInstallStatus())
+		},
 		Emit: func(eventName string, optionalData ...any) {
 			tf.journal.add("emit:" + eventName)
 			tf.rec.emit(eventName, optionalData...)
@@ -350,7 +366,7 @@ func TestReconcileToolsWithSplash_AllReady_NetworkNeverCalled(t *testing.T) {
 		t.Errorf("runtime_error emitted %d time(s) for an all-Ready flow, want 0", len(rtes))
 	}
 	tf.fatal.assertSilent(t)
-	want := []string{"ensure:offline", "emit:" + EventToolManagerDone}
+	want := []string{"ensure:offline", "pending:clear", "emit:" + EventToolManagerDone}
 	if got := tf.journal.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("journal = %v, want %v", got, want)
 	}
@@ -405,11 +421,31 @@ func TestReconcileToolsWithSplash_NotReadyAfterOffline_BlockingNetworkPass(t *te
 	if len(dones) != 1 {
 		t.Fatalf("tool_manager:done emitted %d time(s), want exactly 1", len(dones))
 	}
+	// The transport-neutral store tracked the whole window: active with the
+	// FULL pending list at set time, back to the steady state after done —
+	// the RPC answer that recovers a lost start event.
+	if len(tf.statusSnapshots) != 2 {
+		t.Fatalf("store transitions = %d, want 2 (set + clear)", len(tf.statusSnapshots))
+	}
+	setSnap := tf.statusSnapshots[0]
+	if !setSnap.Active || setSnap.ToolsTotal != 2 || len(setSnap.Pending) != 2 {
+		t.Errorf("store at set time = %+v, want active with 2 pending tools", setSnap)
+	}
+	if setSnap.Pending[0].Name != "rg" || setSnap.Pending[0].Version != "1.2.3" ||
+		setSnap.Pending[1].Name != "uv" {
+		t.Errorf("store pending at set time = %+v, want rg + uv with versions", setSnap.Pending)
+	}
+	final := tf.api.GetToolInstallStatus()
+	if final.Active || final.ToolsTotal != 0 || len(final.Pending) != 0 {
+		t.Errorf("store after done = %+v, want the steady state", final)
+	}
 	tf.fatal.assertSilent(t)
 	want := []string{
+		"pending:set(2)",
 		"emit:" + EventToolManagerStart,
 		"ensure:offline",
 		"ensure:network",
+		"pending:clear",
 		"emit:" + EventToolManagerDone,
 	}
 	if got := tf.journal.snapshot(); !reflect.DeepEqual(got, want) {
@@ -452,8 +488,10 @@ func TestReconcileToolsWithSplash_LateStartWhenNeedsInstallSawCompleteInstall(t 
 	tf.fatal.assertSilent(t)
 	want := []string{
 		"ensure:offline",
+		"pending:set(1)",
 		"emit:" + EventToolManagerStart,
 		"ensure:network",
+		"pending:clear",
 		"emit:" + EventToolManagerDone,
 	}
 	if got := tf.journal.snapshot(); !reflect.DeepEqual(got, want) {
@@ -502,9 +540,11 @@ func TestReconcileToolsWithSplash_NetworkPassLeavesToolsMissing_FatalDialogAndQu
 		t.Errorf("runtime_error emitted %d time(s) on the fatal path, want 0", len(rtes))
 	}
 	want := []string{
+		"pending:set(2)",
 		"emit:" + EventToolManagerStart,
 		"ensure:offline",
 		"ensure:network",
+		"pending:clear",
 		"emit:" + EventToolManagerDone,
 		"fatal:dialog",
 		"fatal:quit",
@@ -595,8 +635,82 @@ func TestReconcileToolsWithSplash_OfflineStructuralFailure_CompleteInstall_Toast
 	tf.fatal.assertSilent(t)
 	want := []string{
 		"ensure:offline",
+		"pending:clear",
 		"emit:" + EventToolManagerDone,
 		"emit:" + EventRuntimeError,
+	}
+	if got := tf.journal.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Errorf("journal = %v, want %v", got, want)
+	}
+}
+
+// (e) The NeedsInstall probe fails: the splash fires as fallback with an
+// EMPTY tools payload, and the store must mirror exactly that shape —
+// active=true, empty (never nil) pending list, zero denominator — so an RPC
+// reader that missed the start event still sees a coherent "install running,
+// nothing known" snapshot.
+func TestReconcileToolsWithSplash_NeedsInstallError_ActiveWithEmptyPending(t *testing.T) {
+	tf := setupToolFlow(t)
+	fake := &fakeToolEnsurer{
+		journal:  tf.journal,
+		needsErr: errors.New("registry read failed"),
+		offline: []toolmanager.ToolStatus{
+			{Tool: tmSpec("rg"), Ready: true},
+			{Tool: tmSpec("uv"), Ready: true},
+			{Tool: tmSpec("markitdown"), Ready: true},
+		},
+	}
+
+	installed, ok := reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, tf.deps)
+	if !ok {
+		t.Fatal("ok = false for the probe-failure fallback, want true")
+	}
+	if installed {
+		t.Error("installed = true, want false (nothing was actually installed)")
+	}
+	if got := fake.calls; !reflect.DeepEqual(got, []string{"offline"}) {
+		t.Errorf("ensure calls = %v, want exactly [offline]", got)
+	}
+	// The splash denominator was NEVER set on this path — the start event
+	// carries no total and the store must not invent one.
+	if got := tf.splash.Load(); got != 0 {
+		t.Errorf("splash total = %d, want 0 (unset on the probe-failure path)", got)
+	}
+	events := tf.rec.snapshot()
+	starts := phaseEventsByName(events, EventToolManagerStart)
+	if len(starts) != 1 {
+		t.Fatalf("tool_manager:start emitted %d time(s), want exactly 1 (the fallback)", len(starts))
+	}
+	dones := phaseEventsByName(events, EventToolManagerDone)
+	if len(dones) != 1 {
+		t.Fatalf("tool_manager:done emitted %d time(s), want 1", len(dones))
+	}
+	// Store shape at set time: active, empty, never nil.
+	if len(tf.statusSnapshots) != 2 {
+		t.Fatalf("store transitions = %d, want 2 (set + clear)", len(tf.statusSnapshots))
+	}
+	setSnap := tf.statusSnapshots[0]
+	if !setSnap.Active {
+		t.Error("store Active = false at set time, want true (the splash is up)")
+	}
+	if setSnap.Pending == nil || len(setSnap.Pending) != 0 {
+		t.Errorf("store Pending = %#v, want an empty non-nil slice", setSnap.Pending)
+	}
+	if setSnap.ToolsTotal != 0 {
+		t.Errorf("store ToolsTotal = %d, want 0 (as in the event)", setSnap.ToolsTotal)
+	}
+	// And resolved once the early done fired in pass one.
+	final := tf.api.GetToolInstallStatus()
+	if final.Active || final.ToolsTotal != 0 || len(final.Pending) != 0 {
+		t.Errorf("store after done = %+v, want the steady state", final)
+	}
+	tf.fatal.assertSilent(t)
+	want := []string{
+		"pending:set(0)",
+		"emit:" + EventToolManagerStart,
+		"ensure:offline",
+		"pending:clear",
+		"emit:" + EventToolManagerDone,
 	}
 	if got := tf.journal.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("journal = %v, want %v", got, want)

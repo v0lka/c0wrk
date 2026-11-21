@@ -3166,6 +3166,54 @@ export namespace backend {
 	        this.policy = source["policy"];
 	    }
 	}
+	export class ToolInstallPendingToolDTO {
+	    name: string;
+	    version: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolInstallPendingToolDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.version = source["version"];
+	    }
+	}
+	export class ToolInstallStatusDTO {
+	    active: boolean;
+	    pending: ToolInstallPendingToolDTO[];
+	    tools_total: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolInstallStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.active = source["active"];
+	        this.pending = this.convertValues(source["pending"], ToolInstallPendingToolDTO);
+	        this.tools_total = source["tools_total"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class UpdateInfo {
 	    available: boolean;
 	    current_version: string;
@@ -4505,6 +4553,49 @@ export namespace session {
 	    }
 	}
 	
+
+}
+
+export namespace toolmanager {
+	
+	export class ToolSpec {
+	    Name: string;
+	    Version: string;
+	    Type: string;
+	    Description: string;
+	    BinName: string;
+	    ArchiveName: string;
+	    ArchiveNameOverride: string;
+	    BinPathInArchive: string;
+	    BinPathInArchiveOverride: string;
+	    PipSpec: string;
+	    RequirementsLock: string;
+	    PythonVersion: string;
+	    URLs: Record<string, string>;
+	    Checksums: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolSpec(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.Version = source["Version"];
+	        this.Type = source["Type"];
+	        this.Description = source["Description"];
+	        this.BinName = source["BinName"];
+	        this.ArchiveName = source["ArchiveName"];
+	        this.ArchiveNameOverride = source["ArchiveNameOverride"];
+	        this.BinPathInArchive = source["BinPathInArchive"];
+	        this.BinPathInArchiveOverride = source["BinPathInArchiveOverride"];
+	        this.PipSpec = source["PipSpec"];
+	        this.RequirementsLock = source["RequirementsLock"];
+	        this.PythonVersion = source["PythonVersion"];
+	        this.URLs = source["URLs"];
+	        this.Checksums = source["Checksums"];
+	    }
+	}
 
 }
 

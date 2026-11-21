@@ -63,6 +63,14 @@ type ToolPhaseDeps struct {
 	// emitted before the webview subscribes, so tool_manager:start can be
 	// lost and every progress event must self-describe the total.
 	SetToolsTotal func(total int64)
+	// SetPendingTools mirrors every start/done transition into the
+	// transport-neutral install store (FrontendAPI.SetToolInstallPending via
+	// the desktop host) — the RPC-recoverable twin of tool_manager:start,
+	// which the webview-subscription race can drop. A NON-NIL slice marks
+	// the install active with that pending list (an empty non-nil slice is
+	// the NeedsInstall-probe-failure fallback); nil resolves the store and
+	// accompanies every done emission.
+	SetPendingTools func([]toolmanager.ToolSpec)
 	// Emit delivers one frontend event.
 	Emit func(eventName string, data ...any)
 	// Fatal carries the fatal-exit actions (native error dialog + quit).
@@ -125,6 +133,10 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 	startEmitted := false
 	if needsErr != nil {
 		log.Warn("failed to check tool install status, showing splash as fallback", "error", needsErr)
+		// The store must report active with an EMPTY pending list here — the
+		// splash is up, nothing is known (the non-nil empty slice is what
+		// distinguishes "active, nothing known" from the nil clear).
+		deps.SetPendingTools([]toolmanager.ToolSpec{})
 		deps.Emit(EventToolManagerStart, map[string]any{
 			"tools": []map[string]string{},
 		})
@@ -138,6 +150,7 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 		// Every progress event carries the splash denominator — the start
 		// event itself can be lost to the webview-subscription race.
 		deps.SetToolsTotal(int64(len(needed)))
+		deps.SetPendingTools(needed)
 		deps.Emit(EventToolManagerStart, map[string]any{
 			"tools": toolNames,
 		})
@@ -160,6 +173,7 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 			}
 		}
 		if len(notReady) == 0 {
+			deps.SetPendingTools(nil)
 			deps.Emit(EventToolManagerDone, map[string]any{
 				"installed_count": offlineInstalled,
 				"skipped_count":   len(statuses) - offlineInstalled,
@@ -170,11 +184,14 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 			// NeedsInstall saw a complete install but probing disagrees (e.g.
 			// a stale binary behind a matching .versions entry) — the
 			// blocking network pass needs its splash after all.
+			notReadySpecs := make([]toolmanager.ToolSpec, len(notReady))
 			toolNames := make([]map[string]string, len(notReady))
 			for i, s := range notReady {
+				notReadySpecs[i] = s.Tool
 				toolNames[i] = map[string]string{"name": s.Tool.Name, "version": s.Tool.Version}
 			}
 			deps.SetToolsTotal(int64(len(notReady)))
+			deps.SetPendingTools(notReadySpecs)
 			deps.Emit(EventToolManagerStart, map[string]any{
 				"tools": toolNames,
 			})
@@ -183,6 +200,7 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 		// Structural failure over a complete install: nothing is missing, so
 		// degrade to a toast instead of blocking or quitting.
 		log.Error("tool reconciliation failed structurally", "error", ensureErr)
+		deps.SetPendingTools(nil)
 		deps.Emit(EventToolManagerDone, map[string]any{
 			"installed_count": 0,
 			"skipped_count":   0,
@@ -211,6 +229,7 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 	netStatuses, netErr := mgr.EnsureCriticalTools(ctx, toolmanager.EnsureOptions{AllowNetwork: true})
 	if netErr != nil {
 		log.Error("network tool reconciliation failed structurally", "error", netErr)
+		deps.SetPendingTools(nil)
 		deps.Emit(EventToolManagerDone, map[string]any{
 			"installed_count": 0,
 			"skipped_count":   0,
@@ -230,6 +249,7 @@ func reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEns
 			failed = append(failed, s)
 		}
 	}
+	deps.SetPendingTools(nil)
 	deps.Emit(EventToolManagerDone, map[string]any{
 		"installed_count": netInstalled,
 		"skipped_count":   len(netStatuses) - netInstalled,

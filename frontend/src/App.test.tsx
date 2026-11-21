@@ -18,13 +18,65 @@ import { createRoot, type Root } from 'react-dom/client'
 // Mutable session id so a test can mount the App with no active session.
 const control = vi.hoisted(() => ({ sessionId: null as string | null }))
 
+// Captured subscribe handlers: the splash-recovery tests drive the app
+// lifecycle events (backend:ready) through the same mock to run App's phase
+// machine exactly as the backend would (the ScaleHud.test.tsx pattern).
+const runtimeEvents = vi.hoisted(() => {
+  const handlers = new Map<string, Set<(data: unknown) => void>>()
+  return {
+    subscribe(event: string, handler: (data: unknown) => void): () => void {
+      let bucket = handlers.get(event)
+      if (bucket === undefined) {
+        bucket = new Set()
+        handlers.set(event, bucket)
+      }
+      bucket.add(handler)
+      return () => {
+        bucket.delete(handler)
+      }
+    },
+    emit(event: string, data?: unknown): void {
+      handlers.get(event)?.forEach((handler) => handler(data))
+    },
+    reset(): void {
+      handlers.clear()
+    },
+  }
+})
+
+// The mount-time GetToolInstallStatus snapshot (lost-start recovery): each
+// test plants the DTO the RPC should return; null is the inactive steady
+// state the wrapper resolves for every failure mode.
+const toolInstallStatus = vi.hoisted(() => ({
+  snapshot: null as null | {
+    active: boolean
+    pending: readonly { name: string; version: string }[]
+    tools_total: number
+  },
+}))
+
+// ToolInstallSplash probe: the splash phase renders this component with the
+// recovered tool list, so the tests capture its props and leave a DOM marker
+// (the real component's rendering is covered by ToolInstallSplash.test.tsx).
+const splashProbe = vi.hoisted(() => ({
+  renders: [] as Array<{ tools: readonly unknown[]; toolsTotal: number | undefined }>,
+}))
+
 // --- child components: stubbed (never rendered in the splash phase anyway) ---
 vi.mock('@/components/layout/AppLayout', () => ({ AppLayout: () => null }))
 vi.mock('@/components/ui/tooltip', () => ({ TooltipProvider: () => null }))
 vi.mock('@/components/settings/SettingsModal', () => ({ SettingsModal: () => null }))
 vi.mock('@/components/chat/WorkDirsModal', () => ({ WorkDirsModal: () => null }))
 vi.mock('@/components/project/CreateProjectDialog', () => ({ CreateProjectDialog: () => null }))
-vi.mock('@/components/ToolInstallSplash', () => ({ ToolInstallSplash: () => null }))
+vi.mock('@/components/ToolInstallSplash', async () => {
+  const React = await import('react')
+  return {
+    ToolInstallSplash: (props: { tools: readonly unknown[]; toolsTotal?: number }) => {
+      splashProbe.renders.push({ tools: props.tools, toolsTotal: props.toolsTotal })
+      return React.createElement('div', { 'data-testid': 'tool-install-splash' })
+    },
+  }
+})
 vi.mock('@/components/UpdateToast', () => ({ UpdateToast: () => null }))
 vi.mock('@/components/GitConfigRiskToast', () => ({ GitConfigRiskToast: () => null }))
 vi.mock('@/components/ExitConfirmDialog', () => ({ ExitConfirmDialog: () => null }))
@@ -58,7 +110,7 @@ vi.mock('@/hooks/useAutonomyLoader', () => ({ useAutonomyLoader: () => {} }))
 // notification init in lib/systemNotifications. Both must no-op here —
 // this suite tests the audio-unlock wiring only.
 vi.mock('@/api/runtime', () => ({
-  subscribe: vi.fn(() => () => {}),
+  subscribe: vi.fn(runtimeEvents.subscribe),
   onGlobalEvent: vi.fn(() => () => {}),
   isWailsReady: vi.fn(() => false),
   // lib/systemNotifications' transport guard reads this; the real lib runs
@@ -70,6 +122,11 @@ vi.mock('@/api/runtime', () => ({
   transportSnapshot: vi.fn(() => 'none'),
 }))
 vi.mock('@/api/projects', () => ({ listProjects: vi.fn().mockResolvedValue([]) }))
+// The App mount also fires the tool-install snapshot RPC (the lost-start
+// recovery); each splash-recovery test plants the snapshot to return.
+vi.mock('@/api/toolmanager', () => ({
+  getToolInstallStatus: vi.fn(() => Promise.resolve(toolInstallStatus.snapshot)),
+}))
 // The App mount also fires two more RPC paths that must stay quiet here:
 // the theme-catalog refresh (App → themeStore.loadThemes → listThemes) and
 // the vector-index status seed (App → useVectorIndexStatus). Both go through
@@ -112,6 +169,7 @@ vi.mock('@/stores/vectorIndexStore', () => ({
 }))
 
 import App from './App'
+import { listProjects } from '@/api/projects'
 import { __resetSoundModule } from '@/lib/sound'
 
 const WINDOW_TYPES = ['pointerdown', 'keydown', 'touchstart'] as const
@@ -162,6 +220,86 @@ describe('App — audio unlock wiring', () => {
       expect(countFor(windowAdd, type)).toBe(1)
     }
     expect(countFor(documentAdd, 'visibilitychange')).toBe(1)
+
+    await unmount()
+  })
+})
+
+describe('App — tool-install splash recovery (GetToolInstallStatus snapshot)', () => {
+  beforeEach(() => {
+    __resetSoundModule()
+    control.sessionId = null
+    toolInstallStatus.snapshot = null
+    splashProbe.renders = []
+    runtimeEvents.reset()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    __resetSoundModule()
+    document.body.innerHTML = ''
+  })
+
+  it('renders the full splash immediately on mount when the snapshot reports an active install (lost tool_manager:start)', async () => {
+    toolInstallStatus.snapshot = {
+      active: true,
+      pending: [{ name: 'rg', version: '15.1.0' }, { name: 'uv', version: '0.9.8' }],
+      tools_total: 2,
+    }
+
+    const unmount = await mountApp(null)
+
+    // No tool_manager event was emitted at all — the mount-time snapshot
+    // alone recovered the splash with the FULL pending list (real version
+    // strings) and the splash denominator, without waiting for progress.
+    expect(splashProbe.renders.length).toBeGreaterThan(0)
+    const last = splashProbe.renders[splashProbe.renders.length - 1]
+    expect(last?.tools).toEqual([{ name: 'rg', version: '15.1.0' }, { name: 'uv', version: '0.9.8' }])
+    expect(last?.toolsTotal).toBe(2)
+    // Still the splash-with-tools phase after every mount RPC settled: the
+    // listProjects safety net must NOT bounce an active install to main,
+    // because the snapshot populated splashTools (the !== null guard).
+    expect(document.querySelector('[data-testid="tool-install-splash"]')).not.toBeNull()
+    expect(document.querySelector('.animate-spin')).toBeNull()
+
+    await unmount()
+  })
+
+  it('keeps the default flow unchanged when the snapshot is inactive (spinner → backend:ready → main)', async () => {
+    // Defer the listProjects safety net so the mount flush cannot already
+    // have exited the splash: with an inactive snapshot the minimal-spinner
+    // phase must stay exactly as before the snapshot RPC existed, until a
+    // real exit (backend:ready) arrives.
+    let resolveProjects!: () => void
+    const pendingProjects = new Promise<void>((resolve) => { resolveProjects = resolve })
+    // ALL calls (not Once): StrictMode's double-mounted effect invokes
+    // listProjects twice, and a once-implementation would leave the second
+    // mount on the default resolved mock — a premature main transition.
+    vi.mocked(listProjects).mockImplementation(
+      () => pendingProjects as unknown as ReturnType<typeof listProjects>,
+    )
+
+    const unmount = await mountApp(null)
+
+    // Inactive snapshot is a no-op: still the minimal spinner, no splash.
+    expect(splashProbe.renders).toHaveLength(0)
+    expect(document.querySelector('[data-testid="tool-install-splash"]')).toBeNull()
+    expect(document.querySelector('.animate-spin')).not.toBeNull()
+
+    await act(async () => {
+      runtimeEvents.emit('backend:ready')
+    })
+
+    // Main phase via the unchanged backend:ready path: spinner gone, no splash.
+    expect(document.querySelector('.animate-spin')).toBeNull()
+    expect(document.querySelector('[data-testid="tool-install-splash"]')).toBeNull()
+    expect(splashProbe.renders).toHaveLength(0)
+
+    // Settle the deferred safety net inside act (its callback sets state):
+    // by now phase is main, so the guard's transition is a no-op.
+    await act(async () => {
+      resolveProjects()
+    })
 
     await unmount()
   })
