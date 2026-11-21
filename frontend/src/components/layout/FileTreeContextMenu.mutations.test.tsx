@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
-// Tests for the mutation/reveal menu items (issue #60): New File / New Folder
-// (directories only), Rename, Delete, Open Containing Folder dispatch to the
-// panel's callbacks; rootMode offers only the two creation actions on the
-// workspace root; without callbacks the items are absent (the menu's original
-// contract is unchanged).
+// Tests for the mutation/reveal menu items (issue #60): Open Containing
+// Directory (rendered first), New File / New Folder (directories only),
+// Rename, Delete dispatch to the panel's callbacks; rootMode offers only the
+// two creation actions on the workspace root; without callbacks the items are
+// absent (the menu's original contract is unchanged).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
@@ -122,7 +122,7 @@ describe('FileTreeContextMenu — mutation and reveal items', () => {
     expect(callbacks.onRequestCreate).toHaveBeenCalledWith('/ws/src', 'folder')
   })
 
-  it('offers Rename / Delete / Open Containing Folder on a directory', () => {
+  it('offers Open Containing Directory / Rename / Delete on a directory', () => {
     renderMenu(dirEntry)
     byTestId('file-rename').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(callbacks.onRequestRename).toHaveBeenCalledWith(dirEntry)
@@ -132,7 +132,7 @@ describe('FileTreeContextMenu — mutation and reveal items', () => {
     expect(callbacks.onRevealContaining).toHaveBeenCalledWith(dirEntry)
   })
 
-  it('offers Rename / Delete / Open Containing Folder on a file but no creation items', () => {
+  it('offers Open Containing Directory / Rename / Delete on a file but no creation items', () => {
     renderMenu(fileEntry)
     expect(itemByText('New File')).toBeUndefined()
     expect(itemByText('New Folder')).toBeUndefined()
@@ -151,6 +151,45 @@ describe('FileTreeContextMenu — mutation and reveal items', () => {
     expect(itemByText('Copy Relative Path')).not.toBeUndefined()
   })
 
+  // The menu order is pinned: Open Containing Directory leads, and a divider
+  // sits directly after Open in Terminal (directories only). Separator divs
+  // surface as empty labels in the extracted sequence.
+  function orderedMenuLabels(): string[] {
+    const menu = container.querySelector('[role="menu"]')
+    if (!menu) throw new Error('menu not rendered')
+    return Array.from(menu.children).map((el) => el.textContent?.trim() ?? '')
+  }
+
+  it('places Open Containing Directory first and a separator right after Open in Terminal on a directory', () => {
+    renderMenu(dirEntry)
+    expect(orderedMenuLabels()).toEqual([
+      'Open Containing Directory',
+      'Open in Terminal',
+      '', // divider directly after Open in Terminal
+      'New File',
+      'New Folder',
+      'Rename',
+      'Delete',
+      '', // divider before the copy actions
+      'Copy Path',
+      'Copy Relative Path',
+    ])
+  })
+
+  it('places Open Containing Directory first on a file', () => {
+    renderMenu(fileEntry)
+    expect(orderedMenuLabels()).toEqual([
+      'Open Containing Directory',
+      'Open in Viewer',
+      '', // divider after Open in Viewer
+      'Rename',
+      'Delete',
+      '', // divider before the copy actions
+      'Copy Path',
+      'Copy Relative Path',
+    ])
+  })
+
   it('hides the mutation items when no callbacks are installed', () => {
     act(() => {
       root.render(
@@ -166,7 +205,7 @@ describe('FileTreeContextMenu — mutation and reveal items', () => {
     expect(itemByText('New Folder')).toBeUndefined()
     expect(itemByText('Rename')).toBeUndefined()
     expect(itemByText('Delete')).toBeUndefined()
-    expect(itemByText('Open Containing Folder')).toBeUndefined()
+    expect(itemByText('Open Containing Directory')).toBeUndefined()
     // The original actions survive.
     expect(itemByText('Open in Terminal')).not.toBeUndefined()
   })
