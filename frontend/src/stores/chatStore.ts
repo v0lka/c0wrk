@@ -456,7 +456,24 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     set((s) => {
       const liveIndex = s.messages[sessionId] ?? {}
       const liveOrder = s.messageOrder[sessionId] ?? []
-      const historyIds = new Set(history.map(m => m.id))
+      // Dedupe WITHIN the loaded history: several persisted rows can map to
+      // the SAME deterministic UI id (a pause → resume cycle persists a
+      // second `subagent_launch` row for the same delegation — SaveMessage is
+      // append-always — and the converter maps every such row to
+      // `subagent-{step}-launch`). Without this the merged order carried the
+      // id twice and the grouping replay opened a SECOND subagent block while
+      // the original stayed paused forever. Keep the FIRST occurrence at its
+      // stream position (the plan-step replay likewise keeps the original
+      // block on resume re-entry); later rows were overwriting it in the
+      // index anyway, so no content was previously reachable that now drops.
+      const seen = new Set<string>()
+      const deduped: ChatMessageUI[] = []
+      for (const m of history) {
+        if (seen.has(m.id)) continue
+        seen.add(m.id)
+        deduped.push(m)
+      }
+      const historyIds = seen
       const preserved: ChatMessageUI[] = []
       for (const id of liveOrder) {
         const msg = liveIndex[id]
@@ -467,7 +484,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
           preserved.push(msg)
         }
       }
-      const merged = [...history, ...preserved]
+      const merged = [...deduped, ...preserved]
       return {
         messages: { ...s.messages, [sessionId]: indexMessages(merged) },
         messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },

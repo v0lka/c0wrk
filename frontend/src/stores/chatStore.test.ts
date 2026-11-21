@@ -837,6 +837,28 @@ describe('mergeHistoryMessages', () => {
     expect(useChatStore.getState().messageOrder[SESSION]).toEqual(['shared-id', 'h-2'])
   })
 
+  it('dedupes repeated deterministic ids WITHIN the loaded history (kept-first)', () => {
+    resetStore()
+    // Pause → resume persists a SECOND subagent_launch row for the same
+    // delegation; the history→UI converter maps every such row to the same
+    // deterministic id (`subagent-{step}-launch`). The merged order must
+    // never carry one id twice — the duplicate order entries made
+    // groupMessages replay the same launch twice and open a second subagent
+    // block beside the stuck-paused original. Keep the FIRST row's content at
+    // its stream position (the plan-step replay also keeps the original
+    // block's title on resume re-entry).
+    const launch1 = { ...liveMsg('subagent-del_1-launch', 100, 'subagent_launch'), content: 'SubAgent: Research topic' }
+    const paused = liveMsg('subagent-del_1-paused', 200, 'subagent_paused')
+    const launch2 = { ...liveMsg('subagent-del_1-launch', 300, 'subagent_launch'), content: 'SubAgent: Research topic (resumed)' }
+    const history = [launch1, paused, launch2, liveMsg('h-3', 400)]
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, history, 1000)
+
+    expect(useChatStore.getState().messageOrder[SESSION]).toEqual(['subagent-del_1-launch', 'subagent-del_1-paused', 'h-3'])
+    // The kept row is the FIRST occurrence's content.
+    expect(useChatStore.getState().messages[SESSION]!['subagent-del_1-launch']!.content).toBe('SubAgent: Research topic')
+  })
+
   it('preserves an unresolved HITL prompt (ask_user) added by the background watcher even though it predates the switch', () => {
     resetStore()
     const store = useChatStore.getState()

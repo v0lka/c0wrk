@@ -226,6 +226,26 @@ export function handleSubAgentLaunch(
     model: model || undefined,
     status: 'running', children: [],
   }
+  // Re-entry of an already-open block: a resume re-emits subagent_launch for
+  // a delegation whose block is still open and unfinished — cooperatively
+  // PAUSED (the pause handler keeps it in openSteps) or left RUNNING by an
+  // abrupt interruption (a crash/restart: the relaunched unit re-emits the
+  // launch; the persisted second launch row replays beside the original —
+  // SaveMessage is append-always, so a reload carries both). Continue the
+  // SAME block instead of opening a duplicate — a pause or an interruption
+  // is a recoverable checkpoint, not a retry. The re-emitted launch flips
+  // the block to 'running'; the eventual subagent_complete settles it, and
+  // post-resume children keep nesting under the original block. Mirrors
+  // handlePlanStepStart's plan-step re-entry.
+  //
+  // A genuinely COMPLETED/FAILED delegation is unaffected: subagent_complete
+  // removed it from openSteps, so a new delegation with the same id still
+  // opens a fresh block.
+  const open = openSteps.get(stepId)
+  if (open && open.kind === 'subagent' && (open.status === 'paused' || open.status === 'running')) {
+    open.status = 'running'
+    return
+  }
   openSteps.set(stepId, subItem)
   // A nested delegation (a subagent launching its own subagent) carries the
   // parent delegation id as plan_step_id — nest under that OPEN parent block,
