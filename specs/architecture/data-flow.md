@@ -133,6 +133,8 @@ Event naming:
 
 ## Configuration Flow
 
+The load pipeline (migrations → defaults → per-section normalization → fail-closed validation), the fail-soft/fail-closed doctrine and the atomic save discipline are specified in [configuration.md](../domains/configuration.md); this section traces how the resolved config reaches the builder.
+
 ```
 ~/.c0wrk/config.yaml (user-edited)
          │

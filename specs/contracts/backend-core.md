@@ -60,7 +60,7 @@ locked-tree unlock). See [session-worktrees.md](../domains/session-worktrees.md)
 
 ## Config Adapter
 
-Single conversion point: `backend/configadapter.go`
+Single conversion point: `backend/configadapter.go`. The load/save pipeline and the per-section fail-soft versus fail-closed doctrine are specified in [../domains/configuration.md](../domains/configuration.md).
 
 ```
 config.Config (backend/config package)
