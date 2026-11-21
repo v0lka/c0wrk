@@ -84,7 +84,7 @@ The brain of c0wrk. Implements the conductor-driven orchestration cycle: the Rou
 
 Also owns domain services:
 - `core/vectorindex/` — embedding, BM25+chromem hybrid search, git branch monitoring for index freshness
-- `core/proxy/` — HTTP proxy configuration with bypass list and custom TLS CA certificates
+- `core/proxy/` — HTTP proxy configuration with bypass list and custom TLS CA certificates ([../domains/networking.md](../domains/networking.md))
 - `core/terminal/` — PTY lifecycle management, shell environment, I/O. Unix PTY (`manager.go`, build tag `!windows`) and Windows ConPTY (`manager_windows.go`, build tag `windows`) twins behind a common `Manager`/`Session` surface; exactly one compiles per OS
 - `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
 - `core/tools/` — built-in tool registration, c0wrk-specific tool types (ask_user)
@@ -94,13 +94,13 @@ Also owns domain services:
 - `core/markitdown/` — document-to-Markdown conversion via the managed markitdown CLI; optional vision-assisted conversion through the markitdown Python API (embedded driver) that captions embedded document images with the active vision-capable model (`core/visionresolver.go` maps the active model/provider onto the OpenAI-compatible captioning endpoint; the driver additionally extracts and captions PDF-embedded images itself — markitdown's PDF path is text-only — and replaces docx/html/epub base64 data-URI images with captions; degrades to the plain CLI on any failure)
 - `core/modelprofiles/` — tool-set narrowing for running the conductor against local / mid-size LLMs (model profiles; see [../domains/model-profiles.md](../domains/model-profiles.md))
 - `core/toolmanager/` — managed external binary tools (rg, uv, markitdown): version checking, download, install, first-run bootstrap
-- `core/updater/` — application self-update: GitHub release checking, fail-closed SHA256 verification against the release `SHA256SUMS` (artifacts stay unsigned — ADR-023), staged two-process install with a `.old` rollback tree
+- `core/updater/` — application self-update: GitHub release checking, fail-closed SHA256 verification against the release `SHA256SUMS` (artifacts stay unsigned — ADR-023), staged two-process install with a `.old` rollback tree ([../domains/updates.md](../domains/updates.md))
 - `core/version/` — build-time metadata (Version, GitCommit) injected via linker flags
 - `core/cli/` — command-line argument parsing (raw argv → a `Request`); fail-closed and pure (standard library + `core/version` only)
 - `core/prompts/` — the embedded (`go:embed`) markdown prompt templates the prose above refers to
 - `core/embeddedllm/` — embedded local-model provisioning and supervision: pinned runtime and weights, hardware-aware launch planning, loopback OpenAI-compatible server
 - `core/llmbudget/` — adaptive per-model LLM request budgets learned from live traffic
-- `core/llmtls/` — per-provider TLS verification overrides (certificate pinning) for self-signed LLM endpoints
+- `core/llmtls/` — per-provider TLS verification overrides (certificate pinning) for self-signed LLM endpoints ([../domains/networking.md](../domains/networking.md))
 - `core/gittrust/` — the process-wide registry of user-trusted git repository roots the hardened spawn layer consults
 - `core/research/`, `core/papers/` — the document domains behind the Research and Papers panels: in-memory models, parsers, atomic containment-checked writers, and the embedded skill/Subagent packs
 - `core/sdd/` — the SDD framework engine behind the Specs panel: the declarative `sdd-framework/v1` DSL and its embedded catalog, skill-based framework detection, and the read-only, containment-checked specification-tree parser (no embedded packs; [ADR-126](../decisions/126-sdd-framework-dsl.md))
@@ -138,7 +138,7 @@ No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/Ap
 Outside the stack: every Go layer may import `internal/`, and `internal/` imports no layer (the single exception is `internal/webaccess`, which reads its bind/TLS configuration types from `backend/config`).
 
 - `internal/sysproc/` — child-process creation attributes (console hiding on Windows) and the single git spawn choke point (`GitCmd`, `GitCmdRaw`, `gitSafetyOverrides`)
-- `internal/securehttp/` — HTTPS-only client hardening shared by the outbound download surfaces (`core/updater`, `core/toolmanager`)
+- `internal/securehttp/` — HTTPS-only client hardening shared by the outbound download surfaces (`core/updater`, `core/toolmanager`) ([../domains/networking.md](../domains/networking.md))
 - `internal/shellresolver/` — shell binary resolution shared by `backend/config` (shell environment loading) and `core/terminal` (PTY sessions)
 - `internal/webaccess/` — the browser web-access sidecar: an HTTP + WebSocket server mirroring the desktop RPC/event surface
 - `internal/gittest/` — disposable canary git repositories for the spawn-neutralization tests

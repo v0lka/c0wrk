@@ -202,6 +202,7 @@ To remove all managed tools, delete `~/.c0wrk/tools/`.
 - [Security Model](../architecture/security-model.md) — defense-in-depth for *agent-invoked* tool execution; the tool-manager's supply-chain guarantee is the software-delivery counterpart
 - [Embedded LLM](embedded-llm.md) — the delivery subsystem that deliberately does **not** extend this one (separate pins, downloader, disk layout and manifest), with the isolation invariant that keeps it out of `tools/bin`
 - [ADR-066: Embedded LLM Runtime](../decisions/066-embedded-llm-runtime.md) — "Not a tool-manager extension" records the limit-by-limit reasons
+- [Networking](networking.md) — the HTTPS-only download policy (`internal/securehttp`) every managed-tool archive fetch runs through
 - [Tool System README](tool-system/README.md) — the agent's `ToolRegistry` consumes the managed `rg` binary transparently via PATH
 - [Event Catalog](../contracts/event-catalog.md) — `tool_manager:start` / `tool_manager:progress` / `tool_manager:done` lifecycle events emitted during bootstrap
 - [Testing Environment Conventions](testing.md) — `~/.c0wrk/tools/` is the stateless artifact copied into an isolated `$HOME` for manual whole-app test runs

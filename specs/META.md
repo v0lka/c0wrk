@@ -61,6 +61,7 @@ specs/
 │   ├── capabilities.md
 │   ├── cli.md
 │   ├── commands.md
+│   ├── configuration.md
 │   ├── crash-logging.md
 │   ├── e2s.md
 │   ├── embedded-llm.md
@@ -69,6 +70,7 @@ specs/
 │   ├── goal-mode.md
 │   ├── llm-providers.md
 │   ├── model-profiles.md
+│   ├── networking.md
 │   ├── papers.md
 │   ├── prompt-suggestions.md
 │   ├── research.md
@@ -81,6 +83,7 @@ specs/
 │   ├── testing.md
 │   ├── theming.md
 │   ├── tool-manager.md
+│   ├── updates.md
 │   ├── verify-on-edit.md
 │   ├── web-access.md
 │   ├── webview-gpu-policy.md
@@ -98,7 +101,7 @@ specs/
     ├── 001-single-module.md
     ├── 002-sp4rk-isolation.md
     ├── ...
-    └── 118-kimi-subscription-model-catalog.md
+    └── 133-ask-user-option-descriptions.md
 ```
 
 ## Naming Conventions

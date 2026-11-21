@@ -210,6 +210,8 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 
 ## Frontend-to-Backend Events
 
+Every inbound HITL handler parses its payload through `core/hitlwire` — one shared shape check (`ExtractPayload`), one decision grammar per event (including the legacy numeric confirmation enum, where a non-integral number is rejected rather than truncated to the least-safe outcome), and one buffered delivery helper (`DeliverResponse`) — so the wire grammar has exactly one implementation across the Wails and web transports.
+
 | Event                   | Direction          | Payload                                                           | Purpose                           |
 | ----------------------- | ------------------ | ----------------------------------------------------------------- | --------------------------------- |
 | `tool_confirm_response` | frontend → backend | `{confirm_id, decision}` (`allow_once` / `deny`; the desktop handler also accepts the legacy numeric `ConfirmationResponse` enum, `"stop"` and `"deny_and_stop"` as defense-in-depth — the production UI sends only the two strings) | User's tool confirmation decision |
