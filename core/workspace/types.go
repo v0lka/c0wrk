@@ -95,8 +95,12 @@ type GitHistoryCommit struct {
 	Stats   CommitStats `json:"stats"`
 }
 
-// GitHistoryPage is one page of the unified commit history, loaded incrementally
-// (Skip = NextSkip while HasMore); HasMore is page saturation (len == limit).
+// GitHistoryPage is one page of the commit history, loaded incrementally:
+// NextSkip is the offset of the following page and HasMore means more pages
+// exist. HasMore is authoritative only as "more pages", never as page
+// saturation: GetGitHistory derives it from a full page (len == limit, git
+// may have more), while SearchGitHistory computes it exactly (more matches
+// exist past the slice).
 type GitHistoryPage struct {
 	Commits  []GitHistoryCommit `json:"commits"`
 	NextSkip int                `json:"next_skip"`

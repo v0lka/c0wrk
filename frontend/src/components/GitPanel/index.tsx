@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { GitBranch, AlertCircle, FolderTree, FileDiff, History } from 'lucide-react'
 import { logger } from '@/lib/logger'
-import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useGitPanelStore, selectGitPanelTab, GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
@@ -13,7 +13,6 @@ import type { StageAction } from '@/lib/gitStatus'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
-import { GitHistoryTab } from './GitHistoryTab'
 import { GitPanelFooter } from './GitPanelFooter'
 import { FileTreePanel } from '@/components/layout/FileTreePanel'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -47,6 +46,21 @@ export function GitPanel() {
   // one file, not one per porcelain axis; see `countChangeKinds`).
   const entries = useGitPanelStore((s) => s.entries)
   const changesTotal = useMemo(() => countChangeKinds(entries).total, [entries])
+
+  /**
+   * Open the commit history page (`GIT_GRAPH_TAB_PATH`, the `c0wrk:graph`
+   * pseudo-tab) in the file viewer. The pseudo-path is opened as a VIRTUAL
+   * file (the canonical openResearch/openPaper pattern): the virtual flag
+   * keeps the viewer's data loader, the tree_changed reload and persistence
+   * from ever treating the tab as an on-disk file. The viewer is expanded so
+   * the page is visible. This is the ONLY history surface left in the Git
+   * panel — the former compact History tab was removed entirely.
+   */
+  const onOpenHistoryViewer = useCallback(() => {
+    const { openVirtualFile, setCollapsed } = useFileViewerStore.getState()
+    openVirtualFile(GIT_GRAPH_TAB_PATH)
+    setCollapsed(false)
+  }, [])
 
   // ── Callbacks ──────────────────────────────────────────────────────────
 
@@ -111,11 +125,12 @@ export function GitPanel() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <GitPanelToolbar />
-      {/* Files | Changes | History tab switcher. "files" hosts the workspace
-          file explorer (filter bar + tree) as the FIRST section — the
-          workspace-level Explorer tab does not exist for git projects, so
-          this is where the explorer lives. Graph was merged into History. The
-          shared app-wide segmented control (ARIA tabs). */}
+      {/* Files | Changes tab switcher. "files" hosts the workspace file
+          explorer (filter bar + tree) as the FIRST section — the workspace
+          level Explorer tab does not exist for git projects, so this is
+          where the explorer lives. History is NOT a panel section: the
+          icon-button on the right opens the Git history page in the file
+          viewer. The shared app-wide segmented control (ARIA tabs). */}
       <div className="@container flex shrink-0 items-center border-b border-border bg-secondary/20 px-1.5 py-1">
         <div className="min-w-0 flex-1">
           <SegmentedControl
@@ -139,9 +154,8 @@ export function GitPanel() {
                   </span>
                 ),
               },
-              { value: 'history', label: 'History', icon: <History className="size-4" /> },
             ]}
-            value={activeTab}
+            value={activeTab === 'changes' ? 'changes' : 'files'}
             onValueChange={(tab) => {
               if (activeProjectId !== null) setActiveTab(activeProjectId, tab)
             }}
@@ -152,6 +166,19 @@ export function GitPanel() {
             className="p-0"
           />
         </div>
+        {/* Icon-only history button (the same History glyph the removed
+            History tab carried), pressed to the right edge of the tab strip:
+            opens the Git history page in the file viewer. `title` is
+            mandatory — it is the button's only label (icon-only control). */}
+        <button
+          type="button"
+          onClick={onOpenHistoryViewer}
+          title="Open history viewer"
+          aria-label="Open history viewer"
+          className="ml-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          <History className="size-4" />
+        </button>
       </div>
       {error && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-destructive bg-destructive/10 border-b border-destructive/20">
@@ -159,15 +186,15 @@ export function GitPanel() {
           <span className="truncate">{error}</span>
         </div>
       )}
-      {activeTab === 'files' ? (
-        <FileTreePanel />
-      ) : activeTab === 'changes' ? (
+      {activeTab === 'changes' ? (
         <>
           <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
           <CommitSection />
         </>
       ) : (
-        <GitHistoryTab />
+        /* 'files' — and any legacy persisted 'history' value: that section no
+           longer exists, the explorer is the safe fallback view. */
+        <FileTreePanel />
       )}
       <GitPanelFooter />
     </div>

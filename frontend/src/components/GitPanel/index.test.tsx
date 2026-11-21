@@ -12,9 +12,6 @@ vi.mock('./ChangesList', () => ({
   ChangesList: () => createElement('div', { 'data-testid': 'changes-list' }, 'CHANGES'),
 }))
 vi.mock('./CommitSection', () => ({ CommitSection: () => createElement('div', { 'data-testid': 'commit-section' }) }))
-vi.mock('./GitHistoryTab', () => ({
-  GitHistoryTab: () => createElement('div', { 'data-testid': 'history-tab' }, 'HISTORY'),
-}))
 vi.mock('./GitPanelFooter', () => ({ GitPanelFooter: () => createElement('div', { 'data-testid': 'git-footer' }) }))
 vi.mock('./BranchPicker', () => ({ BranchPicker: () => null }))
 vi.mock('@/components/layout/FileTreePanel', () => ({
@@ -22,8 +19,9 @@ vi.mock('@/components/layout/FileTreePanel', () => ({
 }))
 
 import { GitPanel } from './index'
-import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useGitPanelStore, selectGitPanelTab, GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null
@@ -63,18 +61,17 @@ afterEach(() => {
 })
 
 describe('GitPanel — internal tab routing', () => {
-  it('renders files | changes | history with files first and active by default', () => {
+  it('renders files | changes with files first and active by default (no History section)', () => {
     renderPanel()
 
     const labels = Array.from(container!.querySelectorAll('button[type="button"]'))
       .map((b) => b.textContent?.trim().toLowerCase())
-      .filter((t): t is string => t === 'files' || t === 'changes' || t === 'history')
-    expect(labels).toEqual(['files', 'changes', 'history'])
+      .filter((t): t is string => t === 'files' || t === 'changes')
+    expect(labels).toEqual(['files', 'changes'])
 
     // The default (reset) activeTab is 'files': the explorer is mounted.
     expect(has('file-tree')).toBe(true)
     expect(has('changes-list')).toBe(false)
-    expect(has('history-tab')).toBe(false)
   })
 
   it('switching to changes mounts the changes section and unmounts the explorer', () => {
@@ -92,23 +89,32 @@ describe('GitPanel — internal tab routing', () => {
     expect(has('commit-section')).toBe(true)
   })
 
-  it('switching to history mounts the history tab', () => {
+  it('the history icon-button opens the Git history page in the file viewer', () => {
     renderPanel()
 
-    const historyBtn = Array.from(container!.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
-      .find((b) => b.textContent?.trim().toLowerCase() === 'history')!
+    const historyBtn = container!.querySelector<HTMLButtonElement>(
+      'button[title="Open history viewer"]',
+    )!
+    expect(historyBtn).not.toBeNull()
     act(() => {
       historyBtn.click()
     })
 
-    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('history')
-    expect(has('file-tree')).toBe(false)
-    expect(has('history-tab')).toBe(true)
+    expect(useFileViewerStore.getState().activeFile).toBe(GIT_GRAPH_TAB_PATH)
+    // The viewer is expanded so the page is visible.
+    expect(useFileViewerStore.getState().collapsed).toBe(false)
+  })
+
+  it('a legacy persisted history tab renders the explorer (the section no longer exists)', () => {
+    useGitPanelStore.setState({ activeTabByProject: { p1: 'history' } })
+
+    renderPanel()
+    expect(has('file-tree')).toBe(true)
+    expect(has('changes-list')).toBe(false)
   })
 
   it('restores each project its own section on switch-back (per-project tab)', () => {
     useGitPanelStore.getState().setActiveTab('p1', 'changes')
-    useGitPanelStore.getState().setActiveTab('p2', 'history')
 
     renderPanel()
     expect(has('changes-list')).toBe(true)
@@ -122,7 +128,7 @@ describe('GitPanel — internal tab routing', () => {
       useGitPanelStore.getState().setGitRepo(true, 'p2')
     })
 
-    expect(has('history-tab')).toBe(true)
+    expect(has('file-tree')).toBe(true)
     expect(has('changes-list')).toBe(false)
   })
 })

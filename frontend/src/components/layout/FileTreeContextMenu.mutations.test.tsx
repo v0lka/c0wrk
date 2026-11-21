@@ -24,6 +24,7 @@ const uiMock = vi.hoisted(() => ({ setWorkspaceTab: vi.fn() }))
 const fileViewerMock = vi.hoisted(() => ({ openFile: vi.fn() }))
 
 vi.mock('@/stores/gitPanelStore', () => ({
+  GIT_GRAPH_TAB_PATH: 'c0wrk:graph',
   useGitPanelStore: Object.assign(
     (selector: (s: typeof gitPanelMock) => unknown) => selector(gitPanelMock),
     { getState: () => gitPanelMock },

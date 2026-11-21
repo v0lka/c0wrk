@@ -13,7 +13,7 @@ import { runGitOperation } from '@/lib/gitOperation'
 import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitPanelStore, GIT_GRAPH_TAB_PATH } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
@@ -248,12 +248,12 @@ export function FileTreeContextMenu({
 
   // --- View History ---
   const handleViewHistory = useCallback(() => {
-    // Per-project: record the workspace-tab + Git-section switch against the
-    // active project so switching away and back restores this view.
+    // Per-project: record the workspace-tab switch against the active project
+    // so switching away and back restores the Git panel (the history page
+    // itself lives in the file viewer, not in the panel).
     const projectId = useProjectStore.getState().activeProjectId
     if (projectId !== null) {
       useUIStore.getState().setWorkspaceTab(projectId, 'git')
-      useGitPanelStore.getState().setActiveTab(projectId, 'history')
     }
     // For a directory, append the OS path separator so the glob filter
     // matches only files *inside* it — not a sibling that shares the same
@@ -269,6 +269,12 @@ export function FileTreeContextMenu({
     const literal = escapeGlobLiteral(relativePath)
     const filter = entry.is_dir ? literal + pathSep() : literal
     useGitPanelStore.getState().setPendingHistoryFilter(filter)
+    // Open the Git history page in the file viewer as a VIRTUAL tab and
+    // expand the viewer — the compact History tab in the Git panel was
+    // removed; the viewer page (GitGraphPage) consumes the pending filter.
+    const { openVirtualFile, setCollapsed } = useFileViewerStore.getState()
+    openVirtualFile(GIT_GRAPH_TAB_PATH)
+    setCollapsed(false)
     onClose()
   }, [entry.is_dir, relativePath, onClose])
 

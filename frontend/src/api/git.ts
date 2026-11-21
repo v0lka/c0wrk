@@ -627,7 +627,7 @@ export async function getRebaseMergeState(): Promise<MergeRebaseState> {
 
 // --- Commit graph (Phase 6) ---
 
-// --- Unified history + graph (merged tab) ---
+// --- Unified history + graph (the viewer's Git History page) ---
 
 /**
  * Page size for `getGitHistory`. Matches the backend default
@@ -639,7 +639,7 @@ export const GIT_HISTORY_PAGE_SIZE = 300
 /**
  * Fetch one page of the unified commit history+graph: SHAs, parents,
  * author, email, date, message, and ref decorations. Replaces the
- * separate GetCommitLog/GetGitGraph calls for the merged History tab.
+ * earlier separate GetCommitLog/GetGitGraph calls.
  * `limit` is the page size (defaults to GIT_HISTORY_PAGE_SIZE, capped at
  * 1000 by the backend) and `skip` is the number of commits to skip from
  * the newest — pass the previous page's `next_skip` to advance. Returns a
@@ -659,6 +659,37 @@ export async function getGitHistory(
     return result
   } catch (err) {
     logger.error('getGitHistory failed:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch one page of pickaxe history search: commits whose patch changed
+ * occurrences of `pattern` (text mode, git -S) or whose patch matched the
+ * regex (regex mode, git -G), newest first, same page shape as
+ * getGitHistory. An empty pattern short-circuits to an empty page (the
+ * backend contract is an error — callers guard on trimmed text); an
+ * invalid regex surfaces git's error.
+ */
+export async function searchGitHistory(
+  pattern: string,
+  isRegex: boolean,
+  limit: number = GIT_HISTORY_PAGE_SIZE,
+  skip: number = 0,
+): Promise<GitHistoryPage> {
+  if (pattern.trim() === '') {
+    return { commits: [], next_skip: skip, has_more: false }
+  }
+  try {
+    const app = getApp()
+    const result = await app.SearchGitHistory(pattern, isRegex, limit, skip)
+    if (!isGitHistoryPage(result)) {
+      logger.error('searchGitHistory: unexpected response shape, returning empty page', result)
+      return { commits: [], next_skip: skip, has_more: false }
+    }
+    return result
+  } catch (err) {
+    logger.error('searchGitHistory failed:', err)
     throw err
   }
 }

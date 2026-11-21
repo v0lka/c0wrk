@@ -52,6 +52,7 @@ import {
   abortRebase,
   getRebaseMergeState,
   getGitHistory,
+  searchGitHistory,
 } from '@/api/git'
 
 // --- Type guard tests (import inline guards) ---
@@ -1228,6 +1229,44 @@ describe('getGitHistory', () => {
       has_more: false,
     })
     expect(await getGitHistory()).toEqual({ commits: [], next_skip: 0, has_more: false })
+  })
+})
+
+describe('searchGitHistory', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('forwards the pattern, the mode flag and the default page bounds', async () => {
+    const hit = { sha: 'aaa', parents: [], author: 'J', email: 'j@x.io', date: 'd', message: 'hit', refs: [] }
+    const spy = vi.fn().mockResolvedValue({ commits: [hit], next_skip: 1, has_more: false })
+    mockApp.SearchGitHistory = spy
+    expect(await searchGitHistory('alpha', false)).toEqual({ commits: [hit], next_skip: 1, has_more: false })
+    expect(spy).toHaveBeenCalledWith('alpha', false, 300, 0)
+  })
+
+  it('forwards an explicit regex flag, limit and skip', async () => {
+    const spy = vi.fn().mockResolvedValue({ commits: [], next_skip: 600, has_more: false })
+    mockApp.SearchGitHistory = spy
+    await searchGitHistory('al.*a', true, 500, 100)
+    expect(spy).toHaveBeenCalledWith('al.*a', true, 500, 100)
+  })
+
+  it('short-circuits an empty/whitespace pattern without an RPC', async () => {
+    const spy = vi.fn()
+    mockApp.SearchGitHistory = spy
+    expect(await searchGitHistory('   ', false, 10, 5)).toEqual({ commits: [], next_skip: 5, has_more: false })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('returns an empty page when the response fails the shape guard', async () => {
+    mockApp.SearchGitHistory = vi.fn().mockResolvedValue({ commits: [], next_skip: '0', has_more: false })
+    expect(await searchGitHistory('alpha', false, 10, 0)).toEqual({ commits: [], next_skip: 0, has_more: false })
+  })
+
+  it('propagates the backend error (a rejected pattern is not "no matches")', async () => {
+    mockApp.SearchGitHistory = vi.fn().mockRejectedValue(new Error('bad regex'))
+    await expect(searchGitHistory('[', true)).rejects.toThrow('bad regex')
   })
 })
 

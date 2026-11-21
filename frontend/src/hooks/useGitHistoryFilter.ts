@@ -1,4 +1,4 @@
-// File-filter logic for the git history tab.
+// File-filter logic for the viewer's Git history page.
 //
 // When a glob/regex filter is active, every loaded commit's changed files
 // must be known to decide which commits to keep. The files themselves are

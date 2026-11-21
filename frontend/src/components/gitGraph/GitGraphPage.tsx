@@ -1,8 +1,9 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Loader2, AlertCircle } from 'lucide-react'
-import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/gitGraphLayout'
+import { computeGraphLayout, computeRowYLayout } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
+import { useGitHistorySearch } from '@/hooks/useGitHistorySearch'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -16,6 +17,7 @@ import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor } from '@/components/GitPa
 import { GitGraphGutter } from '@/components/GitPanel/GitGraphGutter'
 import { DiffViewModeToggle } from '@/components/diff/DiffViewModeToggle'
 import { FilterBar } from '@/components/ui/FilterBar'
+import { HistorySearchBar } from './HistorySearchBar'
 import { GitHistoryContextMenu } from '@/components/GitPanel/GitHistoryContextMenu'
 import { CommitFileContextMenu } from './CommitFileContextMenu'
 import { GitGraphCard } from './GitGraphCard'
@@ -31,13 +33,16 @@ const EMPTY_EXPANDED_FILES: Record<string, ReadonlySet<string>> = {}
  * gutter + expandable commit cards (full commit message, changed files with
  * status + stats, per-file inline diffs via the review tables) driven by the
  * SHARED reviewStore.diffViewMode (DiffViewModeToggle). The lane gutter
- * renders here only — the Git panel's History tab is a plain full-width row
- * list — and hides while the file filter is active, since a filtered subset
- * is not a connected graph.
+ * renders here only — the Git panel has no history section of its own —
+ * and hides while the search or the file filter narrows the list, since a
+ * narrowed subset is not a connected graph.
  *
  * Data comes from the same paginated source as the Git panel
  * (`useGitHistory` → GetGitHistory, next page on scroll-to-end / "Load
- * more"), the same client-side glob/regex file filter
+ * more"), the pickaxe history search (`useGitHistorySearch` →
+ * SearchGitHistory, unioned with metadata matches — the filter applies to
+ * the ACTIVE set, so both toolbar fields intersect), the same client-side
+ * glob/regex file filter
  * (`useGitHistoryFilter` + `FilterBar`, which also owns the shared
  * changed-files cache this page reads) and from lazily-fetched per-commit
  * detail: GetCommitFiles via the shared useCommitFiles cache, the full
@@ -57,8 +62,28 @@ const EMPTY_EXPANDED_FILES: Record<string, ReadonlySet<string>> = {}
  */
 export function GitGraphPage() {
   const { commits, isLoading, isLoadingMore, hasMore, error, reload, loadMore } = useGitHistory()
-  // The filter hook owns the shared changed-files cache (filesBySha /
-  // fetchFiles / pendingShas) — the same cache the card expansion reads.
+  // The search hook runs the pickaxe RPC (paginated, debounced) and unions
+  // its pages with metadata matches over the loaded window; the filter hook
+  // owns the shared changed-files cache (filesBySha / fetchFiles /
+  // pendingShas) — the same cache the card expansion reads. The filter
+  // applies to the ACTIVE set (search results while searching, the loaded
+  // window otherwise), which is what makes both fields intersect.
+  const {
+    searchPattern,
+    searchMode,
+    setSearchPattern,
+    toggleSearchMode,
+    isSearching,
+    isSearchLoading,
+    isSearchLoadingMore,
+    isInvalidSearch,
+    searchResults,
+    hasMore: searchHasMore,
+    error: searchError,
+    loadMore: loadMoreSearch,
+    refresh: refreshSearch,
+  } = useGitHistorySearch(commits)
+  const baseCommits = isSearching ? searchResults : commits
   const {
     filterText,
     filterMode,
@@ -71,11 +96,27 @@ export function GitGraphPage() {
     filesBySha,
     fetchFiles,
     pendingShas,
-  } = useGitHistoryFilter(commits)
+  } = useGitHistoryFilter(baseCommits)
+
+  // Consume a pending history filter set externally (e.g. "View History" from
+  // the file-tree context menu, which also opens this page). The filter is
+  // applied once and then cleared from the store so it doesn't re-apply on
+  // subsequent renders. Subscribing reactively (rather than via getState())
+  // ensures the effect re-runs even when the page is already mounted — e.g.
+  // the user is already viewing history and right-clicks another file in the
+  // tree.
+  const pendingHistoryFilter = useGitPanelStore((s) => s.pendingHistoryFilter)
+  const clearPendingHistoryFilter = useGitPanelStore((s) => s.clearPendingHistoryFilter)
+  useEffect(() => {
+    if (pendingHistoryFilter !== null) {
+      setFilterText(pendingHistoryFilter)
+      clearPendingHistoryFilter()
+    }
+  }, [pendingHistoryFilter, setFilterText, clearPendingHistoryFilter])
+
   const diffViewMode = useReviewStore((s) => s.diffViewMode)
   // Current branch name — used by the commit context menu to label the
-  // "Reset <branch> to This Commit" submenu (the SAME menu the Git panel's
-  // History tab renders; this page owns its own instance).
+  // "Reset <branch> to This Commit" submenu.
   const currentBranch = useGitPanelStore((s) => s.branch.name)
 
   // ── Card expansion state (gitGraphStore — app-session scope) ────────
@@ -217,8 +258,8 @@ export function GitGraphPage() {
     [messagePhases, messagesBySha, pendingShas, filesBySha, expandedSha, activeFileDiffs],
   )
 
-  // ── Commit context menu (bespoke position-based; mirrors the Git panel's
-  // History tab: a single page-level instance fed by right-clicks). ──────
+  // ── Commit context menu (bespoke position-based; a single page-level
+  // instance fed by card right-clicks). ─────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{
     sha: string
     refs: string[]
@@ -270,28 +311,35 @@ export function GitGraphPage() {
     setCollapsed(false)
   }, [])
 
-  // ── Lane layout over the full commit set ────────────────────────────
+  // ── Lane layout ─────────────────────────────────────────────────────
+  // The full-set layout feeds the gutter; the narrowed display list (the
+  // file-filtered subset of the active set — search results while
+  // searching, the loaded window otherwise) lays out its own lanes, since
+  // a narrowed subset is not a connected graph and the gutter hides.
   const nodes = useMemo(() => computeGraphLayout(commits), [commits])
-  const shaToNode = useMemo(() => {
-    const map = new Map<string, GraphNode>()
-    for (const n of nodes) map.set(n.sha, n)
-    return map
-  }, [nodes])
+  const displayCommits = filteredCommits
+  const narrowed = isSearching || isFiltering
+  const visibleNodes = useMemo(
+    () => (narrowed ? computeGraphLayout(displayCommits) : nodes),
+    [narrowed, displayCommits, nodes],
+  )
   const shaToCommit = useMemo(() => {
-    const map = new Map<string, (typeof commits)[number]>()
-    for (const c of commits) map.set(c.sha, c)
+    const map = new Map<string, (typeof displayCommits)[number]>()
+    for (const c of displayCommits) map.set(c.sha, c)
     return map
-  }, [commits])
+  }, [displayCommits])
 
   // ── Session-restored expansion: the single lazy-fetch trigger ───────
   // A persisted expanded card either mounts already-expanded (tab reopen,
   // viewer uncollapse, project switch back) or only scrolls into view
   // later (a SHA sitting beyond the first page arrives via loadMore).
-  // Whenever the persisted SHA is present in the loaded history, fire the
-  // exact lazy fetches an interactive expand would. Every fetch dedupes
-  // (cache + in-flight guards in ensureMessage/fetchFiles/ensureDiff), so
-  // re-runs of this effect are no-ops, and a SHA absent from the history
-  // (rebased away, foreign project) fetches nothing.
+  // Whenever the persisted SHA is present in the DISPLAYED list — the
+  // active source (search results / loaded window) narrowed by the file
+  // filter — fire the exact lazy fetches an interactive expand would.
+  // Every fetch dedupes (cache + in-flight guards in
+  // ensureMessage/fetchFiles/ensureDiff), so re-runs of this effect are
+  // no-ops, and a SHA absent from it (filtered out, rebased away, foreign
+  // project) fetches nothing.
   useEffect(() => {
     if (expandedSha === null || !shaToCommit.has(expandedSha)) return
     void fetchFiles(expandedSha)
@@ -320,16 +368,6 @@ export function GitGraphPage() {
     return xFor(maxLane) + LANE_SPACING
   }, [nodes])
 
-  // The rows the list renders: every commit normally, the matching subset
-  // while the filter is active (then the gutter is hidden — a filtered
-  // subset is not a connected graph).
-  const visibleNodes = useMemo(() => {
-    if (!isFiltering) return nodes
-    return filteredCommits
-      .map((c) => shaToNode.get(c.sha))
-      .filter((n): n is GraphNode => n !== undefined)
-  }, [isFiltering, nodes, filteredCommits, shaToNode])
-
   // ── Virtualization ─────────────────────────────────────────────────
   // Exact per-row heights (from the deterministic math) so the virtualizer
   // positions items without DOM measurement (which is unreliable for
@@ -343,15 +381,31 @@ export function GitGraphPage() {
     getItemKey: (i: number) => visibleNodes[i]?.sha ?? i,
   })
 
-  // Infinite-scroll edge trigger (idempotent loadMore; see the Git panel's
-  // History tab). The "Load more" button below is the keyboard path.
+  // The ACTIVE data source owns pagination: search pages while searching,
+  // history pages otherwise.
+  const activeHasMore = isSearching ? searchHasMore : hasMore
+  const activeLoadingMore = isSearching ? isSearchLoadingMore : isLoadingMore
+  const loadMoreActive = useCallback(() => {
+    if (isSearching) loadMoreSearch()
+    else void loadMore()
+  }, [isSearching, loadMoreSearch, loadMore])
+
+  // A history mutation (tag create, reset) rewrites the very commits both
+  // sources describe, so the refresh covers the window AND the pickaxe pages.
+  const handleAfterMutation = useCallback(() => {
+    reload()
+    refreshSearch()
+  }, [reload, refreshSearch])
+
+  // Infinite-scroll edge trigger (idempotent loadMore — see useGitHistory).
+  // The "Load more" button below is the keyboard path.
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
-    if (!el || !hasMore || isLoadingMore) return
+    if (!el || !activeHasMore || activeLoadingMore) return
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
-      void loadMore()
+      loadMoreActive()
     }
-  }, [hasMore, isLoadingMore, loadMore])
+  }, [activeHasMore, activeLoadingMore, loadMoreActive])
 
   if (isLoading) {
     return (
@@ -382,8 +436,10 @@ export function GitGraphPage() {
 
   return (
     <div className="flex flex-1 flex-col min-h-0">
-      {/* Toolbar: the file filter + the SHARED unified/split toggle. No page
-          title — the viewer's tab ("Git History") already names the page. */}
+      {/* Toolbar: the file filter + the history search (equal flex shares,
+          search to the right of the filter) + the SHARED unified/split
+          toggle. No page title — the viewer's tab ("Git History") already
+          names the page. */}
       <div className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/30 px-2 py-1.5">
         <FilterBar
           className="flex-1 min-w-0 border-b-0 py-0"
@@ -392,6 +448,13 @@ export function GitGraphPage() {
           mode={filterMode}
           onToggleMode={toggleFilterMode}
           placeholder="Filter by file"
+        />
+        <HistorySearchBar
+          className="flex-1 min-w-0 py-0"
+          value={searchPattern}
+          onChange={setSearchPattern}
+          mode={searchMode}
+          onToggleMode={toggleSearchMode}
         />
         <DiffViewModeToggle />
       </div>
@@ -402,13 +465,21 @@ export function GitGraphPage() {
       >
         {isFiltering && isInvalidFilter ? (
           <p className="p-4 text-center text-xs text-destructive">Invalid regex</p>
-        ) : isFiltering && visibleNodes.length === 0 && !isResolvingFiles ? (
+        ) : isSearching && isInvalidSearch ? (
+          <p className="p-4 text-center text-xs text-destructive">Invalid search pattern</p>
+        ) : isSearching && isSearchLoading && searchResults.length === 0 ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : isSearching && searchError !== null && searchResults.length === 0 ? (
+          <p className="p-4 text-center text-xs text-destructive">{searchError}</p>
+        ) : narrowed && visibleNodes.length === 0 && !isResolvingFiles ? (
           <p className="p-4 text-center text-xs text-muted-foreground">No matching commits</p>
         ) : (
           <div className="shrink-0" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {/* Lane gutter only over the FULL commit set; hidden while the
-                filter narrows the list. */}
-            {!isFiltering && (
+                search or the filter narrows the list. */}
+            {!narrowed && (
               <div style={{ position: 'absolute', left: 0, top: 0 }}>
                 <GitGraphGutter nodes={nodes} rowY={rowY} />
               </div>
@@ -424,7 +495,7 @@ export function GitGraphPage() {
                   style={{
                     position: 'absolute',
                     top: vi.start,
-                    left: isFiltering ? 0 : svgWidth,
+                    left: narrowed ? 0 : svgWidth,
                     right: 0,
                     height: vi.size,
                   }}
@@ -453,20 +524,33 @@ export function GitGraphPage() {
             })}
           </div>
         )}
+        {/* A failed search page is reported WITHOUT discarding the pages
+            already loaded (the list above stays visible); the error only
+            replaces the list area when there is nothing to show. */}
+        {isSearching && searchError !== null && searchResults.length > 0 && (
+          <p className="flex items-center justify-center gap-1.5 py-2 text-xs text-destructive">
+            <AlertCircle className="size-3.5" /> {searchError}
+          </p>
+        )}
+        {isSearching && searchResults.length > 0 && (isSearchLoading || isSearchLoadingMore) && (
+          <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" /> Searching…
+          </div>
+        )}
         {isResolvingFiles && (
           <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" /> Resolving files…
           </div>
         )}
-        {hasMore && (
+        {activeHasMore && (
           <div className="flex items-center justify-center py-3">
             <button
               type="button"
-              onClick={() => void loadMore()}
-              disabled={isLoadingMore}
+              onClick={loadMoreActive}
+              disabled={activeLoadingMore}
               className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
             >
-              {isLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
+              {activeLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
               Load more
             </button>
           </div>
@@ -478,7 +562,7 @@ export function GitGraphPage() {
         currentBranch={currentBranch}
         position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
         onClose={closeContextMenu}
-        onAfterMutation={reload}
+        onAfterMutation={handleAfterMutation}
       />
       <CommitFileContextMenu
         path={fileMenu?.path ?? ''}

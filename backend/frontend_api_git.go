@@ -2249,6 +2249,17 @@ const (
 	gitHistoryMaxLimit     = 1000
 )
 
+// gitHistoryLogFormat is the %x1f/%x1e git log format shared by
+// GetGitHistory and SearchGitHistory so parseGitHistory parses both.
+const gitHistoryLogFormat = "%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d"
+
+// gitHistorySearchScanLimit bounds the WALKED window of a history search:
+// pickaxe inspects every walked commit's patch, so an unbounded walk would
+// blow the 30s git budget on a large repository. `git log -n` caps matches,
+// not walked commits, so the window is fixed by `git rev-list -n` first;
+// commits older than it are never searched.
+const gitHistorySearchScanLimit = 20000
+
 func normalizeGitHistoryLimit(limit int) int {
 	if limit <= 0 {
 		return gitHistoryDefaultLimit
@@ -2299,7 +2310,7 @@ func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 		"--name-status",
 		"--root",
 		"-M",
-		"--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d",
+		"--format="+gitHistoryLogFormat,
 	)
 	if err != nil {
 		return nil, err
@@ -2312,6 +2323,110 @@ func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 		NextSkip: skip + len(commits),
 		HasMore:  hasMore,
 	}, nil
+}
+
+// SearchGitHistory returns one page of pickaxe history search: -S<pattern>
+// in text mode (commits changing the number of occurrences of the string)
+// or -G<pattern> in regex mode (commits whose patch matched), both
+// case-insensitively (-i) so the patch half agrees with the frontend's
+// metadata half. git's --skip counts RAW commits rather than matches, so
+// the scan lists every matching SHA over the newest
+// gitHistorySearchScanLimit commits and slices the page in Go (HasMore is
+// exact); the page's SHAs are then fetched detail-for-detail through the
+// same parser as GetGitHistory. An empty/whitespace pattern errors before
+// git runs, and a pattern git rejects (bad regex) surfaces as the call
+// error. See the SearchGitHistory row in
+// specs/contracts/desktop-frontend.md.
+func (f *FrontendAPI) SearchGitHistory(pattern string, isRegex bool, limit, skip int) (*GitHistoryPage, error) {
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil, errors.New("empty search pattern")
+	}
+
+	limit = normalizeGitHistoryLimit(limit)
+	if skip < 0 {
+		skip = 0
+	}
+
+	pickaxe := "-S" + pattern // one argv element either way — never a shell
+	if isRegex {
+		pickaxe = "-G" + pattern
+	}
+
+	// rev-list fixes the newest window (--stdin keeps its SHAs off the argv);
+	// --no-walk then pickaxes each listed commit once instead of re-walking
+	// its ancestry.
+	window, err := f.runGitCmd(repoPath, "rev-list",
+		"-n", strconv.Itoa(gitHistorySearchScanLimit),
+		"HEAD",
+	)
+	if err != nil {
+		return nil, err
+	}
+	window = strings.TrimSpace(window)
+	if window == "" {
+		return &GitHistoryPage{Commits: []GitHistoryCommit{}, NextSkip: 0, HasMore: false}, nil
+	}
+
+	matches, err := f.runGitCmdWithStdin(repoPath, window+"\n",
+		"log",
+		"--no-walk=unsorted",
+		"--format=%H",
+		// -i keeps the patch half case-insensitive like the metadata half;
+		// a case-sensitive half would silently narrow the union.
+		"-i",
+		pickaxe,
+		"--stdin",
+	)
+	if err != nil {
+		return nil, err
+	}
+	shas := parseGitHistoryShas(matches)
+	if skip >= len(shas) {
+		return &GitHistoryPage{Commits: []GitHistoryCommit{}, NextSkip: skip, HasMore: false}, nil
+	}
+	end := skip + limit
+	if end > len(shas) {
+		end = len(shas)
+	}
+	page := shas[skip:end]
+
+	// --stdin, not argv: a full page is up to gitHistoryMaxLimit SHAs (~41 KB),
+	// past Windows' 32767-character command line — the same ARG_MAX reason
+	// GetCommitFilesBatch feeds revisions this way. No -n: max-count re-enables
+	// ancestor traversal past --no-walk.
+	out, err := f.runGitCmdWithStdin(repoPath, strings.Join(page, "\n")+"\n",
+		"log",
+		"--no-walk=unsorted",
+		"--name-status",
+		"--root",
+		"-M",
+		"--format="+gitHistoryLogFormat,
+		"--stdin",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &GitHistoryPage{
+		Commits:  parseGitHistory(out),
+		NextSkip: skip + len(page),
+		HasMore:  end < len(shas),
+	}, nil
+}
+
+// parseGitHistoryShas parses the one-SHA-per-line `git log --format=%H`
+// match list of the search scan, preserving git's newest-first order.
+func parseGitHistoryShas(output string) []string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return []string{}
+	}
+	return strings.Fields(output)
 }
 
 // parseGitHistory parses the %x1f/%x1e-separated git log --name-status

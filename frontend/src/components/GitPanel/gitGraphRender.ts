@@ -1,7 +1,7 @@
 // Pure render constants + helpers for the unified history+graph view.
 //
-// Extracted from the former GitGraph.tsx and GitCommitRow.tsx so the merged
-// GitHistoryTab, its SVG gutter, and its commit rows share one source of
+// Extracted from the former GitGraph.tsx and GitCommitRow.tsx so the viewer's
+// GitGraphPage (gutter + cards) and the row-render helpers share one source of
 // truth. No React/DOM dependencies — fully unit-testable in isolation.
 
 // ── Graph grid geometry ────────────────────────────────────────────────

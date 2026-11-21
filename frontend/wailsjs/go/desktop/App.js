@@ -826,6 +826,10 @@ export function SearchBlackboardStepOutputs(arg1, arg2) {
   return window['go']['desktop']['App']['SearchBlackboardStepOutputs'](arg1, arg2);
 }
 
+export function SearchGitHistory(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['SearchGitHistory'](arg1, arg2, arg3, arg4);
+}
+
 export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }

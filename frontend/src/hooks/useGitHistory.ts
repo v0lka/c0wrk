@@ -6,8 +6,8 @@ import type { GitHistoryCommit } from '@/types/models'
  * Loads the unified commit history+graph from the backend
  * (`GetGitHistory`) page by page. The first page loads eagerly; `loadMore`
  * appends the next page (requested at the previous page's `next_skip`) and
- * is a no-op once `hasMore` is false. Replaces the separate useGitGraph
- * hook for the merged History tab.
+ * is a no-op once `hasMore` is false. Replaces the earlier separate
+ * useGitGraph hook; its only consumer is the viewer's Git history page.
  *
  * Appending (rather than replacing) the accumulated commits is deliberate:
  * already-rendered rows keep their identity and per-row UI state (e.g. an
