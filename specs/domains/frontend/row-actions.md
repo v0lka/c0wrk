@@ -6,13 +6,15 @@ Shared hover-overlay primitives for list-row actions: `ItemAction` is one icon b
 
 ## Key Files
 
-- `frontend/src/components/layout/ItemAction.tsx` — both primitives; no other file defines row-action buttons
+- `frontend/src/components/layout/ItemAction.tsx` — both primitives; no other file defines a hover-overlay container
 - `frontend/src/components/layout/ProjectSelector.tsx` — project dropdown rows (Rename, Delete)
 - `frontend/src/components/layout/SessionListItem.tsx` — session rows for both surfaces: `SessionSelector` (dropdown, CODE mode) and `SessionList` (flat, CHAT mode); the `variant` prop selects the outer element (`dropdown` → `DropdownMenuItem`, `flat` → `div[role=button]`); actions: Promote to project (only when the row's `project_id` is `__no_project__` AND the caller wired `onPromote` — CODE-mode selectors pass no callback, busy-gated with a promote-specific `disabledReason`), Pin/Unpin, Fork (busy-gated), Rename, Archive/Unarchive, Delete
+- `frontend/src/components/layout/BranchRow.tsx` — the shared branch-group row both session-selector sections render: ONE registered `DropdownMenuItem` (the collapse toggle with `aria-expanded`/`aria-controls` and the group-pin badge before the branch name) hosting the caller's `actionItems` through `ItemActions`, plus `PinGroupAction` — the shared Pin/Unpin-group registered menu item that preventDefaults to keep the menu open
 - `frontend/src/components/layout/SessionGroupedList.tsx` — worktree branch rows of the CODE-mode grouped session selector's Worktrees section: the overlay's children are four nested **registered** `DropdownMenuItem`s (see the nested-items shape under Hover overlay mechanics); actions: New session in this worktree (+), Pin/Unpin group (the GROUP-level pin — `pinnedGroupsStore`, persisted per project; a pinned branch floats above the unpinned groups of its section via `buildSessionGroups`' `pinnedBranches` ordering, member sessions' own pins untouched; the pinned row also carries an always-visible `Pin` badge before the branch name, mirroring the per-session pinned-row badge), Archive group, Delete group
 - `frontend/src/components/layout/SessionSelector.tsx` — archived branch rows of the same selector's Archived section: the same nested-items shape with a THREE-action overlay — Pin/Unpin group (the same GROUP-level pin, keyed by the branch name in both sections), Restore (unarchive) group, Delete group
 - `frontend/src/components/GitPanel/LocalBranchRow.tsx` — local branch rows (Push, Merge, Rebase, Rename, Delete); the session-pinned branch (managed worktree, ADR-080) renders NO Delete action at all and a disabled Rename — see [session-worktrees.md](../session-worktrees.md)
 - `frontend/src/components/GitPanel/RemoteBranchRow.tsx` — remote branch rows (Delete on remote)
+- `frontend/src/components/GitPanel/WorktreesSection.tsx` — worktree rows of the two branch pickers' Worktrees section (Delete worktree, still routed through the mandatory `WorktreeDeleteConfirmDialog`)
 - `frontend/src/components/settings/ThemeMenuItem.tsx` — theme menu rows (Delete theme; predefined themes render no actions)
 - `frontend/src/components/ui/ModelPickerMenu.tsx` — model picker menu rows (Copy model name). The action lives in a per-row internal component, `CopyModelNameAction`, that owns its own `useCopyFlash` instance — so copying one row never flashes a sibling — and copies the row's full composite `provider/name` id; the row's native `title={entry.id}` restores what the row's `truncate` clipping hides (see [button-tooltips.md](button-tooltips.md)); the Default row carries neither title nor actions
 - `frontend/src/components/chat/BookmarksPanel.tsx` — bookmark rows (Rename, Delete)
@@ -38,6 +40,7 @@ A disabled button (`pointer-events-none`) never receives pointer events, so its 
 | Archived branch rows (Archived section) | `SessionSelector.tsx` | Pin/Unpin group, Restore group (no confirmation), Delete group (always confirms) |
 | Local branch rows | `LocalBranchRow.tsx` | Push, Merge, Rebase, Rename, Delete (Delete absent and Rename disabled on the session-pinned branch — managed worktree pin, ADR-080) |
 | Remote branch rows | `RemoteBranchRow.tsx` | Delete on remote |
+| Worktree rows (branch pickers' Worktrees section) | `WorktreesSection.tsx` | Delete worktree |
 | Theme menu rows | `ThemeMenuItem.tsx` | Delete theme |
 | Model picker menu rows | `ModelPickerMenu.tsx` | Copy model name (per-row `useCopyFlash` flash) |
 | Bookmark rows | `BookmarksPanel.tsx` | Rename, Delete |
@@ -55,7 +58,7 @@ Two overlay shapes exist:
 
 ## Invariants
 
-- Every row-action button in the app renders through `ItemAction`; no surface builds its own hover-overlay action button.
+- Every plain row-action button renders through `ItemAction`, and every row overlay is `ItemActions` — a Radix-menu row nests **registered** `DropdownMenuItem`s inside that same overlay (see [Hover overlay mechanics](#hover-overlay-mechanics)) instead of hand-rolling one.
 - The tooltip is always the native `title` — Radix Tooltip must not be re-introduced here; app-root `TooltipProvider` is not required to render these components.
 - A disabled action's `disabledReason` is reachable without pointer events: it sits on the focusable wrapper span's `title` (and on the button's own `title`), and the wrapper span's `aria-label` keeps the action named (`"label: reason"`) for assistive tech.
 - `ItemAction` buttons keep their own hover/active feedback (`transition-colors`, `enabled:hover:bg-accent/20`, `enabled:active:bg-accent/30`) because the overlay only reveals them on row hover while the row owns the pointer cursor.

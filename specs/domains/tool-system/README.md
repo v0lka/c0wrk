@@ -6,7 +6,7 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 
 ## Key Files
 
-- `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool and shell-blocklist enforcement, and the once-per-call flowsh shell analysis `AttachShellAnalysis`)
+- `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool enforcement, the canonical-reason backstop for blocklist/flowsh hard reasons — the patterns themselves are compiled and matched by the platform shell tool's judge — and the once-per-call flowsh shell analysis `AttachShellAnalysis`)
 - `core/tools/registry_canonical_reasons_test.go` — drift guard for the ADR-026 cross-repo contract: drives the real sp4rk builtin judges so a dropped/reworded `JudgeReasonCode` fails CI instead of silently making a canonical hard reason clearable
 - `core/tools/registry_shellanalysis_test.go` (+ `_unix`/`_windows` platform mirrors) — the flowsh digest contract (clean and escalated shell calls carry the digest to the strict-judge envelope; non-shell calls do not) and the behavioral backstop (the five canonical flowsh codes never pass a strict ALLOW on the interactive paths — the silent `judge` terminal is the one deliberate exception, ADR-053; ⊤ does) — see [ADR-052](../../decisions/052-flowsh-command-analysis.md)
 - `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
@@ -57,6 +57,7 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 2. Structural input validation (sdktools.ValidateToolInput against the tool's JSON schema — required keys, declared types, unknown keys, recursively into nested objects and array items; fail-open on unmodeled constructs) → invalid? return error result naming the offending path (e.g. tasks[2].id)
 ├─ 3. Disabled tool (No Project mode)? → return error result (applies to ALL tools including system-group)
 ├─ 3a. MCP source category + server source tag is gated by task context? → return error result naming the server (Gate 2b, including stale calls and MCP servers named `core`)
+├─ 3b. A delegated-subagent catalog is carried by the context and does not allow this tool? → return error result naming the tool (Gate 2c; fail-closed — a carried-but-empty catalog blocks every tool, the system group included, so a hallucinated or smuggled call cannot ride the bypass below)
 ├─ 4. Tool's group == system? → execute immediately (bypass remaining policy/judge/hook checks)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
 ├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
@@ -90,7 +91,8 @@ The group policy resolution, auto-approval (session roots), and the symlink and 
 ## Invariants
 
 - Tool names are unique within the registry
-- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) and task-context MCP server gate (Gate 2b) apply before the bypass, including to MCP tools declaring the system group. The MCP check uses source category plus server tag, so a server named `core` is gated while genuine built-ins stay exempt. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. Three dispatch gates apply before the bypass: the disabled-tool check (No Project mode), the task-context MCP server gate (Gate 2b — it applies to MCP tools declaring the system group too, and uses source category plus server tag, so a server named `core` is gated while genuine built-ins stay exempt), and the delegated-subagent catalog gate (Gate 2c, `DelegationCatalogFromContext`, which also covers system-group tools so a conductor-only primitive cannot be dispatched by bare name from inside a subagent). `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- The delegated-subagent catalog gate fails closed: a context that carries a catalog blocks every tool the catalog does not allow, and a carried-but-empty catalog allows nothing
 - A tool with an undeclared group matches no allow-list (fail-closed for group filtering, subagent budgets, verifier sets)
 - The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots are hard reasons — the gate is a pure literal-path extractor, so the former unresolvable/suspicious expansion escalation no longer exists (ADR-055)
 - The managed-worktree traversal analysis runs alongside it for every non-system tool call and keys on path-shaped argument names (`path`, `file_path`, `source`, `destination`, `target`); a target resolving inside a `.worktrees` container reachable from the session roots is a canonical hard reason, and the session's own managed tree stays exempt. Its hard reason yields only to an already-canonical judge/symlink reason (ADR-080)
@@ -154,6 +156,7 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 ## Extension Points
 
 - `PreExecuteHook` — block until preconditions met (e.g., vector index ready)
+- `PostExecuteHook` — observe a non-system tool path after it completes (success or error alike), e.g. for file-change-driven index freshness
 - `ToolFilter` — reject tools during registration (e.g., filter MCP tools by server)
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
 - New built-in tools: implement the sp4rk `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools` (c0wrk-specific tools like `ask_user` go in `core/tools/`) — see [builtins.md](builtins.md)

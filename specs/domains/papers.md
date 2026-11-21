@@ -141,7 +141,7 @@ Flashcard review (the workspace Flashcards section)
 
 Literature lookup ("Run lookup" in the Literature section)
   -> RunPaperLiterature(projectID, paperID) resolves the seed from the card's
-     identifiers (DOI -> arXiv -> any id -> title) and runs the project-local
+     identifiers (DOI -> arXiv -> any id -> title) and runs the globally
      seeded literature.py through c0wrk's managed Python
   -> writes <paper-dir>/literature.json and returns an explicit status
   -> the frontend reads literature.json and projects it into the research DAG
@@ -224,7 +224,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 
 ## Related Specs
 
-- [research.md](research.md) - RESEARCH mode: the research root, the project-local research pack, and the panel whose Papers segment renders this library
+- [research.md](research.md) - RESEARCH mode: the research root, the globally-seeded research pack, and the panel whose Papers segment renders this library
 - [../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` then degrades to its `no_script` status)
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - the Papers RPC surface and DTO boundary (incl. `RunPaperLiterature`/`PaperLiteratureDTO`)
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - the `papers:changed` event

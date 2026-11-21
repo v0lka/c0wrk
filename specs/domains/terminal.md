@@ -10,7 +10,7 @@ Per-session PTY-backed shells (`core/terminal.Manager`): one live terminal per s
 - `internal/shellresolver/` - resolves the login shell the Unix PTY runs (`shellresolver.Resolve()`); the Windows ConPTY build resolves its own shell (`resolveWindowsShell` in `manager_windows.go`)
 - `backend/frontend_api_terminal.go` - the RPC surface: `StartTerminal(sessionID)`, `StartTerminalInDir(sessionID, workDir)`, `TerminalInput(sessionID, data)`, `TerminalResize(sessionID, cols, rows)`, `StopTerminal(sessionID)`, `GetTerminalHistory(sessionID)`
 - `backend/startup_phases.go` - `initTerminalManager`/`InitTerminalManager` (called by the desktop phase glue): constructs the `Manager` on the app-lifecycle context, expands `${VAR}` refs in the config `terminal.env` map, and wires the two session-scoped events — `session:<id>:terminal_output` (base64-encoded PTY output, the `emit` callback) and `session:<id>:terminal_exited` (the natural-exit `onExit` callback, empty-object payload)
-- `backend/frontend_api_worktrees.go`, `backend/frontend_api_session_promote.go` - the two explicit-stop exceptions: `stopSessionTerminal` + `emitTerminalExited` (a send-time workspace bind onto a managed worktree) and session promotion each stop a PTY whose session SURVIVES and emit `session:<id>:terminal_exited` so the frontend's surviving instance follows the session into its new workspace
+- `backend/frontend_api_worktrees.go`, `backend/frontend_api_session_promote.go` - the two explicit-stop exceptions: the send-time workspace bind (`stopSessionTerminal` + `emitTerminalExited`) and session promotion (which stops the PTY the same way and emits `session:<id>:terminal_exited` inline from its promotion core) each stop a PTY whose session SURVIVES and announce it so the frontend's surviving instance follows the session into its new workspace
 - `frontend/src/stores/terminalRegistryStore.ts`, `frontend/src/components/terminal/TerminalPanel.tsx` - the app-lifetime xterm.js registry (`@xterm/xterm` v6 + `@xterm/addon-fit`) keyed by session ID, and the panel that binds to it
 
 ## Behavior
@@ -43,9 +43,9 @@ variables applied ([ADR-029](../decisions/029-terminal-env-conventions.md)):
   the pin is appended, so a shell rc file can detect the in-app terminal and
   skip own-the-terminal behavior such as tmux auto-attach.
 - Config `terminal.env` entries win over both: each key replaces any existing
-  entry of the same name, and an empty key is skipped. `desktop` expands
-  `${VAR}` references before handing the map to the manager and never logs the
-  values, which may carry secrets.
+  entry of the same name, and an empty key is skipped. `initTerminalManager`
+  expands `${VAR}` references (`config.ExpandEnvVars`) before handing the map
+  to the manager and never logs the values, which may carry secrets.
 - Name comparison funnels through `sameEnvKey` — byte equality on Unix, case
   folding on Windows — so a differently-cased inherited duplicate cannot slip
   into the child environment block.

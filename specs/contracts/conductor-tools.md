@@ -276,10 +276,11 @@ All three bypass policy and judge (they are internal). They are NOT in `conducto
 
 | Failure | Propagation |
 | ------- | ----------- |
-| `delegate` validation error (duplicate ID, cycle, depth exceeded) | Tool result `isError: true`; no subagents launch. Conductor continues its loop. |
-| Subagent `Finished: false` | Tool result `isError: true` with the abort reason. Conductor decides retry/reflect/finish. |
+| `delegate` validation error (duplicate ID, cycle, unsatisfiable or async `depends_on`, unknown agent, invalid model override) | Tool result `isError: true`; no subagents launch. Conductor continues its loop. |
+| `allow_redelegate` depth cap reached | That ONE task fails at dispatch (`Status: failed` with the cap error, reported as text); the rest of the batch still runs. |
+| Subagent `Finished: false` | The delegation settles `failed` and is reported as TEXT in the tool result (`Status: failed` + `Error: <reason>`, `isError: false`). Conductor decides retry/reflect/finish. |
 | Subagent runtime error | Same as above. |
-| Paused subagent checkpoint cannot seed its ContextManager | Tool result `isError: true` before dispatch; the checkpoint remains on the blackboard and is never replaced by a fresh restart. |
+| Paused subagent checkpoint cannot seed its ContextManager | That task's build fails before dispatch, so nothing launches for it; the failure is reported as TEXT (`Status: failed`) and the checkpoint remains on the blackboard, never replaced by a fresh restart. |
 | Subagent cancelled (via `cancel_delegation` or parent cancel) | Registry status "cancelled"; no error to the Conductor (intentional). |
 | `declare_plan` approval callback error | Tool result `isError: true`; Conductor may retry or proceed without approval. |
 | `declare_plan` write failure (SessionPlansDir) | Tool result `isError: true` with the filesystem error. |
@@ -287,7 +288,7 @@ All three bypass policy and judge (they are internal). They are NOT in `conducto
 | `cancel_delegation` on unknown ID | Tool result `isError: true` (no-op otherwise). |
 | `finish` with pending async delegations | Not a tool error — `finish` is handled inline by the sp4rk Executor and never reaches `tools.Execute`. The `FinishGuard` the sp4rk Conductor installs (`agent.Executor.SetFinishGuard`, reading the registry from context as `orchestration.PendingDelegations`) rejects the finish and injects the pending IDs as a nudge step (`agent.Step.UserNudge`); the loop continues and the Conductor cancels or waits. |
 
-Every row above except the `finish` join guard is tool-level (`ToolResult{ IsError: true, Content: "..." }`), not a Go error returned from `Execute`. The Conductor sees those as observations in its ReAct loop and decides how to react. This preserves the ReAct contract: tool failures are observations, not control-flow interruptions. The `finish` guard is an executor-level gate, so it reaches the model as a nudge step instead of an observation.
+Every row above except the `finish` join guard is tool-level, not a Go error returned from `Execute`: a contract violation (`delegate` validation, `cancel_delegation` on an unknown id, `declare_plan` publish/approval failure, `reflect` failure) returns `sdktools.ErrorResult` (`IsError: true`), while a subagent that failed, could not be built, or paused returns a normal result whose content carries the per-task `Status: failed`/`Error:` block (`IsError: false`). The Conductor sees those as observations in its ReAct loop and decides how to react. This preserves the ReAct contract: tool failures are observations, not control-flow interruptions. The `finish` guard is an executor-level gate, so it reaches the model as a nudge step instead of an observation.
 
 ## Breaking Change Checklist
 

@@ -349,7 +349,7 @@ func zstdStdlibDecode(t *testing.T, path string) string {
 
 // TestSessionArtifacts_PlainNameWithZstdContentContinuesAsZstd pins the
 // plain-name-with-compressed-bytes shape an operator's manual in-place
-// conversion can leave behind (ADR-116): the plain NAME survives while the
+// conversion can leave behind (ADR-121): the plain NAME survives while the
 // bytes become zstd. Continuation must sniff the magic, not trust the
 // extension: under a gzip config the file keeps growing as zstd and neither
 // a .gz sibling nor a fresh .zst sibling appears.
@@ -406,7 +406,7 @@ func TestSessionArtifacts_PlainNameWithZstdContentContinuesAsZstd(t *testing.T) 
 }
 
 // TestSessionArtifacts_PlainContentUnderCompressedExtensionWarnsAndContinuesPlain
-// pins the degraded-shape diagnostics (ADR-116 review follow-up): a non-empty
+// pins the degraded-shape diagnostics (ADR-121 review follow-up): a non-empty
 // plain file sitting at a compressed-extension path (a botched manual copy, a
 // partially written outsider file) is CONTINUED as plain by the sniff rule,
 // and the open emits an explicit warning naming the path and the extension's

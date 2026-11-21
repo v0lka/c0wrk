@@ -918,8 +918,18 @@ export interface GitConfigRiskData {
 // specs/contracts/event-catalog.md and specs/domains/embedded-llm.md.
 
 /** The artifact one `embedded_llm:install_progress` update belongs to. `cudart`
- *  is the paired Windows CUDA DLL archive; `mmproj` is the vision projector. */
-export type EmbeddedLLMComponent = 'runtime' | 'cudart' | 'model' | 'mmproj'
+ *  is the paired Windows CUDA DLL archive; `mmproj` is the vision projector.
+ *  The mtplx engine reports its own vocabulary instead: `python` (managed
+ *  CPython), `wheels` (the closed wheel set) and `pack` (the MLX weight pack,
+ *  vision tower and MTP head included). */
+export type EmbeddedLLMComponent =
+  | 'runtime'
+  | 'cudart'
+  | 'model'
+  | 'mmproj'
+  | 'python'
+  | 'wheels'
+  | 'pack'
 
 /** The stage of one component during an install. A component walks
  *  downloading → verifying → (extracting → signing for runtime archives) →
@@ -1977,7 +1987,9 @@ export function isToolManagerProgressData(d: unknown): d is ToolManagerProgressD
 
 // --- Embedded local-model event type guards ---
 
-const VALID_EMBEDDED_LLM_COMPONENTS: ReadonlySet<string> = new Set(['runtime', 'cudart', 'model', 'mmproj'])
+const VALID_EMBEDDED_LLM_COMPONENTS: ReadonlySet<string> = new Set([
+  'runtime', 'cudart', 'model', 'mmproj', 'python', 'wheels', 'pack',
+])
 const VALID_EMBEDDED_LLM_STAGES: ReadonlySet<string> = new Set([
   'downloading', 'verifying', 'extracting', 'signing', 'done',
 ])

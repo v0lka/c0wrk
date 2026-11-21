@@ -9,11 +9,11 @@ Owns the application's single operator-authored YAML document — `~/.c0wrk/conf
 - `backend/config/config.go` — the `Config` tree (all top-level sections), `Load`/`LoadWithResult`/`Save`, `ExpandEnvVars`, the fail-closed `validate` funnel plus the section validators the save path and the load path share (`ValidateVectorIndexExcludePatterns`, `ValidateProviderTimeoutClass`, `ValidateSilentMode`, `ValidateSearchBaseURL`, …), provider/default-model resolution (`ResolveDefaultModelProvider`), and the embedded-provider reconciliation `SyncEmbeddedLLMProvider`
 - `backend/config/resolve.go` — `ResolveAndLoad`, the startup entry: agent-directory creation, missing-file bootstrap (`CreateDefault`), parse/validation failure policy, and model-profile catalog warnings
 - `backend/config/defaults.go` — `ApplyDefaults`, the zero-value seeder for every section
-- `backend/config/paths.go` — the single source of truth for every fixed `~/.c0wrk` path (`AgentDir`, `ConfigPath`, `DatabasePath`, `LogsDir`, `ProjectsDir`, `ToolsDir`, `UpdateStagingDir`, `UpdateStatePath`, `SingleInstanceLockPath`, `WindowStatePath`, `WebviewStatePath`, `DialogStatePath`, `ModelProfilesPath`, `SDDPath`, …) and the managed-worktree path family
+- `backend/config/paths.go` — the single source of truth for every fixed `~/.c0wrk` path (`AgentDir`, `ConfigPath`, `DatabasePath`, `LogsDir`, `ProjectsDir`, `ToolsDir`, `UpdateStagingDir`, `UpdateStatePath`, `SingleInstanceLockPath`, `WindowStatePath`, `WebviewStatePath`, `DialogStatePath`, `ModelProfilesPath`, …) and the managed-worktree path family
 - `backend/config/shell_env.go` — `LoadShellEnvironment`, the macOS login-shell environment recovery that runs before any other startup init
 - `backend/config/blacklist_migration.go` — the one-time `security.groups.<group>.blacklist` → `blocklist` migration (legacy default list recognized and dropped, a customized list carried over)
 - `backend/config/mcp_mode.go` — the shared capability-mode enum (`ValidMCPServerMode`/`NormalizeMCPServerMode`), the legacy `mcp.servers.<name>.mode` fold into `capabilities.mcp`, and the strict `ValidateCapabilities` save gate
-- `backend/config/mcp_timeout.go`, `session_artifacts.go`, `service_models.go`, `shell_exec.go`, `web_access.go`, `web_access_cert.go`, `model_profiles.go`, `model_profiles_store.go`, `sdd_store.go`, `search.go`, `deref.go`, `modelid.go` — per-section structs, load normalization, and save gates (each domain spec owns the semantics; this file group owns the config-layer enforcement)
+- `backend/config/mcp_timeout.go`, `session_artifacts.go`, `service_models.go`, `shell_exec.go`, `web_access.go`, `web_access_cert.go`, `model_profiles.go`, `model_profiles_store.go`, `sdd_store.go` (`SDDPath`/`ProjectSDDPath`), `search.go`, `deref.go`, `modelid.go` — per-section structs, load normalization, and save gates (each domain spec owns the semantics; this file group owns the config-layer enforcement)
 - `backend/configadapter.go` — the single `config.Config → core.BuilderConfig` conversion (including the `ExpandEnvVars` seam)
 - `backend/frontend_api_config.go` — `GetConfig` (sanitized, pure in-memory read) and the `Update*` RPCs with the save discipline
 - `backend/events.go` — `EventConfigUpdated` (`config:updated`)
@@ -159,7 +159,8 @@ The document's own surface, by top-level section. Each section's parameters and 
 | Section | Owns |
 | ------- | ---- |
 | `log_level` | process log level (`INFO` default) |
-| `llm`, `search`, `timeouts` | [llm-providers.md](llm-providers.md) |
+| `llm`, `timeouts` | [llm-providers.md](llm-providers.md) |
+| `search` | [tool-system/builtins.md](tool-system/builtins.md) (web search providers) |
 | `embedded_llm` | [embedded-llm.md](embedded-llm.md) (app-written install state; only `engine`, `auto_unload`, `tuning` are operator-owned) |
 | `mcp`, `capabilities`, `skills`, `agents`, `commands` | [capabilities.md](capabilities.md), [tool-system/mcp-gateway.md](tool-system/mcp-gateway.md), [commands.md](commands.md) |
 | `router`, `executor`, `orchestration`, `goal_loop`, `prompt_suggestions` | [orchestration/](orchestration/README.md), [memory/compaction.md](memory/compaction.md), [goal-mode.md](goal-mode.md), [prompt-suggestions.md](prompt-suggestions.md) |

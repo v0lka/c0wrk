@@ -11,7 +11,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `core/tools/declare_plan.go` — `declare_plan` tool (`present` / `await_approval` modes); under ADR-012 plan review is a Conductor-invoked tool, not a pipeline stage
 - `backend/events.go` — `EventPlanApprovalResponse` constant (frontend → backend plan-approval decision event)
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure); codec-extension model for session artifacts (`SessionArtifactExtension`, `SessionArtifactAlgorithmsInProbeOrder`, `SessionLogPathFor`/`SessionDumpPathFor`)
-- `backend/config/session_artifacts.go` — the `session_artifacts.compression` config section (ADR-116): closed enum none|gzip|zstd, zstd window bounds 10..27, fail-soft load normalization + fail-closed save gate
+- `backend/config/session_artifacts.go` — the `session_artifacts.compression` config section ([ADR-121](../decisions/121-session-artifact-compression.md)): closed enum none|gzip|zstd, zstd window bounds 10..27, fail-soft load normalization + fail-closed save gate
 - `github.com/v0lka/sp4rk/appendcodec` — append-safe gzip/zstd codec layer behind the session artifacts (Flush-per-record durable writes, `DetectMagic` sniffing, same-descriptor TOCTOU-safe opens)
 - `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management; takes the configured codec via `WithCodec`/`WithCodecWindowLog`)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
@@ -67,6 +67,58 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal (goal RPC surface)
 - `core/toolnames.go` — NoProjectDisabledTools constants
 - `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
+
+## Core Types
+
+```go
+// SessionInfo — session metadata returned to frontend
+type SessionInfo struct {
+    ID               string
+    ProjectID        string
+    WorkspaceBinding *WorkspaceBinding // `json:"workspace_binding,omitempty"` — the immutable execution workspace; nil for CHAT
+    Name             string
+    CreatedAt        string // RFC 3339
+    LastActiveAt     string // RFC 3339
+    Archived         bool
+    Pinned           bool
+    Active           bool
+    TotalInputTokens  int
+    TotalOutputTokens int
+    Model            string
+    Family           string
+    FillPercent      float64 // context-fill percentage (stored in sessions.fill_percent)
+    HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/paused/failed task; gates the fork button
+    UnfinishedTaskStatus string // derived; filled ONLY by the list queries: the latest unfinished task's status, "" when none
+}
+
+// HandleOptions — user-specified skill overrides + per-message model/reasoning/goal/E2S/review toggles
+type HandleOptions struct {
+    TaskID             string                     // non-empty = continuation of existing task
+    UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
+    UserAgents         []string                   // explicitly requested by user via /-mentions (plain or /agent:-qualified; drives the "Requested Subagents" prompt directive)
+    UserMCPServers     []string                   // MCP servers explicitly mentioned by user via /-mentions (plain or /mcp:-qualified); enables manual-mode servers task-wide and drives the soft "Requested MCP Servers" prompt directive
+    ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
+    ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
+    SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
+    PendingAttachments []orchestration.Attachment // staged document attachments flushed into the blackboard before execution
+    PendingImages      []llm.ContentBlock         // staged image attachments (base64 image blocks) injected into the context window (not the blackboard)
+    ReviewMode         bool                       // true = message carries code-review feedback the agent must act on (sets ReviewModeKey)
+    Goal               bool                       // true = dispatch to runGoalLoop (goal mode)
+    GoalBudgetOverride *goal.GoalBudget           // optional per-message turn cap; MaxTurns>0 caps turns, nil/0 = unlimited (no config-level defaults)
+    E2S                bool                       // true = dispatch to runE2SLoop (explicit-execution-state mode); mutually exclusive with Goal — an explicit error, never a silent preference
+}
+
+// HandleResult — orchestration output
+type HandleResult struct {
+    Output          string                        `json:"output"`
+    RoutingDecision *router.RoutingDecision       `json:"routing_decision"`
+    Plan            *orchestration.Plan           `json:"plan,omitempty"`
+    Blackboard      orchestration.Blackboard      `json:"-"`
+    Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
+    Status          orchestration.ExecutionStatus `json:"status,omitempty"` // typed outcome: success | partial | failed | aborted | cancelled
+    Err             error                         `json:"-"` // typed terminal cause of a DEGRADED outcome returned alongside a nil error (today: the goal loop's errored-turn halt), preserved so the manager's auto-retry classifier can errors.As the *llm.Error chain (ADR-065); JSON-omitted — the frontend contract is unchanged
+}
+```
 
 ## Flow
 
@@ -564,7 +616,7 @@ SendMessage flushes pending attachments:
 
 `AttachFiles` returns a non-nil `error` only for system-level failures (session not found). File-level failures (unsupported format, conversion/decode error, inaccessible file) are reported via the `attachments:changed` event payload's `failed` field — not as an error — so a partial success never discards the successfully attached files or triggers a generic error toast. Converted markdown content never reaches the UI: `AttachmentInfo` is metadata-only (image entries additionally carry `is_image: true` and a `thumbnail` data URI); the agent reads document content via the `read_attachment` tool, and image content reaches the LLM only as a content block.
 
-Image attachments survive a backend restart. Before `SendMessage` snapshots and clears the pending image list, the frontend API persists a compact metadata blob (`StoredImagesMetadata`, thumbnail data URI + on-disk path — never the full base64) into `ChatMessage.Metadata`. On lazy session restore the image files are read from disk and re-encoded into `ContentBlock`s, matching what the live session saw.
+Image attachments survive a backend restart. Before `SendMessage` snapshots and clears the pending image list, the frontend API persists a compact metadata blob into `ChatMessage.Metadata` (`Manager.PendingMessageMetadata` → `UserMessageMetadata`: the goal signal, one `StoredImageMetadata` record per image — thumbnail data URI + on-disk path + media type, never the full base64 — and document summaries; an image-only message keeps the legacy `{"images": [...]}` shape). On lazy session restore the image files are read from disk and re-encoded into `ContentBlock`s, matching what the live session saw.
 
 #### Vision-assisted Document Conversion — Data Egress
 
@@ -1191,7 +1243,7 @@ User clicks Fork (GitFork icon) in SessionSelector on a session item
        active, paused, failed, or pending)
   → Backend: FrontendAPI.ForkSession(id)
       ├─ Guard: store.GetUnfinishedTask(id)
-      │   └─ non-nil → return error "cannot fork a session with an unfinished task"
+      │   └─ non-nil → return error "cannot fork a session that has an unfinished task"
       ├─ Build optional ForkReviewCloner = reviewStore.CloneReviewTx
       │   (nil when no review store is wired)
       ├─ Managed source (workspace_binding.kind == managed_worktree):
@@ -1321,7 +1373,7 @@ Two flows stop a PTY whose session SURVIVES the stop — session promotion, and 
 Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`. `backend/database.go` `OpenDatabase` opens ONE shared `*sql.DB` on the CGO-free `modernc.org/sqlite` driver (registered as `sqlite`) and hands the same handle to the session and project stores: WAL is enabled and confirmed at open, the pool is sized 8 open / 4 idle so read RPCs proceed beside a writer, and the per-connection `busy_timeout(5000)` / `foreign_keys(1)` pragmas ride the DSN so every pooled connection receives them. Hot-path event writes are additionally serialized through the single-writer `EventPersister`:
 
 - `projects` — project roster (in `backend/project/persistence.go`)
-- `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
+- `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, active_sdd, updated_at; stores per-project switch UI restoration state (the active SDD framework belongs to the Specs subsystem — see [specs.md](specs.md))
 - `app_state` — key, value; app-level key-value state (in `backend/project/persistence.go`). Currently holds `last_active_project_id` (destination of the most recent `SwitchProject`, including `__no_project__`) for restart restore, and the manual-compaction EWMA forecast under `compaction_forecast` / `compaction_forecast:<model>`
 - `sessions` — id, project_id, name, created_at, last_active_at (stored column, updated on explicit selection via `UpdateSessionActivity`), archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent, plus `workspace_binding` (added by the additive migration in `backend/session/persistence_binding.go`, encoded/decoded by the helpers shared with the load and list queries). List queries expose the computed effective activity (§ Session Activity Semantics) as `SessionInfo.last_active_at` — the stored column is only a fallback there
 - `session_messages` — id, session_id, role, content, reasoning_content, tool_calls, metadata (JSON), created_at
@@ -1466,7 +1518,7 @@ codec; a compressed file is read with the matching decoder (`zstd -dc`,
 `gzip -dc`) followed by plain line reading.
 
 The session-level file (`session_<id>_llm_dump.jsonl` + codec extension) is
-written via `DumpCaller` wrapping the main `llm.Router`. Per-step files are
+written via `agent.NewDumpCaller` wrapping the main `llm.Router`. Per-step files are
 created lazily by `StepDumpTracker` which manages file handles through the
 orchestrator lifecycle and closes them all on session deletion or application
 shutdown.
@@ -1573,67 +1625,6 @@ degrades (or aborts) — it never redirects output out of `~/.c0wrk`. There is
 no Windows equivalent for `O_NOFOLLOW` (tempered by symlink creation requiring
 elevated rights). In-tree links and a symlinked agent dir itself resolve as
 operator intent (the boundary is the fully resolved root).
-
-## Core Types
-
-```go
-// SessionInfo — session metadata returned to frontend
-type SessionInfo struct {
-    ID               string
-    ProjectID        string
-    WorkspaceBinding *WorkspaceBinding // `json:"workspace_binding,omitempty"` — the immutable execution workspace; nil for CHAT
-    Name             string
-    CreatedAt        string // RFC 3339
-    LastActiveAt     string // RFC 3339
-    Archived         bool
-    Pinned           bool
-    Active           bool
-    TotalInputTokens  int
-    TotalOutputTokens int
-    Model            string
-    Family           string
-    FillPercent      float64 // context-fill percentage (stored in sessions.fill_percent)
-    HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/paused/failed task; gates the fork button
-    UnfinishedTaskStatus string // derived; filled ONLY by the list queries: the latest unfinished task's status, "" when none
-}
-
-// HandleOptions — user-specified skill overrides + per-message model/reasoning/goal/E2S/review toggles
-type HandleOptions struct {
-    TaskID             string                     // non-empty = continuation of existing task
-    UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
-    UserAgents         []string                   // explicitly requested by user via /-mentions (plain or /agent:-qualified; drives the "Requested Subagents" prompt directive)
-    UserMCPServers     []string                   // MCP servers explicitly mentioned by user via /-mentions (plain or /mcp:-qualified); enables manual-mode servers task-wide and drives the soft "Requested MCP Servers" prompt directive
-    ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
-    ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
-    SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
-    PendingAttachments []orchestration.Attachment // staged document attachments flushed into the blackboard before execution
-    PendingImages      []llm.ContentBlock         // staged image attachments (base64 image blocks) injected into the context window (not the blackboard)
-    ReviewMode         bool                       // true = message carries code-review feedback the agent must act on (sets ReviewModeKey)
-    Goal               bool                       // true = dispatch to runGoalLoop (goal mode)
-    GoalBudgetOverride *goal.GoalBudget           // optional per-message turn cap; MaxTurns>0 caps turns, nil/0 = unlimited (no config-level defaults)
-    E2S                bool                       // true = dispatch to runE2SLoop (explicit-execution-state mode); mutually exclusive with Goal — an explicit error, never a silent preference
-}
-
-// HandleResult — orchestration output
-type HandleResult struct {
-    Output          string                        `json:"output"`
-    RoutingDecision *router.RoutingDecision       `json:"routing_decision"`
-    Plan            *orchestration.Plan           `json:"plan,omitempty"`
-    Blackboard      orchestration.Blackboard      `json:"-"`
-    Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
-    Status          orchestration.ExecutionStatus `json:"status,omitempty"` // typed outcome: success | partial | failed | aborted | cancelled
-    Err             error                         `json:"-"` // typed terminal cause of a DEGRADED outcome returned alongside a nil error (today: the goal loop's errored-turn halt), preserved so the manager's auto-retry classifier can errors.As the *llm.Error chain (ADR-065); JSON-omitted — the frontend contract is unchanged
-}
-```
-
-## Extension Points
-
-- **SessionStore interface**: replace SQLite with a different backend by implementing all methods in `backend/session/persistence.go`
-- **Auto-title generation**: customize the LLM prompt or model used for title generation in `backend/session/title.go`
-- **Preprocessing pipeline**: add custom message transforms (e.g., additional filter types) before orchestrator invocation in `FrontendAPI.SendMessage()`
-- **Event persistence**: `EventPersister` is a concrete struct over the `SessionStore` interface — an alternative storage backend plugs in through `SessionStore`; the persisted-vs-transient event classification lives in `backend/session/event_persister.go`
-- **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `Manager.CreateSessionFromDraft` (the single commit point behind both `Manager.CreateSession` and the managed fork)
-- **File coherence strategy**: replace `FileCoherenceTracker` in `backend/session/file_coherence.go` with an alternative conflict detection implementation (must satisfy `FileCoherenceChecker` interface from `github.com/v0lka/sp4rk/tools/coherence.go`)
 
 ## Invariants
 
@@ -1853,6 +1844,15 @@ type HandleResult struct {
 | Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
 | `session_artifacts.compression.algorithm` | `zstd`                 | Codec of the append-only session artifacts (session log + LLM/step dumps): `none` \| `gzip` \| `zstd`; closed enum — invalid values warn + reset at load, refused at save; existing files keep their birth codec ([ADR-121](../decisions/121-session-artifact-compression.md)) |
 | `session_artifacts.compression.zstd_window_log` | 25                     | log2 of the zstd window (2^N back-reference history), 10..27; memory scales linearly (decoder ~1×, encoder ~2× window); validated even under non-zstd algorithms |
+
+## Extension Points
+
+- **SessionStore interface**: replace SQLite with a different backend by implementing all methods in `backend/session/persistence.go`
+- **Auto-title generation**: customize the LLM prompt or model used for title generation in `backend/session/title.go`
+- **Preprocessing pipeline**: add custom message transforms (e.g., additional filter types) before orchestrator invocation in `FrontendAPI.SendMessage()`
+- **Event persistence**: `EventPersister` is a concrete struct over the `SessionStore` interface — an alternative storage backend plugs in through `SessionStore`; the persisted-vs-transient event classification lives in `backend/session/event_persister.go`
+- **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `Manager.CreateSessionFromDraft` (the single commit point behind both `Manager.CreateSession` and the managed fork)
+- **File coherence strategy**: replace `FileCoherenceTracker` in `backend/session/file_coherence.go` with an alternative conflict detection implementation (must satisfy `FileCoherenceChecker` interface from `github.com/v0lka/sp4rk/tools/coherence.go`)
 
 ## Related Specs
 

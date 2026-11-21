@@ -35,6 +35,7 @@ specs/
 │   │   ├── events.md
 │   │   ├── fonts.md
 │   │   ├── git-changes-list.md
+│   │   ├── git-history.md
 │   │   ├── git-operation-console.md
 │   │   ├── loading-states.md
 │   │   ├── rendering.md
@@ -256,6 +257,12 @@ What NOT to do, with brief explanation of why.
 ## Status
 
 Accepted | Superseded by [NNN](./NNN-slug.md) | Superseded (no successor ADR — the decision was reversed by code drift and recorded in place)
+
+These are the base states. Living practice combines the base `Accepted` state
+with the amendment machinery on one line — `Accepted — amended by
+[NNN](./NNN-slug.md)`, `Accepted — superseded in part by [NNN](./NNN-slug.md)`
+and equivalent compound spellings are valid forms of the same base states; the
+successor link must resolve either way.
 
 ## Context
 

@@ -50,7 +50,7 @@ Top-level entries outside the layer stack:
 
 - `main.go` — the binary's entry point: CLI parse, single-instance lock, crash capture, window-bounds load, then `wails.Run`
 - `internal/` — shared leaf utilities importable from every Go layer (see below)
-- `scripts/` — helper scripts: `fetch-onnx.ps1` and `fetch-embedding-model.ps1` sit behind Makefile targets (the Windows branch of `fetch-onnx` / `fetch-embedding-model` delegates to them; `build.ps1` mirrors the same targets), while `benchmark-vector-index.sh` has no Makefile/CI wiring and is run manually — see `core/vectorindex/BENCHMARKS.md`
+- `scripts/` — helper scripts: `fetch-onnx.ps1` and `fetch-embedding-model.ps1` sit behind Makefile targets (the Windows branch of `fetch-onnx` / `fetch-embedding-model` delegates to them), while `benchmark-vector-index.sh` has no Makefile/CI wiring and is run manually — see `core/vectorindex/BENCHMARKS.md` — and `agent-quality-scan.py` is a likewise manual, runbook-backed model-fault / agent-quality scan (`docs/development/agent-quality.md`) with no Makefile/CI wiring; the repo-root `build.ps1` is the Windows analog of the Makefile and reproduces every target
 - `build/` — Wails build assets: app icons, the `darwin/` bundle metadata, the `bin/` output directory
 - `specs/`, `docs/`, `research/` — the specification system, developer guides, and the research catalog
 - `config.example.yaml`, `Makefile`, `wails.json`, `go.mod` — the authoritative config reference, the build/test entry points, the Wails project metadata, and the single Go module
@@ -63,7 +63,7 @@ Top-level entries outside the layer stack:
 | `desktop/`  | `backend`, `core`, `internal`, sp4rk | —                            |
 | `backend/`  | `core`, `internal`, sp4rk            | —                            |
 | `core/`     | `internal`, sp4rk                     | `backend`, `desktop`         |
-| `internal/` | Standard library, external libs, `backend/config` (`internal/webaccess` only); `internal/webaccess` test files additionally import the `backend` root package for the surface contract | `core`, `desktop`, the `backend` root package from production code |
+| `internal/` | Standard library, external libs, other `internal/` packages, `backend/config` (`internal/webaccess` only); `internal/webaccess` test files additionally import the `backend` root package for the surface contract | `core`, `desktop`, the `backend` root package from production code |
 
 > **`internal/` hygiene** is pinned for the sidecar by `internal/webaccess/nodeps_test.go`: no file in that package — tests included — may import `desktop` or Wails.
 | sp4rk (ext. repo) | External libs only                | `core`, `backend`, `desktop` |
@@ -87,7 +87,7 @@ Also owns domain services:
 - `core/proxy/` — HTTP proxy configuration with bypass list and custom TLS CA certificates ([../domains/networking.md](../domains/networking.md))
 - `core/terminal/` — PTY lifecycle management, shell environment, I/O. Unix PTY (`manager.go`, build tag `!windows`) and Windows ConPTY (`manager_windows.go`, build tag `windows`) twins behind a common `Manager`/`Session` surface; exactly one compiles per OS
 - `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
-- `core/tools/` — built-in tool registration, c0wrk-specific tool types (ask_user)
+- `core/tools/` — built-in tool registration plus the c0wrk-specific tool types: `ask_user`, the Conductor tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `declare_step_complete`, `reflect`), the goal-mode tools (`propose_goal`, `declare_goal_status`, `declare_verification`), and the policy/judge-enforcing registry wrapper (the E2S `e2s_step` envelope lives in `core/e2s/`)
 - `core/goal/` — Goal domain: the declared success condition, the budget constraining work toward it, and the runtime state machine tracking progress
 - `core/e2s/` — the E2S explicit-execution-state loop: the externalized state Σ, its merge operator, and the per-turn driver built on raw sp4rk primitives
 - `core/units/` — the durable per-unit recovery ledger shared by the mainline Conductor and isolated execution contexts (ADR-048)
@@ -104,6 +104,7 @@ Also owns domain services:
 - `core/gittrust/` — the process-wide registry of user-trusted git repository roots the hardened spawn layer consults
 - `core/research/`, `core/papers/` — the document domains behind the Research and Papers panels: in-memory models, parsers, atomic containment-checked writers, and the embedded skill/Subagent packs
 - `core/sdd/` — the SDD framework engine behind the Specs panel: the declarative `sdd-framework/v1` DSL and its embedded catalog, skill-based framework detection, and the read-only, containment-checked specification-tree parser (no embedded packs; [ADR-126](../decisions/126-sdd-framework-dsl.md))
+- `core/specs/` — the legacy hand-written `specs/`-layout parser, retained solely as the parity reference `core/sdd`'s tree test compares the framework-driven parser against; it has no production consumer
 - `core/seedpack/` — the crash-safe, hash-verified global pack-seeding core shared by `core/research` and `core/papers`
 - `core/memlimit/` — GC soft-memory-limit policy (`runtime.memory_soft_limit_mb`): `Setup` plus the per-OS RAM probes (`memlimit_ram_*.go`)
 - `core/csp/` — the production Content-Security-Policy (`Policy`) stamped by the desktop CSP middleware and the web-access sidecar

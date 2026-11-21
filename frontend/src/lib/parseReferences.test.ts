@@ -271,7 +271,7 @@ describe('partitionRefs — mcp catalog', () => {
 })
 
 describe('partitionRefs — built-in goal command carve-out', () => {
-  // ADR-106: a plain "goal" token absent from every catalog is the built-in
+  // ADR-110: a plain "goal" token absent from every catalog is the built-in
   // /goal command, never a permissive skill passthrough — threading it would
   // have the backend's mention strip eat the command prefix before goal
   // detection runs. The controller-level cross-boundary test in
@@ -293,12 +293,12 @@ describe('partitionRefs — built-in goal command carve-out', () => {
 
   it('keeps a mid-text goal token unthreaded so a stripped mention can expose the prefix', () => {
     // /explore is a real skill → threaded and backend-stripped; goal is not →
-    // the exposed /goal then arms goal mode post-preprocessing (ADR-106 D1).
+    // the exposed /goal then arms goal mode post-preprocessing (ADR-110 D1).
     const result = partitionRefs(extractRefs('/explore /goal ship it'), [], ['explore'], [])
     expect(result.skills).toEqual(['explore'])
   })
 
-  it('a real catalog entry named goal still threads (the ADR-106 shadowing configuration)', () => {
+  it('a real catalog entry named goal still threads (the ADR-110 shadowing configuration)', () => {
     expect(partitionRefs(extractRefs('/goal ship it'), [], ['goal'], []).skills).toEqual(['goal'])
     expect(partitionRefs(extractRefs('/goal ship it'), ['goal'], [], []).agents).toEqual(['goal'])
     expect(partitionRefs(extractRefs('/goal ship it'), [], [], ['goal']).mcpServers).toEqual(['goal'])

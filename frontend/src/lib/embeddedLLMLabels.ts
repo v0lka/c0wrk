@@ -11,13 +11,18 @@
 
 import type { EmbeddedLLMComponent } from '@/types/events'
 
-/** Render order = the install's own order: the runtime phase first (runtime,
- *  then cudart on Windows CUDA), then the weights (model, mmproj). */
+/** Render order = the install's own order: the llama engine's runtime phase
+ *  first (runtime, then cudart on Windows CUDA), then its weights (model,
+ *  mmproj); the mtplx engine reports python, wheels, pack. A run reports only
+ *  its own engine's components, so the two groups never interleave. */
 export const EMBEDDED_COMPONENT_ORDER: readonly EmbeddedLLMComponent[] = [
   'runtime',
   'cudart',
   'model',
   'mmproj',
+  'python',
+  'wheels',
+  'pack',
 ]
 
 /** Human-readable name of one downloaded artifact. */
@@ -26,6 +31,9 @@ export const EMBEDDED_COMPONENT_LABELS: Record<EmbeddedLLMComponent, string> = {
   cudart: 'CUDA runtime',
   model: 'Model weights',
   mmproj: 'Vision projector',
+  python: 'Managed Python',
+  wheels: 'Engine wheels',
+  pack: 'Model pack',
 }
 
 /** Human-readable name of one artifact's stage. */

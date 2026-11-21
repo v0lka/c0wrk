@@ -82,7 +82,7 @@ type Session struct {
 	// the descriptor (so wrapper.Close subsumes file.Close at every close
 	// site — deletion, shutdown, promotion). Codec is resolved per file at
 	// open time: an existing file keeps its own codec (magic sniff), a new
-	// one uses session_artifacts.compression (ADR-116).
+	// one uses session_artifacts.compression (ADR-121).
 	logFile             io.WriteCloser                 // session log file handle, closed on deletion
 	dumpFile            io.WriteCloser                 // LLM dump file handle (DEBUG mode only), closed on deletion
 	stepDumpTracker     *orchestration.StepDumpTracker // per-plan-step dump files (DEBUG mode only); CloseAll'd on deletion and shutdown — the orchestrator's Cleanup deliberately does not own it (session-layer resource), so without this every executed step leaks one open *os.File until process exit (and blocks Windows session-dir removal)
@@ -178,7 +178,7 @@ type Manager struct {
 	// knobs applied when a session artifact file is CREATED (log, LLM dump,
 	// per-step dumps). An existing file always keeps its own codec — the open
 	// sniffs its magic and continues it — so a config flip only renames the
-	// files of sessions that have no artifacts yet (ADR-116).
+	// files of sessions that have no artifacts yet (ADR-121).
 	compressionAlgorithm string
 	zstdWindowLog        int
 	tokenPersist         TokenPersistFunc
@@ -1421,7 +1421,7 @@ func (m *Manager) openDumpArtifacts(projectID, sessionID string) (io.WriteCloser
 }
 
 // openSessionArtifact opens one session artifact file (session log, LLM dump)
-// through appendcodec under the session_artifacts.compression rule (ADR-116):
+// through appendcodec under the session_artifacts.compression rule (ADR-121):
 // the per-codec candidate paths are probed in
 // config.SessionArtifactAlgorithmsInProbeOrder order and the first EXISTING
 // file is sniffed (appendcodec.DetectMagic) and continued with its own codec —
@@ -1525,7 +1525,7 @@ func (m *Manager) logLevelValue() string {
 // when a session artifact file is CREATED (session log, LLM dump, per-step
 // dumps). An existing file always keeps its own codec — opens sniff its
 // magic and continue it — so flipping only affects sessions whose artifacts
-// do not exist yet (ADR-116). Mirroring the config loader's fail-soft
+// do not exist yet (ADR-121). Mirroring the config loader's fail-soft
 // normalization, an unrecognized algorithm or an out-of-range window falls
 // back to the config defaults instead of storing a value the config layer
 // would have refused; a non-positive windowLog keeps the current value.

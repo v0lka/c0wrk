@@ -115,7 +115,7 @@ type Config struct {
 	WebAccess WebAccessConfig `yaml:"web_access"`
 
 	// SessionArtifacts configures compression of the append-only session
-	// artifacts (step dumps, logs/session_<sessionID>.log; ADR-116), default
+	// artifacts (step dumps, logs/session_<sessionID>.log; ADR-121), default
 	// zstd/25; load problems fail soft (session_artifacts.go) and Save
 	// refuses to persist an invalid section. See SessionArtifactsConfig.
 	SessionArtifacts SessionArtifactsConfig `yaml:"session_artifacts"`
@@ -2805,7 +2805,7 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// an unrecognized algorithm / out-of-range zstd window warned + reset
 	// to the default). After ApplyDefaults (which materializes the unset
 	// algorithm/window as zstd/25), before validate. See
-	// session_artifacts.go / ADR-116.
+	// session_artifacts.go / ADR-121.
 	artifactWarnings := normalizeSessionArtifacts(&cfg)
 
 	// Validate the service-model overrides (fail-soft: an unknown service
@@ -2847,7 +2847,7 @@ func Save(cfg *Config, path string) error {
 	}
 	// Fail-closed session_artifacts gate: refuse to persist an invalid
 	// algorithm or an out-of-range zstd window — same doctrine. See
-	// session_artifacts.go / ADR-116.
+	// session_artifacts.go / ADR-121.
 	if err := validateSessionArtifactsForSave(cfg); err != nil {
 		return fmt.Errorf("refusing to save config: %w", err)
 	}

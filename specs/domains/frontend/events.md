@@ -86,12 +86,15 @@ Global (non-session-scoped) events travel the same seam — `onGlobalEvent` for 
 
 | Event group | Subscriber | Effect |
 | ----------- | ---------- | ------ |
-| `backend:ready`, `config:updated` | `useProjectLoader`, `useVectorIndexStatus`, `useUpdateChecker`, `AppLayout`, `EmbeddedModelStatus`, and the config-mirror loaders (`useExperimentalFeatures`, `useIndexingSettings`, `useSidebarPacks`, `useAutonomyLoader`, `useModelProfilesGate`; `useSystemFonts` on `backend:ready` only) | one-shot hydration plus re-hydration of every config-mirroring store after a persisted config mutation |
+| `backend:ready` | `useProjectLoader`, `useVectorIndexStatus`, `useUpdateChecker`, `AppLayout`, `EmbeddedModelStatus`, `useSystemFonts`, and the config-mirror loaders (`useExperimentalFeatures`, `useIndexingSettings`, `useSidebarPacks`, `useAutonomyLoader`, `useModelProfilesGate`) | one-shot hydration of the boot state and of every config-mirroring store |
+| `config:updated` | the config-mirror loaders (`useExperimentalFeatures`, `useIndexingSettings`, `useSidebarPacks`, `useAutonomyLoader`, `useModelProfilesGate`) and the repo-trust dialogs (`HardenReposDialog`, `TrustedReposDialog`) | re-hydration of every config-mirroring store and of the dialog repo lists after a persisted config mutation; the embedded-model state refreshes through `embedded_llm:state`, not this event |
 | `startup_error`, `runtime_error`, `tool_manager:start`/`progress`/`done` | `App.tsx` | boot-phase error surface and the tool-manager progress toasts |
 | `project:created`/`deleted`/`renamed`/`switched` | `useProjectLoader`; `GitConfigRiskToast` on `project:switched` | project list and active-project refresh |
 | `sessions:loaded`/`sessions:changed`, `session:renamed` | `useSessionLoader`; `useActiveSessionsRefresh` (in `activeSessionsStore.ts`) on `sessions:changed` | foreground session list refresh plus the cross-project live-sessions snapshot |
 | `workspace:tree_changed` | `FileTreePanel`, `useFileViewerData`, `useFileSearch`, `useProjectGitRepo`, `useGitStatusEvents`, `useResearchStatusEvents`, `SpecsPanel`, `ReviewPage`, `lib/cmChatAutocomplete` | tree/viewer/specs invalidation and the `@file` completion cache drop |
+| `workspace:ignore_ready` | `FileTreePanel` (raw `subscribe`, scoped to the payload's root) | refetch of the expanded listings once a workspace root's ignore resolver lands, without waiting for a tree change |
 | `git:status_changed` | `useGitStatusEvents`, `ReviewPage` | git panel and review diff refresh |
+| `workdirs:changed` | `WorkDirsModal` (while open) | working-directory list refetch after a backend add/update/remove |
 | `vector_index:status` | `useVectorIndexStatus`, `useVectorSearch`, `useVectorReindex` | index status/progress and search availability |
 | `research:changed`, `research:file_changed`, `papers:changed` | `useResearchStatusEvents`, `useResearchFileWatcher`, `usePapersEvents` | research panel and paper library refresh |
 | `skills:changed`, `agents:changed`, `commands:changed`, `mcp:ready` | `lib/refCatalogs`, `lib/cmChatAutocomplete`, `MCPSettings` | `/`-mention catalog invalidation and the MCP settings reload |

@@ -2183,8 +2183,9 @@ orchestration:
 # Terminal — embedded PTY terminal (the in-app terminal panel).
 # ---------------------------------------------------------------------------
 # The terminal panel runs your login shell inside the app (xterm.js over a
-# PTY). The shell always receives TERM=xterm-256color, COLORTERM=truecolor
-# and TERM_PROGRAM=c0wrk (+ TERM_PROGRAM_VERSION). TERM_PROGRAM identifies
+# PTY). The shell receives TERM=xterm-256color and COLORTERM=truecolor
+# unless the inherited environment already sets them, and always
+# TERM_PROGRAM=c0wrk (+ TERM_PROGRAM_VERSION). TERM_PROGRAM identifies
 # the embedded terminal so your shell rc files can tell it apart from your
 # real terminal — the same convention VSCode (TERM_PROGRAM=vscode), WezTerm
 # and ghostty use.
@@ -2257,8 +2258,9 @@ orchestration:
 #   # takes over. Default: 8000.
 #   observation_truncate: 8000
 #   # Per-turn observation budget in TOKENS — the ReAct-scale cap (the
-#   # executor's tool-result budget is 30K tokens against a comparable
-#   # window share). Engages when the loop resolves a model context window:
+#   # executor's per-result ceiling is executor.tool_result_budget's
+#   # hard_cap_tokens, 4096 by default). Engages when the loop resolves a
+#   # model context window:
 #   # the effective cap is min(observation_budget_tokens,
 #   # observation_fill_fraction × window) × 4 characters. Default: 8192.
 #   observation_budget_tokens: 8192
@@ -2524,10 +2526,10 @@ notifications:
 # ---------------------------------------------------------------------------
 # Compression for the append-only session artifacts the backend writes while
 # an agent works: the per-session step dumps (dumps/*.jsonl) and the session
-# log (logs/session_<sessionID>.log) (ADR-116). These files resend the growing
+# log (logs/session_<sessionID>.log) (ADR-121). These files resend the growing
 # conversation on every request, so their cross-record redundancy is
 # enormous — and only a large-window codec reaches it. Measured on live
-# session artifacts (ADR-116 investigation; a 332 MiB step dump, each record
+# session artifacts (ADR-121 investigation; a 332 MiB step dump, each record
 # resending the whole context so far):
 #
 #     gzip       ratio x3.0–x3.5   — the 32 KiB LZ77 window cannot dedup
@@ -2550,7 +2552,7 @@ notifications:
 #   xz is deliberately NOT offered: the pure-Go xz writer has no streaming
 #   Flush, so a live tail of a compressed artifact would lag a whole block
 #   behind the writer and the crash semantics worsen (the concatenated-
-#   stream rotation workaround was rejected as too much wrapping; ADR-116).
+#   stream rotation workaround was rejected as too much wrapping; ADR-121).
 #   An unrecognized value fails soft at config load — warned and reset to
 #   the default — and Save refuses to persist one.
 #

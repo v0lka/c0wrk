@@ -21,6 +21,7 @@ The commit-history surface: the file viewer's history page (`c0wrk:graph` pseudo
 - `frontend/src/components/gitGraph/HistorySearchBar.tsx` — the toolbar's search input + text/regex toggle (FilterBar's visual language)
 - `frontend/src/components/gitGraph/GitGraphCard.tsx` — the expandable commit card (presentational; all state via props)
 - `frontend/src/components/gitGraph/GitGraphCardMeta.tsx` — the card's second header line (author · time, stats triple, ref decorations) with the measured overflow collapse into the «+N» badge and its folded-refs tooltip
+- `frontend/src/components/gitGraph/CommitFileContextMenu.tsx` — the changed-file row's context menu: one native `<button role="menuitem">` entry ("Open in Viewer") that opens the file's version at the commit (`c0wrk:commit:<sha>/<path>`)
 - `frontend/src/components/gitGraph/gitGraphCardHeights.ts` — the deterministic height + diff-slice math (pure, no React/DOM)
 - `frontend/src/components/gitGraph/CommitFileDiff.tsx` — one file's diff body (review tables + highlight.js, capped scroll container)
 - `frontend/src/components/diff/DiffViewModeToggle.tsx` — the shared unified/split toggle bound to `reviewStore.diffViewMode`

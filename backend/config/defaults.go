@@ -719,7 +719,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.WebAccess.Bind = DefaultWebAccessBind
 	}
 
-	// session_artifacts defaults (ADR-116): the unset section IS zstd/25 —
+	// session_artifacts defaults (ADR-121): the unset section IS zstd/25 —
 	// materialized here so the persisted shape names the algorithm/window
 	// explicitly (mirrors the ChatGPT auth-mode seeding). A strictly
 	// INVALID explicit value is not handled here: normalizeSessionArtifacts

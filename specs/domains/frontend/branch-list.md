@@ -15,7 +15,7 @@ directory-tree display mode.
 - `frontend/src/components/GitPanel/CollapsibleDirRow.tsx` — the collapsible directory row shared with the Changes list's `TreeRow`: chevron + folder, click or Enter/Space toggle, `role="button"` + `tabIndex` reachability, `depth * 12px` indent; the label font is the consumer's (`text-xs` in the branch list for leaf parity, `text-sm` in the Changes list)
 - `frontend/src/components/GitPanel/BranchDropdown.tsx` — the menu surface: toolbar dropdown with a display-mode toggle + search input on one row; renders its own always-flat Worktrees section beside the list
 - `frontend/src/components/GitPanel/BranchPicker.tsx` — the dialog surface: filter row with the display-mode toggle; one component serves switch mode and draft pick mode
-- `frontend/src/components/GitPanel/LocalBranchRow.tsx` / `RemoteBranchRow.tsx` — the leaf rows (checkout/rename/merge/rebase/push/delete context-menu actions, draft selection, managed-session pins and focus gates)
+- `frontend/src/components/GitPanel/LocalBranchRow.tsx` / `RemoteBranchRow.tsx` — the leaf rows (hover-overlay checkout/rename/merge/rebase/push/delete actions, draft selection, managed-session pins and focus gates)
 - `frontend/src/lib/branchTree.ts` — `buildBranchTree`: implicit `/`-segment directory nodes, the leaf/dir collision payload, dirs-first alphabetical sorting; `branchLeafLabel`: the tree leaf's visible label (the last name segment)
 - `frontend/src/stores/gitPanelStore.ts` — the persisted display preference `branchListTree` + `setBranchListTree`; scalar-validated on rehydrate by `mergeGitPanel`
 
@@ -98,8 +98,11 @@ With tree on, each section renders `buildBranchTree` over the section's
 - Sections (`local` / `remote`) and directories (`dir:<fullPath>` keys)
   collapse through `useCollapsibleSections` — ephemeral, component lifetime.
 - The empty state (`data-testid="branch-list-empty"`) shows
-  "No matching branches" when the filter matches nothing and "No branches"
-  when the store has no branches at all (suppressible via `hideEmptyState`).
+  "No matching branches" when the filter matches nothing and the no-branches
+  label when the store has no branches at all — `No branches` by default,
+  `No branches found` in the dialog variant, which overrides it. It is
+  suppressible via `hideEmptyState` (the menu surface passes it while its own
+  Worktrees section has rows).
 
 ### Payload names
 

@@ -125,7 +125,7 @@ Resolver choice is load-bearing (`llm-providers.md` owns the full table): `Route
 | --- | ------- | ------- |
 | `proxy.enabled` | `false` | Master switch; with `false` every consumer dials directly and the env export is cleared |
 | `proxy.url` | `""` | `scheme://user:password@host:port`; scheme optional (defaults to `http`), schemes `http`/`https`/`socks5` |
-| `proxy.bypass_list` | `[]` | Hostnames that skip the proxy; `*.example.com` matches subdomains |
+| `proxy.bypass_list` | `["localhost", "127.0.0.1"]` | Hostnames that skip the proxy; `*.example.com` matches subdomains (seeded by `ApplyDefaults` when the key is absent) |
 | `proxy.tls_cert_dir` | `""` | Directory of `.pem`/`.crt` CA bundles appended to the system pool |
 | `proxy.set_global_env` | `true` when enabled (`*bool`) | Export the proxy (credentials stripped) and `SSL_CERT_DIR` to child processes |
 | `llm.<provider>.tls_fingerprint` | `""` | Base64 SPKI SHA-256 pin for a compatible provider ([llm-providers.md](llm-providers.md)) |

@@ -6,7 +6,7 @@ Automatic background `git fetch` for the active CODE project, keeping remote-tra
 
 ## Key Files
 
-- `backend/frontend_api_git_autofetch.go` - the whole subsystem: `autoFetchOnce` (the single funnel), `autoFetchEnabled` (config gate), `runAutoFetch`/`newAutoFetchCmd` (hardened fetch runner), `pinGitTerminalPrompt` (env pin), `RequestGitRemoteRefresh` (focus RPC), `FrontendAPILifecycle.StartAutoFetch` / `autoFetchLoop` / `stopAutoFetchLoop` (ticker lifecycle)
+- `backend/frontend_api_git_autofetch.go` - the whole subsystem: `autoFetchOnce` (the single funnel), `autoFetchEnabled` (config gate), `runAutoFetch`/`newAutoFetchCmd` (hardened fetch runner), `pinGitTerminalPrompt` (env pin), `RequestGitRemoteRefresh` (focus RPC), `FrontendAPILifecycle.StartAutoFetch` plus the `*FrontendAPI` receivers `autoFetchLoop` / `stopAutoFetchLoop` (ticker lifecycle)
 - `backend/frontend_api.go` - funnel state (`autoFetchMu`/`lastAutoFetchAt`, `autoFetchLoopMu`/`autoFetchLoopCancel`/`autoFetchLoopDone`, test seams `autoFetchIntervalOverride`/`autoFetchTickFn`), `isGitRepo` (30s-cached via `gitRepoCacheTTL`), `Cleanup` (stops the ticker loop before the rest of the teardown)
 - `backend/frontend_api_project.go` - the switch trigger: `go f.autoFetchOnce(autoFetchTriggerSwitch)` on the real-switch path only (the already-active early return skips it)
 - `backend/frontend_api_git.go` - the manual remote-op side the funnel serializes against: `remoteOpMu`, `runSerializedRemoteOp` chokepoint, `remoteGitCmdTimeout` (2 min), `emitGitStatusChanged`

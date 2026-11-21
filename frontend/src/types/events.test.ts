@@ -602,7 +602,7 @@ describe('isEmbeddedLLMInstallProgressData', () => {
     const valid = { component: 'model', stage: 'downloading', bytes_done: 1024, bytes_total: 7206168928 }
 
     it('accepts every documented component/stage pair', () => {
-        for (const component of ['runtime', 'cudart', 'model', 'mmproj']) {
+        for (const component of ['runtime', 'cudart', 'model', 'mmproj', 'python', 'wheels', 'pack']) {
             for (const stage of ['downloading', 'verifying', 'extracting', 'signing', 'done']) {
                 expect(isEmbeddedLLMInstallProgressData({ ...valid, component, stage })).toBe(true)
             }

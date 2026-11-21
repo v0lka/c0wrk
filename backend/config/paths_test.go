@@ -242,7 +242,7 @@ func TestSessionDumpPath(t *testing.T) {
 }
 
 // TestSessionArtifactExtension pins the codec→extension table: the extension
-// is part of the artifact filename contract (ADR-116) and unknown algorithms
+// is part of the artifact filename contract (ADR-121) and unknown algorithms
 // must map to the plain form rather than invent a path.
 func TestSessionArtifactExtension(t *testing.T) {
 	for _, tc := range []struct {

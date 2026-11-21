@@ -81,9 +81,13 @@ frontend cache.
   a template starting with `/goal` — or `/goal:N`, which carries the N-turn
   budget through the expansion ([ADR-110](../decisions/110-goal-mode-chat-activation.md)) —
   triggers goal mode (an E2S send then rejects it server-side, as always).
-- Frontmatter bindings: `agent` merges into the partitioned agents
-  (deduplicated); `model` rides as `SendOptions.commandModel` — used only
-  when the toolbar has no explicit selection.
+- Frontmatter bindings: `agent` validates against the FULL agent catalog
+  (not the kind-filtered mentionable set, so `hidden` and capability-disabled
+  profiles stay bindable) and merges into the partitioned agents
+  (deduplicated); a name the catalog does not carry — or an unavailable
+  catalog — drops the binding with a warning while the expanded template
+  still sends. `model` rides as `SendOptions.commandModel` — used only when
+  the toolbar has no explicit selection.
 - Empty expansion (whitespace template) → no-op + hint naming the empty
   template. A failed send restores the ORIGINAL invocation text.
 - A command named `goal` shadows the built-in `/goal` for the plain spelling
@@ -107,6 +111,9 @@ commands simply do not exist without a project).
 - Discovery is fail-soft per file: unreadable files drop, unparsable
   frontmatter warns and keeps the command with empty metadata, uninvocable
   names are skipped (Debug).
+- A frontmatter `agent` binding is validated fail-closed against the agent
+  catalog: an unknown profile name (a typo or a rename) drops the binding
+  with a warning, and the expanded template still sends without it.
 - `listCommands()` degrades to `[]` on a malformed wire shape (boundary
   guard) and on an RPC rejection (the completion cache); the send path then
   resolves the leading token with an EMPTY command catalog — an invocation

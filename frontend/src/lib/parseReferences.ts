@@ -110,7 +110,7 @@ export interface PartitionedRefs {
  *    server resolves/skips unknown skills), preserved so an unavailable
  *    catalog (fetch failure) never silently drops the user's text. The one
  *    exception is the built-in goal command: a plain "goal" token naming no
- *    catalog entry is the `/goal` command (ADR-106), never a mention —
+ *    catalog entry is the `/goal` command (ADR-110), never a mention —
  *    threading it would have the backend's mention strip eat the command
  *    prefix before goal detection runs, so it is left unthreaded and the
  *    text reaches the detector verbatim. When "goal" names a real catalog
@@ -153,7 +153,7 @@ export function partitionRefs(refs: TypedRef[], agentNames: string[], skillNames
       // Skill, or unknown in every catalog (permissive skill passthrough) —
       // except the bare goal command token: a plain "goal" naming no catalog
       // entry stays unthreaded so the /goal command survives the backend's
-      // mention strip (ADR-106).
+      // mention strip (ADR-110).
       skills.add(ref.name)
     }
   }

@@ -14,7 +14,7 @@ Conventions for running c0wrk's TypeScript and Go test suites with passing asser
 - `AGENTS.md` - contributor requirements for clean TypeScript/Go test output and explicit verification blockers
 - `.github/workflows/ci.yml` - CI test matrix; runners use default (English) locales, so only local machines on non-English locales are affected. Default-test steps pipe the verbose `go test` stream through an awk pass-through filter that drops only pass markers, so a clean run logs nothing while failures, skips and stray diagnostics stay visible (`shell: bash` + pipefail keeps the exit code authoritative on every OS; `internal/testtiming` guards the filter shape)
 - `backend/frontend_api_git_test.go` - example of a locale-sensitive test: `TestCheckoutBranch_LocalChangesOverwritten` asserts the English git phrase `local changes` in the error text
-- `backend/config/paths.go` - `DefaultAgentDir` (`~/.c0wrk`) resolution via `os.UserHomeDir()`; an isolated `$HOME` relocates the entire agent dir, config, database, and tools
+- `backend/config/paths.go` - agent-dir resolution (`AgentDir`, `ConfigPath`) via `os.UserHomeDir()` against the `DefaultAgentDir` constant (`.c0wrk`, declared in `backend/config/config.go`); an isolated `$HOME` relocates the entire agent dir, config, database, and tools
 - `specs/domains/tool-manager.md` - layout of `~/.c0wrk/tools/` (stateless, copyable artifact)
 - `specs/domains/crash-logging.md` - crash/exit diagnostics records that manual runs write into the real agent dir
 

@@ -396,7 +396,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	manager.StartEnvInfoCollection()
 	manager.SetMaxSummaryLen(cfg.Config.Orchestration.MaxSummaryLength)
 	// session_artifacts.compression: the knobs applied when a session
-	// artifact file is CREATED; existing files keep their codec (ADR-116).
+	// artifact file is CREATED; existing files keep their codec (ADR-121).
 	manager.SetSessionCompression(
 		cfg.Config.SessionArtifacts.Compression.Algorithm,
 		cfg.Config.SessionArtifacts.Compression.ZstdWindowLog)

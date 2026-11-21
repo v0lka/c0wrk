@@ -69,13 +69,15 @@ scan args ─┬─ action flag (-h/-v/--self-update) → accept(A): FIRST one w
            ├─ companion (--pid/--stage/--target) → consume next arg (last wins),
            │        value-syntax error NOW (missing: "--stage requires a value";
            │        empty: "--stage requires a non-empty value";
-           │        bad pid: "invalid --pid %q"); remember first companion
+           │        bad pid: `invalid --pid "<value>": not a positive integer`); remember first companion
            │        for later
            └─ anything else → error "unknown argument: <arg>"
    │
    ▼
 post-scan, only when Action == ActionSelfUpdate:
-   missing pid/stage/target → "--self-update requires --pid|--stage|--target"
+   each missing companion → its own error, checked in the order pid, stage, target:
+   "--self-update requires --pid" / "--self-update requires --stage" /
+   "--self-update requires --target"
 after that scan, for every other action:
    a companion seen without --self-update → error "unknown argument: <first companion>"
 ```
