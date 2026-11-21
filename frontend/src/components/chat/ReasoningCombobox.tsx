@@ -10,6 +10,11 @@ import { findModelInfo } from '@/lib/modelId'
  * native reasoning options for the currently selected model's family.
  * "Default" means the family default (= maximum reasoning) is used.
  * The selection is persisted in inputModeStore and survives restarts.
+ * The reset effect below therefore only wipes the stored value on POSITIVE
+ * evidence (the effective model resolved to a known entry whose family cannot
+ * carry it) — never while the model list is still loading, or the wipe would
+ * clobber the just-restored persisted value on every app start before the
+ * async config fetch lands.
  */
 export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
@@ -27,7 +32,15 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
     if (!selectedReasoning) return
     const effectiveModel = selectedModel ?? defaultModel
     const info = findModelInfo(allModels, effectiveModel)
-    const reasoning = info?.reasoning
+    // Wipe only on POSITIVE evidence: the model resolved to a known entry and
+    // that entry's family cannot carry the stored selection. While the config
+    // is still loading (allModels empty — the store has already rehydrated the
+    // persisted value synchronously) or the selector is stale/unresolvable,
+    // findModelInfo returns undefined and the stored choice is left untouched:
+    // wiping on unknown data would silently reset the user's persisted
+    // reasoning level on every app start before the async model list arrives.
+    if (info === undefined) return
+    const reasoning = info.reasoning
     if (!reasoning || !reasoning.options.includes(selectedReasoning)) {
       setSelectedReasoning(null)
     }
