@@ -20,9 +20,12 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// Install progress stages. Bytes are reported only for StageDownload; every
-// other stage carries 0/0 — a percentage there would be a lie. The vocabulary
-// is the wire contract of tool_manager:progress
+// Install progress stages. Every attempt opens with an indeterminate 0/0
+// attempt-start on the stage the attempt is about to spend I/O on
+// (StageDownload for a static binary, StagePythonBootstrap for a Python
+// package), emitted before any I/O; bytes flow only on StageDownload
+// transfer events — every other stage carries 0/0, a percentage there would
+// be a lie. The vocabulary is the wire contract of tool_manager:progress
 // (specs/contracts/event-catalog.md).
 const (
 	StageDownload        = "download"         // archive transfer, bytes reported
@@ -332,6 +335,20 @@ func (m *Manager) reportProgress(p ToolProgress) {
 }
 
 func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string, opts EnsureOptions) error {
+	// Attempt-start marker: one indeterminate 0/0 event before ANY network or
+	// file I/O, so the UI line for the tool exists from the first moment of
+	// the attempt — a slow cache probe or a fast deferral would otherwise
+	// leave the splash blind for the whole pass. The stage names the I/O the
+	// attempt is about to perform (StageDownload for a static binary,
+	// StagePythonBootstrap for a Python package). A deferral to the network
+	// pass (offline cache-miss / errNeedsNetwork) adds no terminal verdict on
+	// top of it, so the line stays indeterminate until the deciding pass
+	// overwrites it.
+	stage := StageDownload
+	if tool.Type == PythonPackage {
+		stage = StagePythonBootstrap
+	}
+	m.reportProgress(ToolProgress{Tool: tool.Name, Stage: stage})
 	switch tool.Type {
 	case StaticBinary:
 		mode := DownloadOnline
@@ -509,7 +526,8 @@ func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
 // bootstrap (never earlier — a network failure must not strip a working old
 // environment); the offline pass never reaches it. See specs/domains/tool-manager.md.
 func (m *Manager) installPython(ctx context.Context, tool ToolSpec) error {
-	m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StagePythonBootstrap})
+	// The attempt-start python_bootstrap report is installOne's, emitted
+	// before this call; the offline pass never reaches installPython at all.
 	m.removeStalePythonEnv(tool)
 	step := func(detail string) {
 		m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StagePythonBootstrap, Detail: detail})

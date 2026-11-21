@@ -1241,9 +1241,19 @@ func TestVenvPythonPath(t *testing.T) {
 // progressRecorder collects ToolProgress reports in emission order.
 type progressRecorder struct {
 	events []ToolProgress
+	// timeline interleaves progress markers ("tool stage") with fake-I/O
+	// markers ("io <what> <tool>") in emission order, so tests can pin that
+	// an attempt-start precedes the I/O it announces.
+	timeline []string
 }
 
-func (r *progressRecorder) callback(p ToolProgress) { r.events = append(r.events, p) }
+func (r *progressRecorder) callback(p ToolProgress) {
+	r.events = append(r.events, p)
+	r.timeline = append(r.timeline, p.Tool+" "+p.Stage)
+}
+
+// mark records a fake-I/O boundary in the shared timeline.
+func (r *progressRecorder) mark(label string) { r.timeline = append(r.timeline, label) }
 
 // stages returns the stage sequence reported for one tool.
 func (r *progressRecorder) stages(tool string) []string {
@@ -1268,12 +1278,17 @@ func (r *progressRecorder) last(tool string) ToolProgress {
 }
 
 // stepReportingInstaller models a Python bootstrap that announces its
-// sub-steps like the production FSInstaller does.
+// sub-steps like the production FSInstaller does; rec (optional) receives an
+// io boundary marker when the bootstrap work begins.
 type stepReportingInstaller struct {
 	stubInstaller
+	rec *progressRecorder
 }
 
 func (s *stepReportingInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string, step func(detail string)) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
+	if s.rec != nil {
+		s.rec.mark("io bootstrap " + tool.Name)
+	}
 	step(DetailInterpreter)
 	step(DetailVenv)
 	step(DetailPackages)
@@ -1281,10 +1296,12 @@ func (s *stepReportingInstaller) InstallPythonPackage(ctx context.Context, tool 
 }
 
 // TestManager_InstallProgress_OfflineCacheInstall pins the progress protocol
-// of a cached offline install: no download events (a cache hit transfers no
-// bytes), extract → verify → done for each static binary, and NO events for a
-// Python tool deferred to the network pass — a deferral is not a failure and
-// the network pass owns that tool's outcome.
+// of a cached offline install: every static attempt opens with an
+// indeterminate download 0/0 attempt-start BEFORE the cache probe I/O (a
+// cache hit transfers no bytes), then extract → verify → done; a Python tool
+// deferred to the network pass emits exactly its python_bootstrap attempt-start
+// and NO terminal event — a deferral is not a failure and the network pass
+// owns that tool's outcome, so the line stays indeterminate until then.
 func TestManager_InstallProgress_OfflineCacheInstall(t *testing.T) {
 	toolsDir, binDir, pythonDir := makeTestDirs(t)
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -1293,10 +1310,13 @@ func TestManager_InstallProgress_OfflineCacheInstall(t *testing.T) {
 
 	rec := &progressRecorder{}
 	mgr := &Manager{
-		ToolsDir:         toolsDir,
-		BinDir:           binDir,
-		PythonDir:        pythonDir,
-		Downloader:       DownloadFunc(cacheAwareDownload),
+		ToolsDir:  toolsDir,
+		BinDir:    binDir,
+		PythonDir: pythonDir,
+		Downloader: DownloadFunc(func(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
+			rec.mark("io cache-probe " + tool.Name)
+			return cacheAwareDownload(ctx, tool, cacheDir, mode, progress)
+		}),
 		Installer:        &stubInstaller{},
 		Logger:           slog.New(slog.DiscardHandler),
 		ProgressCallback: rec.callback,
@@ -1319,18 +1339,37 @@ func TestManager_InstallProgress_OfflineCacheInstall(t *testing.T) {
 		if status := findStatus(t, statuses, spec.Name); !status.Ready {
 			t.Fatalf("%s: not Ready after offline cache install: %v", spec.Name, status.Err)
 		}
-		want := []string{StageExtract, StageVerify, StageDone}
+		want := []string{StageDownload, StageExtract, StageVerify, StageDone}
 		if got := rec.stages(spec.Name); !slices.Equal(got, want) {
 			t.Errorf("%s progress stages = %q, want %q", spec.Name, got, want)
 		}
 		if p := rec.last(spec.Name); p.Stage != StageDone || p.Error != "" {
 			t.Errorf("%s final report = %+v, want a clean done", spec.Name, p)
 		}
+		// The attempt-start precedes the cache probe: the line exists before
+		// any I/O of the attempt.
+		startAt := slices.Index(rec.timeline, spec.Name+" "+StageDownload)
+		ioAt := slices.Index(rec.timeline, "io cache-probe "+spec.Name)
+		if startAt < 0 || ioAt < 0 || startAt > ioAt {
+			t.Errorf("%s attempt-start timeline index = %d, cache-probe I/O index = %d; want the attempt-start first",
+				spec.Name, startAt, ioAt)
+		}
 	}
 
-	// markitdown is deferred to the network pass — it must stay silent here.
-	if got := rec.stages("markitdown"); len(got) != 0 {
-		t.Errorf("markitdown offline progress = %q, want no events (deferred, not failed)", got)
+	// markitdown is deferred to the network pass: exactly one attempt-start,
+	// no terminal verdict — the deferral silence is wire-wide except for the
+	// attempt-start line the network pass will overwrite.
+	got := rec.stages("markitdown")
+	if !slices.Equal(got, []string{StagePythonBootstrap}) {
+		t.Errorf("markitdown offline progress = %q, want exactly [%q] (attempt-start, no terminal event)", got, StagePythonBootstrap)
+	}
+	for _, p := range rec.events {
+		if p.Tool != "markitdown" {
+			continue
+		}
+		if p.BytesDone != 0 || p.BytesTotal != 0 || p.Detail != "" || p.Error != "" {
+			t.Errorf("markitdown attempt-start = %+v, want a bare indeterminate 0/0 report", p)
+		}
 	}
 }
 
@@ -1338,10 +1377,12 @@ func TestManager_InstallProgress_OfflineCacheInstall(t *testing.T) {
 // cache-miss protocol — the canonical splash scenario (fresh machine or a
 // post-bump archive cleanup: NeedsInstall returns everything, nothing is
 // cached). A static binary failing with ErrCacheUnavailable on the offline
-// pass is a DEFERRAL to the network pass, not a failure: no progress events
-// at all for the deferred tools (in particular no false failed verdict the
-// splash would render), while the statuses still report not-Ready with the
-// ErrCacheUnavailable cause.
+// pass is a DEFERRAL to the network pass, not a failure: each deferred tool
+// announces exactly one indeterminate attempt-start (download 0/0 for the
+// static binaries, python_bootstrap for the Python tool) and NO terminal
+// event (in particular no false failed verdict the splash would render) —
+// the line stays indeterminate until the network pass owns it — while the
+// statuses still report not-Ready with the ErrCacheUnavailable cause.
 func TestManager_InstallProgress_OfflineCacheMiss(t *testing.T) {
 	toolsDir, binDir, pythonDir := makeTestDirs(t)
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -1383,10 +1424,35 @@ func TestManager_InstallProgress_OfflineCacheMiss(t *testing.T) {
 		t.Errorf("markitdown status = %+v; want not-Ready deferred with errNeedsNetwork", md)
 	}
 
-	// The offline pass is silent for every deferred tool: no failed verdicts,
-	// no partial stages — the network pass owns the terminal outcome.
-	if len(rec.events) != 0 {
-		t.Errorf("offline cache-miss progress = %+v, want no events (deferral, not failure)", rec.events)
+	// The offline pass announces every deferred tool with exactly one bare
+	// attempt-start and nothing else: no terminal verdicts, no partial
+	// stages — the network pass owns the terminal outcome.
+	wantAttempt := map[string]string{
+		"uv":         StageDownload,
+		"rg":         StageDownload,
+		"markitdown": StagePythonBootstrap,
+	}
+	if len(rec.events) != len(wantAttempt) {
+		t.Errorf("offline cache-miss progress = %+v, want exactly one attempt-start per deferred tool (%d events)", rec.events, len(wantAttempt))
+	}
+	gotByTool := map[string][]ToolProgress{}
+	for _, p := range rec.events {
+		gotByTool[p.Tool] = append(gotByTool[p.Tool], p)
+	}
+	for name, stage := range wantAttempt {
+		evs := gotByTool[name]
+		if len(evs) != 1 || evs[0].Stage != stage {
+			t.Errorf("%s offline events = %+v, want exactly one %q attempt-start", name, evs, stage)
+			continue
+		}
+		if p := evs[0]; p.BytesDone != 0 || p.BytesTotal != 0 || p.Detail != "" || p.Error != "" {
+			t.Errorf("%s attempt-start = %+v, want a bare indeterminate 0/0 report", name, p)
+		}
+	}
+	for _, p := range rec.events {
+		if p.Stage == StageDone || p.Stage == StageFailed || p.Stage == StageExtract || p.Stage == StageVerify {
+			t.Errorf("deferred tool %s emitted terminal/partial stage %q on the offline pass", p.Tool, p.Stage)
+		}
 	}
 }
 
@@ -1477,9 +1543,11 @@ func TestManager_InstallProgress_NetworkPassCacheMissIsFailure(t *testing.T) {
 }
 
 // TestManager_InstallProgress_NetworkPass pins the progress protocol of the
-// blocking network pass: byte-carrying download events, a failing install
-// ending in failed with a truncated cause, and the Python bootstrap
-// announcing its sub-steps before a terminal done.
+// blocking network pass: an indeterminate attempt-start opening every
+// attempt before its I/O (download for static binaries, python_bootstrap for
+// Python), byte-carrying transfer events, a failing install ending in failed
+// with a truncated cause, and the Python bootstrap announcing its sub-steps
+// before a terminal done.
 func TestManager_InstallProgress_NetworkPass(t *testing.T) {
 	toolsDir, binDir, pythonDir := makeTestDirs(t)
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -1488,6 +1556,7 @@ func TestManager_InstallProgress_NetworkPass(t *testing.T) {
 
 	rec := &progressRecorder{}
 	downloader := DownloadFunc(func(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
+		rec.mark("io download " + tool.Name)
 		if tool.Name == "uv" {
 			return nil, errors.New("network unavailable")
 		}
@@ -1499,7 +1568,7 @@ func TestManager_InstallProgress_NetworkPass(t *testing.T) {
 		BinDir:           binDir,
 		PythonDir:        pythonDir,
 		Downloader:       downloader,
-		Installer:        &stepReportingInstaller{stubInstaller{}},
+		Installer:        &stepReportingInstaller{stubInstaller: stubInstaller{}, rec: rec},
 		Logger:           slog.New(slog.DiscardHandler),
 		ProgressCallback: rec.callback,
 	}
@@ -1513,19 +1582,37 @@ func TestManager_InstallProgress_NetworkPass(t *testing.T) {
 		t.Fatalf("EnsureCriticalTools failed: %v", err)
 	}
 
-	// rg: download bytes flow through, then the terminal sequence.
-	wantRG := []string{StageDownload, StageExtract, StageVerify, StageDone}
+	// rg: the indeterminate attempt-start download 0/0 opens the attempt
+	// before any I/O, then byte-carrying transfer events, then the terminal
+	// sequence.
+	wantRG := []string{StageDownload, StageDownload, StageExtract, StageVerify, StageDone}
 	if got := rec.stages(rg.Name); !slices.Equal(got, wantRG) {
 		t.Errorf("rg progress stages = %q, want %q", got, wantRG)
 	}
-	var dl ToolProgress
+	var dlEvents []ToolProgress
 	for _, p := range rec.events {
 		if p.Tool == rg.Name && p.Stage == StageDownload {
-			dl = p
+			dlEvents = append(dlEvents, p)
 		}
 	}
+	if len(dlEvents) != 2 {
+		t.Fatalf("rg download reports = %d, want 2 (attempt-start + byte event)", len(dlEvents))
+	}
+	if first := dlEvents[0]; first.BytesDone != 0 || first.BytesTotal != 0 {
+		t.Errorf("rg attempt-start = %d/%d, want a bare indeterminate 0/0", first.BytesDone, first.BytesTotal)
+	}
+	dl := dlEvents[1]
 	if dl.BytesDone != 50 || dl.BytesTotal != 100 {
 		t.Errorf("rg download report = %d/%d, want 50/100", dl.BytesDone, dl.BytesTotal)
+	}
+	// The attempt-start precedes the download I/O for every static tool.
+	for _, name := range []string{uv.Name, rg.Name} {
+		startAt := slices.Index(rec.timeline, name+" "+StageDownload)
+		ioAt := slices.Index(rec.timeline, "io download "+name)
+		if startAt < 0 || ioAt < 0 || startAt > ioAt {
+			t.Errorf("%s attempt-start timeline index = %d, download I/O index = %d; want the attempt-start first",
+				name, startAt, ioAt)
+		}
 	}
 
 	// uv: the failed install ends in failed and carries the cause.
@@ -1556,5 +1643,12 @@ func TestManager_InstallProgress_NetworkPass(t *testing.T) {
 	wantDetail := []string{DetailInterpreter, DetailVenv, DetailPackages}
 	if !slices.Equal(gotDetail, wantDetail) {
 		t.Errorf("markitdown bootstrap details = %q, want %q", gotDetail, wantDetail)
+	}
+	// The attempt-start python_bootstrap precedes the bootstrap I/O.
+	startAt := slices.Index(rec.timeline, "markitdown "+StagePythonBootstrap)
+	ioAt := slices.Index(rec.timeline, "io bootstrap markitdown")
+	if startAt < 0 || ioAt < 0 || startAt > ioAt {
+		t.Errorf("markitdown attempt-start timeline index = %d, bootstrap I/O index = %d; want the attempt-start first",
+			startAt, ioAt)
 	}
 }

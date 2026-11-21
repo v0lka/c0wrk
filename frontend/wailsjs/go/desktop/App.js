@@ -506,6 +506,10 @@ export function GetTerminalHistory(arg1) {
   return window['go']['desktop']['App']['GetTerminalHistory'](arg1);
 }
 
+export function GetToolInstallStatus() {
+  return window['go']['desktop']['App']['GetToolInstallStatus']();
+}
+
 export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
 }
@@ -900,6 +904,10 @@ export function SetReviewStatus(arg1, arg2) {
 
 export function SetSpecsEnabled(arg1) {
   return window['go']['desktop']['App']['SetSpecsEnabled'](arg1);
+}
+
+export function SetToolInstallPending(arg1) {
+  return window['go']['desktop']['App']['SetToolInstallPending'](arg1);
 }
 
 export function SetUpdateSettings(arg1) {

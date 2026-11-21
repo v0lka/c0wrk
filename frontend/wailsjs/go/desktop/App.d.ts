@@ -7,6 +7,7 @@ import {workspace} from '../models';
 import {config} from '../models';
 import {desktop} from '../models';
 import {review} from '../models';
+import {toolmanager} from '../models';
 import {fs} from '../models';
 
 export function AbortMerge():Promise<void>;
@@ -261,6 +262,8 @@ export function GetSystemFonts():Promise<backend.SystemFontsResponse>;
 
 export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
 
+export function GetToolInstallStatus():Promise<backend.ToolInstallStatusDTO>;
+
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
 
 export function GetTrustedGitRepos():Promise<Array<string>>;
@@ -458,6 +461,8 @@ export function SetResearchPinned(arg1:string,arg2:string,arg3:boolean):Promise<
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 
 export function SetSpecsEnabled(arg1:boolean):Promise<void>;
+
+export function SetToolInstallPending(arg1:Array<toolmanager.ToolSpec>):Promise<void>;
 
 export function SetUpdateSettings(arg1:boolean):Promise<backend.UpdateSettings>;
 

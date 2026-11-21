@@ -32,9 +32,10 @@ type App struct {
 
 	// ── Cross-goroutine lifecycle state ─────────────────────────────────
 	//
-	// ctx, FrontendAPI (above), app, logger, db, sessionLogger and
-	// shutdownHardDeadline are written by the OnStartup goroutine and read
-	// concurrently by: the second-instance relay (spawned before the
+	// ctx, FrontendAPI (above), app, logger, db, sessionLogger,
+	// bootStartedAt and shutdownHardDeadline are written by the OnStartup
+	// goroutine and read concurrently by: the second-instance relay
+	// (spawned before the
 	// OnStartup goroutine even exists, so a relay during this instance's own
 	// startup reads with no happens-before edge to the writes), the Wails
 	// binding-dispatch goroutines, and the close/quit path (which can fire
@@ -73,6 +74,12 @@ type App struct {
 	// (e.g. tool installation failing before FrontendAPI is wired). Guarded
 	// by stateMu.
 	sessionLogger *logger.SessionLogger
+
+	// bootStartedAt anchors the webview-boot diagnostic: set when Startup
+	// enters, read by DomReady to log how long the webview took to become
+	// ready ("webview ready", elapsed_ms). Guarded by stateMu — the same
+	// OnStartup-writes / DomReady-reads split as the fields above.
+	bootStartedAt time.Time
 
 	// Wails event-listener infrastructure (used only in startup.go listeners)
 	pendingConfirmations   sync.Map
@@ -553,6 +560,24 @@ func (a *App) setSessionLogger(l *logger.SessionLogger) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	a.sessionLogger = l
+}
+
+// setBootStartedAt anchors the webview-boot diagnostic at Startup entry.
+func (a *App) setBootStartedAt(t time.Time) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.bootStartedAt = t
+}
+
+// bootStartTime returns the Startup-entry anchor for the DomReady
+// "webview ready" diagnostic, or the zero time before Startup ran (the zero
+// time keeps the diagnostic silent instead of logging an absurd elapsed
+// value). DomReady is a different goroutine from OnStartup, so it reads
+// through this accessor — see the stateMu block comment on App.
+func (a *App) bootStartTime() time.Time {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.bootStartedAt
 }
 
 // sessionLog returns the session log handle for the close path, or nil when

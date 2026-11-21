@@ -168,6 +168,22 @@ type FrontendAPI struct {
 	// the periodic ticker loop. Test-only seam (nil in production).
 	autoFetchTickFn func(trigger string)
 
+	// Tool-install status store: the transport-neutral, RPC-recoverable twin
+	// of the startup tool-install splash (specs/contracts/desktop-frontend.md,
+	// GetToolInstallStatus). Wails drops events emitted before the webview
+	// subscribes, so tool_manager:start can be lost — this store lets the
+	// frontend re-read the pending list over RPC instead. Written by
+	// SetToolInstallPending (the desktop host binds backend.ToolPhaseDeps's
+	// SetPendingTools hook here) next to every tool_manager:start /
+	// tool_manager:done emission — i.e. during Phase 2, long before Init
+	// publishes the seed — and read by GetToolInstallStatus, which therefore
+	// deliberately does NOT seedAcquire. Guarded by toolInstallMu; readers
+	// receive copies. The zero value is the steady state (inactive, empty).
+	toolInstallMu      sync.Mutex
+	toolInstallActive  bool
+	toolInstallPending []ToolInstallPendingToolDTO
+	toolInstallTotal   int64
+
 	// Project
 	projectManager    *project.Manager
 	agentDir          string
