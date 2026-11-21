@@ -422,6 +422,8 @@ export function SaveReviewHunkComment(arg1:string,arg2:string,arg3:string,arg4:s
 
 export function SearchBlackboardStepOutputs(arg1:string,arg2:string):Promise<Array<string>>;
 
+export function SearchGitHistory(arg1:string,arg2:boolean,arg3:number,arg4:number):Promise<workspace.GitHistoryPage>;
+
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
 export function SelectModelProfile(arg1:string):Promise<void>;

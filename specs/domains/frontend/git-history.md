@@ -6,17 +6,19 @@ The commit-history surface: the file viewer's history page (`c0wrk:graph` pseudo
 
 ## Key Files
 
-- `backend/frontend_api_git.go` — `GetGitHistory` (unified history+graph+stats page), `GetCommitMessage` (full commit message, 64 KiB cap), `GetCommitFiles`/`GetCommitFilesBatch` (changed files)
+- `backend/frontend_api_git.go` — `GetGitHistory` (unified history+graph+stats page), `SearchGitHistory` (pickaxe search page: `-S`/`-G` over the `git rev-list -n` window, sliced server-side so the 20000-commit bound is on the walk), `GetCommitMessage` (full commit message, 64 KiB cap), `GetCommitFiles`/`GetCommitFilesBatch` (changed files)
 - `backend/frontend_api_review.go` — `GetCommitDiff` (per-file commit diff in the review format)
 - `core/workspace/types.go` — `CommitStats`, `GitHistoryCommit`, `GitHistoryPage`
-- `frontend/src/api/git.ts` — `getGitHistory` (page size `GIT_HISTORY_PAGE_SIZE = 300`), `getCommitMessage`
+- `frontend/src/api/git.ts` — `getGitHistory` (page size `GIT_HISTORY_PAGE_SIZE = 300`), `searchGitHistory`, `getCommitMessage`
 - `frontend/src/hooks/useGitHistory.ts` — the shared paginated loader (append-only accumulation, idempotent `loadMore`, epoch guard)
+- `frontend/src/hooks/useGitHistorySearch.ts` — the debounced search hook (paginated pickaxe stream + client-side metadata union, epoch guard)
 - `frontend/src/hooks/useCommitFiles.ts` — the shared changed-files cache (`fetchFiles`/`fetchMany`, deduped against cache + in-flight)
 - `frontend/src/hooks/useGitHistoryFilter.ts` — the client-side file filter (decides WHEN to fetch, uses the shared files cache)
 - `frontend/src/lib/commitStats.ts` — `statBucket`/`countFileStats`/`statColorClass`/`totalChanges` (client-side mirror of the backend bucketing)
 - `frontend/src/components/GitPanel/index.tsx` — the Git panel tab strip: Files | Changes segments plus the right-aligned icon-button ("Open history viewer") that opens the `c0wrk:graph` viewer page
 - `frontend/src/components/GitPanel/GitGraphGutter.tsx` + `frontend/src/lib/gitGraphLayout.ts` + `frontend/src/components/GitPanel/gitGraphRender.ts` — the shared lane-graph engine (`ROW_SPACING = 32`, `NODE_OFFSET = 11`, `LANE_SPACING = 22`)
-- `frontend/src/components/gitGraph/GitGraphPage.tsx` — the viewer page: header + diff-mode toggle, expansion state, lazy fetches
+- `frontend/src/components/gitGraph/GitGraphPage.tsx` — the viewer page: header + diff-mode toggle + search bar, expansion state, lazy fetches
+- `frontend/src/components/gitGraph/HistorySearchBar.tsx` — the toolbar's search input + text/regex toggle (FilterBar's visual language)
 - `frontend/src/components/gitGraph/GitGraphCard.tsx` — the expandable commit card (presentational; all state via props)
 - `frontend/src/components/gitGraph/GitGraphCardMeta.tsx` — the card's second header line (author · time, stats triple, ref decorations) with the measured overflow collapse into the «+N» badge and its folded-refs tooltip
 - `frontend/src/components/gitGraph/gitGraphCardHeights.ts` — the deterministic height + diff-slice math (pure, no React/DOM)
@@ -42,9 +44,23 @@ The panel's persisted per-project tab value may still be the legacy `'history'` 
 
 `FileViewerContent` renders `GitGraphPage` when the active file is `GIT_GRAPH_TAB_PATH` (`'c0wrk:graph'`, a synthetic pseudo-tab — no session and no disk file involved). The tab bar renders the tinted `History` glyph directly for it — the SAME image the Git panel's open-history button carries — so `TabFileIcon`/`getFileIcon` never runs for it and no `fileIcons` cache entry is created (the icon hook guards on the whole `c0wrk:` pseudo-path prefix); the tab title is pinned by `fileNameFromPath` (`'c0wrk:graph'` → "Git History"; the literal is inlined in the lib so it stays store-free).
 
-The page toolbar carries NO title (the viewer tab already names the page): only the shared `FilterBar` file filter and the shared `DiffViewModeToggle` (unified/split), which reads and writes `reviewStore.diffViewMode` — one app-wide, persisted preference shared with the review page; callers never thread the mode through props, and the mode is part of every height computation.
+The page toolbar carries NO title (the viewer tab already names the page): the shared `FilterBar` file filter, the history search bar (`HistorySearchBar` — pattern input + text/regex toggle, mirroring `FilterBar`'s visual language) and the shared `DiffViewModeToggle` (unified/split), which reads and writes `reviewStore.diffViewMode` — one app-wide, persisted preference shared with the review page; callers never thread the mode through props, and the mode is part of every height computation. The file filter and the search bar each own HALF the toolbar row (`flex-1 min-w-0` on both bar roots — the pinned equal split, search sitting to the right of the filter).
 
 The filter is CLIENT-SIDE over the loaded window: it never queries the backend and only sees commits paged in so far — loading more pages extends the match set (the gutter hides while a filter is active, since a filtered subset is not a connected graph). To match, every loaded commit's changed files must be known: uncached SHAs are fetched once per valid-filter activation through the shared `useCommitFiles` cache via `GetCommitFilesBatch` (one batched RPC, deduped per SHA), with a "Resolving files…" indicator; invalid regex renders "Invalid regex", no matches renders "No matching commits". An external filter intent (`gitPanelStore.pendingHistoryFilter`, e.g. "View History" on a file — the action also opens this page) is consumed once on arrival.
+
+### History search
+
+The search bar drives `useGitHistorySearch`. The input is DEBOUNCED (300 ms): the RPCs and the matching run against the settled (pattern, mode) pair, so a pickaxe scan never fires per keystroke. The toggle selects the pattern interpretation: **text** — metadata substring plus the pickaxe literal `git log -i -S<pattern>`; **regex** — metadata regex plus the pickaxe regex `git log -i -G<pattern>`. Both halves are CASE-INSENSITIVE, and in regex mode git's POSIX ERE is authoritative for the PATCH half (`\d`, `(?:…)`, `(?i)` are JS-only or ERE-only constructs: a pattern one engine rejects surfaces as the search error, and one both accept can still match different text — the union is then narrowed, never widened).
+
+The pickaxe half is a WALK-WINDOW search, not a whole-history one: the backend pickaxes the newest 20000 commits only (`git rev-list -n 20000 HEAD` fed to `git log --no-walk=unsorted --stdin`), and a match in an older commit is never returned — the window is deliberately fixed so a rare pattern cannot traverse an entire large history inside the 30 s git budget. Each page repeats that bounded scan (the match list is sliced server-side), and a superseded pattern's in-flight scan is discarded client-side by the epoch token (the git process itself runs to completion or to its timeout).
+
+A commit matches when the pattern appears in its METADATA (message, author, sha, date — matched client-side over every known commit: the loaded window and the search pages) OR changed through its patch (the backend pickaxe stream). The exposed set is the UNION of the two, deduped by SHA and ordered newest-first — window matches in window order (everything in the loaded window is newer than everything beyond it), then pickaxe matches past the window in stream order. A metadata-only pattern surfaces matches from the loaded window even when pickaxe finds nothing.
+
+The pickaxe stream is PAGINATED by the backend (`SearchGitHistory`, same page shape and bounds as `GetGitHistory`): the first page loads once the debounced pattern settles (empty pattern → no RPC), `loadMore` appends further pages while `hasMore`, and an epoch token discards any in-flight page of a previous pattern — a stale response can never land after the input changed. A new pattern resets the pagination state immediately (no stale `hasMore`/`next_skip` survives into the window where the fresh page is in flight).
+
+The file filter applies to the ACTIVE set — the search results while searching, the loaded window otherwise. With BOTH toolbar fields set the displayed list is therefore the INTERSECTION: only commits that are search hits AND whose changed files match the filter; a filter match outside the search results disappears while the search is active, and clearing either field restores the one-criterion view. The gutter hides while EITHER field narrows the list.
+
+States, in display priority order: filter "Invalid regex" → search "Invalid search pattern" (invalid regex blocks the RPC) → search spinner (first page in flight with nothing to show) → search error message (the pickaxe RPC failed) → "No matching commits". An in-flight search also renders a slim "Searching…" indicator below the rows when results are already visible, and scroll-to-end / "Load more" page the ACTIVE source (search pages while searching, history pages otherwise).
 
 Right-clicking a card opens the commit context menu — the SAME `GitHistoryContextMenu` component the removed panel tab used to render; the page owns its own instance fed by the card's SHA/refs/pointer position (View Commit, Copy SHA, Create › Branch/Tag, Reset `<branch>`, per-tag actions), takes `currentBranch` from `gitPanelStore`, and its mutations trigger a history `reload`.
 
@@ -76,7 +92,7 @@ The expand/collapse decisions live OUTSIDE the page in `gitGraphStore` — an in
 
 ## Error Handling
 
-A history load error renders only when no commits are loaded (inline error state with the message); an exhausted or mid-session failure of `loadMore` surfaces through the same error channel without discarding loaded pages. Per-commit lazy fetches degrade locally: a failed message or diff fetch renders a "Failed to load …" placeholder line at the deterministic placeholder height (and the phase flips to `failed`, not retried automatically); an unknown SHA or empty SHA is rejected by `GetCommitMessage` before git runs. A SHA that git cannot resolve surfaces as the fetch's rejection — the placeholder, not a crash. The filter's invalid-regex state is a rendered notice, never an exception.
+A history load error renders only when no commits are loaded (inline error state with the message); an exhausted or mid-session failure of `loadMore` surfaces through the same error channel without discarding loaded pages. A failed search renders the backend error message in the list area (an invalid pattern is caught client-side before any RPC runs), and a failed search `loadMore` keeps the loaded search pages and reports through the same channel. Per-commit lazy fetches degrade locally: a failed message or diff fetch renders a "Failed to load …" placeholder line at the deterministic placeholder height (and the phase flips to `failed`, not retried automatically); an unknown SHA or empty SHA is rejected by `GetCommitMessage` before git runs. A SHA that git cannot resolve surfaces as the fetch's rejection — the placeholder, not a crash. The filter's invalid-regex state and the search's invalid-pattern state are rendered notices, never exceptions.
 
 ## Invariants
 
@@ -89,13 +105,16 @@ A history load error renders only when no commits are loaded (inline error state
 - Per-commit detail (message, files, diff) is fetched lazily, at most once per SHA per resource, deduped against the cache and in-flight requests.
 - The viewer page's expansion decisions persist for the whole application session in `gitGraphStore` (in-memory, keyed per project, never localStorage): a remount restores the expanded card and its open file diffs; a persisted SHA applies only while it is present in the loaded history; an app restart starts collapsed.
 - The file filter is client-side over the loaded window only; it never queries the backend, and the viewer's page hides its gutter while a filter is active.
+- The search result set is the deduped union of the pickaxe stream and the metadata matches (message/author/sha/date over every known commit), and the file filter always applies to the ACTIVE set — with both toolbar fields set the displayed list is exactly the intersection of the two criteria.
+- The search input is debounced (300 ms), and an epoch token guarantees a stale in-flight search page can never land after the pattern or mode changed.
+- The file filter and the search bar split the toolbar row equally (`flex-1 min-w-0` on both bar roots), the search sitting to the right of the filter; the gutter hides while EITHER field narrows the list.
 - Commit stats are file-change buckets (A/D/other-letter); merge commits report zeros on the wire; the frontend renders the backend triple when present and derives the same buckets client-side from the fetched file list otherwise; a stats-less row (no backend value, files not loaded) renders no stats cell.
 - Empty-state texts distinguish merge ("No diff (merge commit)") from root ("No files (root commit)") from ordinary file-less commits ("No files"), matching the backend's `diff-tree` behavior.
 - The unified/split diff mode is the single shared `reviewStore.diffViewMode` preference (persisted, app-wide, no session affinity) driven only through `DiffViewModeToggle`.
 
 ## Related Specs
 
-- [desktop-frontend.md](../../contracts/desktop-frontend.md) — the `GetGitHistory` (stats + pagination), `GetCommitMessage`, `GetCommitFiles`/`GetCommitFilesBatch` and `GetCommitDiff` RPC contract, and the Git-panel focus resolution every history RPC resolves through
+- [desktop-frontend.md](../../contracts/desktop-frontend.md) — the `GetGitHistory` (stats + pagination), `SearchGitHistory` (pickaxe search + server-side slice pagination), `GetCommitMessage`, `GetCommitFiles`/`GetCommitFilesBatch` and `GetCommitDiff` RPC contract, and the Git-panel focus resolution every history RPC resolves through
 - [git-changes-list.md](git-changes-list.md) — the Changes tab list (the other Git-panel section)
 - [git-operation-console.md](git-operation-console.md) — the mutation-result log the history context menu's operations feed
 - [button-tooltips.md](button-tooltips.md) — the tooltip convention behind the icon-only history button and the SHA/stats `title`s

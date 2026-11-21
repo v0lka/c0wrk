@@ -511,3 +511,223 @@ func TestGetCommitMessage_NoProject(t *testing.T) {
 		t.Fatal("GetCommitMessage: expected error when no active project")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SearchGitHistory — pickaxe search RPC (real git) / parseGitHistoryShas
+// ---------------------------------------------------------------------------
+
+// searchFixture builds a small marker history on top of withGitRepo's base
+// commit: "add marker.txt" adds an "alpha" line, an unrelated commit never
+// touches it, "drop alpha" removes the line again. Newest first:
+// drop alpha → unrelated → add marker.txt → base.
+func searchFixture(t *testing.T, dir string) {
+	t.Helper()
+	commitFile(t, dir, "marker.txt", "alpha one\n")
+	commitFile(t, dir, "other.txt", "nothing here\n")
+	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("beta two\n"), 0o644); err != nil {
+		t.Fatalf("write marker.txt: %v", err)
+	}
+	runGit(t, dir, "add", "marker.txt")
+	runGit(t, dir, "commit", "-m", "drop alpha")
+}
+
+// commitMessages extracts a page's subjects in order for comparisons.
+func commitMessages(page *GitHistoryPage) []string {
+	got := make([]string, 0, len(page.Commits))
+	for _, c := range page.Commits {
+		got = append(got, c.Message)
+	}
+	return got
+}
+
+func TestSearchGitHistory_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	if _, err := f.SearchGitHistory("alpha", false, 10, 0); err == nil {
+		t.Fatal("SearchGitHistory: expected error when no active project")
+	}
+}
+
+func TestSearchGitHistory_EmptyPattern(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		for _, pattern := range []string{"", "   "} {
+			if _, err := f.SearchGitHistory(pattern, false, 10, 0); err == nil {
+				t.Errorf("SearchGitHistory(%q): expected error before git runs", pattern)
+			}
+		}
+	})
+}
+
+func TestSearchGitHistory_PickaxeString(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		searchFixture(t, dir)
+
+		page, err := f.SearchGitHistory("alpha", false, 10, 0)
+		if err != nil {
+			t.Fatalf("SearchGitHistory: %v", err)
+		}
+		if page.HasMore {
+			t.Error("HasMore: got true, want false for an unsaturated page")
+		}
+		want := []string{"drop alpha", "add marker.txt"}
+		if diff := cmp.Diff(want, commitMessages(page)); diff != "" {
+			t.Errorf("matching commits mismatch (-want +got):\n%s", diff)
+		}
+		// Log fields come through parseGitHistory like any history page.
+		first := page.Commits[0]
+		if first.SHA == "" || first.Author == "" || first.Date == "" || first.Parents == nil {
+			t.Errorf("log fields not parsed: %+v", first)
+		}
+		if first.Stats.Modified != 1 {
+			t.Errorf("drop alpha stats: got %+v, want Modified=1", first.Stats)
+		}
+		if next := page.Commits[1]; next.Stats.Added != 1 {
+			t.Errorf("add marker.txt stats: got %+v, want Added=1", next.Stats)
+		}
+	})
+}
+
+func TestSearchGitHistory_PickaxeRegex(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		searchFixture(t, dir)
+
+		// Regex mode: "al.*a" matches the changed lines via -G.
+		page, err := f.SearchGitHistory("al.*a", true, 10, 0)
+		if err != nil {
+			t.Fatalf("SearchGitHistory regex: %v", err)
+		}
+		want := []string{"drop alpha", "add marker.txt"}
+		if diff := cmp.Diff(want, commitMessages(page)); diff != "" {
+			t.Errorf("regex matches mismatch (-want +got):\n%s", diff)
+		}
+
+		// The same pattern in text mode searches the LITERAL string
+		// "al.*a" — no commit ever contains it, so nothing matches. This
+		// pins the isRegex flag flip (a -G/-S mixup would fail one half).
+		literal, err := f.SearchGitHistory("al.*a", false, 10, 0)
+		if err != nil {
+			t.Fatalf("SearchGitHistory literal: %v", err)
+		}
+		if len(literal.Commits) != 0 {
+			t.Errorf("literal mode: got %d commits, want 0", len(literal.Commits))
+		}
+	})
+}
+
+func TestSearchGitHistory_RootCommitMatch(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// The scan pickaxes the rev-list window with --no-walk, so every
+		// listed commit must still be diffed against its own parent (the
+		// root against the empty tree) — a pattern introduced by the very
+		// first commit is found, not silently dropped with the traversal.
+		page, err := f.SearchGitHistory("v1", false, 10, 0)
+		if err != nil {
+			t.Fatalf("SearchGitHistory: %v", err)
+		}
+		want := []string{"add committed.txt"}
+		if diff := cmp.Diff(want, commitMessages(page)); diff != "" {
+			t.Errorf("root-commit match mismatch (-want +got):\n%s", diff)
+		}
+		if len(page.Commits) == 1 && page.Commits[0].Stats.Added != 1 {
+			t.Errorf("root commit stats: got %+v, want Added=1", page.Commits[0].Stats)
+		}
+	})
+}
+
+func TestSearchGitHistory_CaseInsensitive(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// The frontend's metadata half matches case-insensitively, so the
+		// pickaxe half must too (-i): a patch that adds "Alpha" answers a
+		// search for "alpha" in BOTH text and regex mode.
+		commitFile(t, dir, "case.txt", "Alpha one\n")
+		for _, regexMode := range []bool{false, true} {
+			page, err := f.SearchGitHistory("alpha", regexMode, 10, 0)
+			if err != nil {
+				t.Fatalf("SearchGitHistory(regex=%v): %v", regexMode, err)
+			}
+			want := []string{"add case.txt"}
+			if diff := cmp.Diff(want, commitMessages(page)); diff != "" {
+				t.Errorf("case-insensitive match (regex=%v) mismatch (-want +got):\n%s", regexMode, diff)
+			}
+		}
+	})
+}
+
+func TestSearchGitHistory_Pagination(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Four commits each add occurrences of "needle"; newest first:
+		// needle4 → needle3 → needle2 → needle1 → base.
+		for _, name := range []string{"needle1", "needle2", "needle3", "needle4"} {
+			commitFile(t, dir, name+".txt", "needle\n")
+		}
+
+		full, err := f.SearchGitHistory("needle", false, 1000, 0)
+		if err != nil {
+			t.Fatalf("SearchGitHistory full: %v", err)
+		}
+		if len(full.Commits) != 4 || full.HasMore {
+			t.Fatalf("full page: got %d commits hasMore=%v, want 4/false", len(full.Commits), full.HasMore)
+		}
+
+		page1, err := f.SearchGitHistory("needle", false, 2, 0)
+		if err != nil {
+			t.Fatalf("SearchGitHistory page1: %v", err)
+		}
+		if len(page1.Commits) != 2 || !page1.HasMore || page1.NextSkip != 2 {
+			t.Fatalf("page1: got %d commits skip=%d hasMore=%v, want 2/2/true",
+				len(page1.Commits), page1.NextSkip, page1.HasMore)
+		}
+		page2, err := f.SearchGitHistory("needle", false, 2, page1.NextSkip)
+		if err != nil {
+			t.Fatalf("SearchGitHistory page2: %v", err)
+		}
+		if len(page2.Commits) != 2 || page2.HasMore || page2.NextSkip != 4 {
+			t.Fatalf("page2: got %d commits skip=%d hasMore=%v, want 2/4/false",
+				len(page2.Commits), page2.NextSkip, page2.HasMore)
+		}
+
+		// Pages are disjoint and reconstruct the single-shot order.
+		combined := append(append([]string{}, commitMessages(page1)...), commitMessages(page2)...)
+		if diff := cmp.Diff(commitMessages(full), combined); diff != "" {
+			t.Errorf("paged result mismatch (-full +paged):\n%s", diff)
+		}
+
+		// A skip past the end is a clean empty page.
+		tail, err := f.SearchGitHistory("needle", false, 2, 4)
+		if err != nil {
+			t.Fatalf("SearchGitHistory tail: %v", err)
+		}
+		if len(tail.Commits) != 0 || tail.HasMore {
+			t.Errorf("tail: got %d commits hasMore=%v, want empty/false", len(tail.Commits), tail.HasMore)
+		}
+	})
+}
+
+func TestSearchGitHistory_InvalidRegex(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// git rejects "[" as a regex; the error must surface, not a page.
+		if _, err := f.SearchGitHistory("[", true, 10, 0); err == nil {
+			t.Error("SearchGitHistory(\"[\", regex): expected git error")
+		}
+	})
+}
+
+func TestParseGitHistoryShas(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"empty", "", []string{}},
+		{"whitespace only", " \n\t\n", []string{}},
+		{"single sha", "abc123\n", []string{"abc123"}},
+		{"order preserved", "aaa\nbbb\nccc", []string{"aaa", "bbb", "ccc"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, parseGitHistoryShas(tc.input)); diff != "" {
+				t.Errorf("parseGitHistoryShas(%q) mismatch (-want +got):\n%s", tc.input, diff)
+			}
+		})
+	}
+}

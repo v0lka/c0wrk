@@ -12,6 +12,9 @@ const { apiMocks } = vi.hoisted(() => ({
     getCommitFilesBatch: vi.fn(),
     getCommitMessage: vi.fn(),
     GIT_HISTORY_PAGE_SIZE: 300,
+    // '@/api/git' search — used by useGitHistorySearch behind the toolbar's
+    // search bar.
+    searchGitHistory: vi.fn(),
     // '@/api/review' — the page's one-getCommitDiff-per-commit fetch.
     getCommitDiff: vi.fn(),
   },
@@ -121,6 +124,8 @@ beforeEach(() => {
   apiMocks.getCommitFilesBatch.mockReset()
   apiMocks.getCommitMessage.mockReset()
   apiMocks.getCommitDiff.mockReset()
+  apiMocks.searchGitHistory.mockReset()
+  apiMocks.searchGitHistory.mockResolvedValue({ commits: [], next_skip: 0, has_more: false })
   apiMocks.getGitHistory.mockResolvedValue(makePage(COMMITS, COMMITS.length, false))
   apiMocks.getCommitFiles.mockImplementation((sha: string) => Promise.resolve(FILES[sha] ?? []))
   apiMocks.getCommitFilesBatch.mockImplementation((shas: string[]) =>
@@ -334,6 +339,204 @@ describe('GitGraphPage — file filter', () => {
     expect(gutterCircles()).toBe(3)
     expect(container.textContent).toContain('merge pr')
     expect(container.textContent).toContain('init')
+  })
+})
+
+describe('GitGraphPage — history search', () => {
+  /** A search hit that exists ONLY in the search results (beyond the loaded window). */
+  const SEARCH_HIT = {
+    sha: 'zzz',
+    parents: ['ooo'],
+    author: 'Dev',
+    email: 'd@x',
+    date: '2026-07-11',
+    message: 'pickaxe hit',
+    refs: [],
+  }
+
+  beforeEach(() => {
+    // The search is debounced — virtual time drives the 300ms window.
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Type into the search input and advance past the debounce window. */
+  async function search(text: string) {
+    const input = container.querySelector<HTMLInputElement>('input[placeholder^="Search history"]')
+    expect(input).toBeTruthy()
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(input, text)
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => {
+      vi.advanceTimersByTime(320)
+    })
+    await flush()
+    await flush()
+  }
+
+  it('renders the search bar on the toolbar row with an equal flex share beside the file filter', async () => {
+    renderPage()
+    await flush()
+
+    const filterInput = container.querySelector<HTMLInputElement>('input[placeholder^="Filter by file"]')
+    const searchInput = container.querySelector<HTMLInputElement>('input[placeholder^="Search history"]')
+    expect(searchInput).toBeTruthy()
+    // The pinned equal-split contract: both bar roots carry the same
+    // flexible classes and sit under the SAME toolbar row (search to the
+    // right of the filter).
+    const filterBar = filterInput!.parentElement as HTMLElement
+    const searchBar = searchInput!.parentElement as HTMLElement
+    expect(filterBar.className).toContain('flex-1')
+    expect(filterBar.className).toContain('min-w-0')
+    expect(searchBar.className).toContain('flex-1')
+    expect(searchBar.className).toContain('min-w-0')
+    expect(filterBar.parentElement).toBe(searchBar.parentElement)
+    // The search toggle (its title is distinct from the file filter's).
+    expect(container.querySelector('button[title="Switch to regex search"]')).toBeTruthy()
+  })
+
+  it('narrows the list to the search results and hides the gutter', async () => {
+    apiMocks.searchGitHistory.mockResolvedValue(makePage([SEARCH_HIT], 1, false))
+    renderPage()
+    await flush()
+    await flush()
+
+    await search('alpha')
+
+    expect(apiMocks.searchGitHistory).toHaveBeenCalledWith('alpha', false, 300, 0)
+    // The gutter is hidden and only the search hit renders — including a
+    // commit that lies beyond the loaded window (it lays out its own rows).
+    expect(gutterCircles()).toBe(0)
+    expect(container.textContent).toContain('pickaxe hit')
+    expect(container.textContent).not.toContain('feat: x')
+  })
+
+  it('intersects the search with the file filter when BOTH fields are set', async () => {
+    apiMocks.searchGitHistory.mockResolvedValue(makePage([SEARCH_HIT], 0, false))
+    apiMocks.getCommitFilesBatch.mockImplementation((shas: string[]) =>
+      Promise.resolve(
+        Object.fromEntries(
+          shas.map((sha) => [sha, sha === 'zzz' ? [{ path: 'src/a.ts', status: 'A' }] : (FILES[sha] ?? [])]),
+        ),
+      ),
+    )
+    renderPage()
+    await flush()
+    await flush()
+
+    // File filter alone (over the loaded window): only nnn matches *.ts.
+    const filterInput = container.querySelector<HTMLInputElement>('input[placeholder^="Filter by file"]')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(filterInput, '*.ts')
+      filterInput.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await flush()
+    await flush()
+    expect(container.textContent).toContain('feat: x')
+    expect(container.textContent).not.toContain('pickaxe hit')
+
+    // Adding the search narrows the SAME list to the intersection: the
+    // search hit also matching the filter; nnn (filter match but not a
+    // search hit) disappears.
+    await search('alpha')
+    expect(container.textContent).toContain('pickaxe hit')
+    expect(container.textContent).not.toContain('feat: x')
+
+    // Clearing the search restores the one-criterion view.
+    await search('')
+    expect(container.textContent).toContain('feat: x')
+    expect(container.textContent).not.toContain('pickaxe hit')
+  })
+
+  it('shows the no-match state for a search without hits', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    await search('nomatch')
+    expect(container.textContent).toContain('No matching commits')
+  })
+
+  it('shows the invalid search pattern state without calling the RPC', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    const toggle = container.querySelector('button[title="Switch to regex search"]') as HTMLButtonElement
+    act(() => {
+      toggle.click()
+    })
+    await search('[')
+    expect(container.textContent).toContain('Invalid search pattern')
+    expect(container.textContent).not.toContain('No matching commits')
+    expect(apiMocks.searchGitHistory).not.toHaveBeenCalled()
+  })
+
+  it('shows the search error state when the pickaxe RPC fails', async () => {
+    apiMocks.searchGitHistory.mockRejectedValue(new Error('bad regex'))
+    renderPage()
+    await flush()
+    await flush()
+
+    await search('[') // '[' is a valid literal in text mode — the RPC runs
+    expect(container.textContent).toContain('bad regex')
+    expect(container.textContent).not.toContain('No matching commits')
+  })
+
+  it('keeps the loaded results visible when a further search page fails', async () => {
+    apiMocks.searchGitHistory
+      .mockResolvedValueOnce(makePage([SEARCH_HIT], 1, true))
+      .mockRejectedValueOnce(new Error('page boom'))
+    renderPage()
+    await flush()
+    await flush()
+
+    await search('alpha')
+    expect(container.textContent).toContain('pickaxe hit')
+
+    const more = Array.from(container.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Load more'),
+    )
+    expect(more).toBeTruthy()
+    await act(async () => {
+      more!.click()
+    })
+    await flush()
+
+    // The already-loaded page survives the failed pagination and the error
+    // is reported alongside it — never as a replacement for the list.
+    expect(container.textContent).toContain('pickaxe hit')
+    expect(container.textContent).toContain('page boom')
+    expect(container.textContent).not.toContain('No matching commits')
+  })
+
+  it('pages the search results with Load more while searching', async () => {
+    apiMocks.searchGitHistory
+      .mockResolvedValueOnce(makePage([SEARCH_HIT], 1, true))
+      .mockResolvedValueOnce(makePage([{ ...SEARCH_HIT, sha: 'yyy', message: 'second hit' }], 2, false))
+    renderPage()
+    await flush()
+    await flush()
+
+    await search('alpha')
+    expect(container.textContent).toContain('pickaxe hit')
+
+    const more = Array.from(container.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Load more'),
+    )
+    expect(more).toBeTruthy()
+    await act(async () => {
+      more!.click()
+    })
+    await flush()
+    expect(apiMocks.searchGitHistory).toHaveBeenLastCalledWith('alpha', false, 300, 1)
+    expect(container.textContent).toContain('second hit')
   })
 })
 

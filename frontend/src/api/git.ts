@@ -663,6 +663,37 @@ export async function getGitHistory(
   }
 }
 
+/**
+ * Fetch one page of pickaxe history search: commits whose patch changed
+ * occurrences of `pattern` (text mode, git -S) or whose patch matched the
+ * regex (regex mode, git -G), newest first, same page shape as
+ * getGitHistory. An empty pattern short-circuits to an empty page (the
+ * backend contract is an error — callers guard on trimmed text); an
+ * invalid regex surfaces git's error.
+ */
+export async function searchGitHistory(
+  pattern: string,
+  isRegex: boolean,
+  limit: number = GIT_HISTORY_PAGE_SIZE,
+  skip: number = 0,
+): Promise<GitHistoryPage> {
+  if (pattern.trim() === '') {
+    return { commits: [], next_skip: skip, has_more: false }
+  }
+  try {
+    const app = getApp()
+    const result = await app.SearchGitHistory(pattern, isRegex, limit, skip)
+    if (!isGitHistoryPage(result)) {
+      logger.error('searchGitHistory: unexpected response shape, returning empty page', result)
+      return { commits: [], next_skip: skip, has_more: false }
+    }
+    return result
+  } catch (err) {
+    logger.error('searchGitHistory failed:', err)
+    throw err
+  }
+}
+
 // --- Tags & reset (commit context menu) ---
 
 /**
