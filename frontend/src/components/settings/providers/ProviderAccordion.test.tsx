@@ -46,6 +46,10 @@ vi.mock('@/api/config', async (importOriginal) => ({
     has_override: false,
   })),
   setModelConfig: vi.fn(async () => {}),
+  // The dialog's "The same as…" effect also loads the registry names on open;
+  // stub it (empty list) so the real wrapper never hits the missing Wails
+  // bindings and no failure-path diagnostics leak into the run.
+  getBuiltinModelNames: vi.fn(async () => []),
 }))
 
 import { ProviderAccordion } from './ProviderAccordion'

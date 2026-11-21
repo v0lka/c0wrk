@@ -258,6 +258,11 @@ export function SettingsModal() {
 
           <TabsContent value="general" className={TAB_CONTENT_CLASS}>
             <div className="space-y-6">
+              {/* Experimental Features leads the tab: the master switch that
+                  gates later blocks (Session Statistics, Web Access) reads
+                  best before the settings it controls. First block — no
+                  border-t divider above it. */}
+              <ExperimentalSettings />
               <LogLevelSelector />
               <div className="border-t border-border pt-4">
                 <SoundSettings />
@@ -283,9 +288,6 @@ export function SettingsModal() {
               )}
               <div className="border-t border-border pt-4">
                 <WebviewGpuPolicySettings />
-              </div>
-              <div className="border-t border-border pt-4">
-                <ExperimentalSettings />
               </div>
               <div className="border-t border-border pt-4">
                 <h3 className="flex items-center gap-2 text-sm font-medium mb-3">

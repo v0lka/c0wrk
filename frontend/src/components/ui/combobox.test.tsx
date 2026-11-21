@@ -351,3 +351,109 @@ describe('Combobox inside a modal Radix dialog', () => {
     expect(document.body.querySelector('[data-slot="dialog-content"]')).not.toBeNull()
   })
 })
+
+describe('Combobox searchable mode', () => {
+  // A registry-shaped list: labels equal values, plus one entry whose label is
+  // a friendly form of a dated value (to prove the filter matches the VALUE
+  // too, not only the label).
+  const MANY: ComboboxOption[] = [
+    { value: 'claude-3-5-sonnet', label: 'claude-3-5-sonnet' },
+    { value: 'deepseek-chat', label: 'deepseek-chat' },
+    { value: 'gemini-1.5-pro', label: 'gemini-1.5-pro' },
+    { value: 'gpt-4o', label: 'gpt-4o' },
+    { value: 'gpt-4o-2024-11-20', label: 'gpt-4o (fixed snapshot)' },
+  ]
+
+  function renderSearchable(props: Partial<Parameters<typeof Combobox>[0]> = {}) {
+    render({ options: MANY, ...props, searchable: true })
+  }
+
+  /** Type into the menu's search input via the native value setter. */
+  async function typeInSearch(text: string): Promise<void> {
+    const input = menu().querySelector<HTMLInputElement>('input')
+    if (!input) throw new Error('search input not found')
+    const nativeInputSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )?.set
+    if (!nativeInputSetter) throw new Error('native input setter not found')
+    await act(async () => {
+      nativeInputSetter.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  function itemTexts(): string[] {
+    return Array.from(menu().querySelectorAll('[role="menuitem"]')).map((o) => o.textContent ?? '')
+  }
+
+  it('renders a search input above the full option list', async () => {
+    renderSearchable()
+    await openDropdown()
+    expect(menu().querySelector('input')).not.toBeNull()
+    expect(itemTexts()).toHaveLength(5)
+  })
+
+  it('focuses the search input when the menu opens', async () => {
+    renderSearchable()
+    await openDropdown()
+    expect(document.activeElement).toBe(menu().querySelector('input'))
+  })
+
+  it('the default (non-searchable) menu carries no search input', async () => {
+    render()
+    await openDropdown()
+    expect(menu().querySelector('input')).toBeNull()
+  })
+
+  it('filters options case-insensitively while typing', async () => {
+    renderSearchable()
+    await openDropdown()
+    await typeInSearch('GPT')
+    expect(itemTexts()).toHaveLength(2)
+    expect(itemTexts().join('\n')).toContain('gpt-4o')
+  })
+
+  it('matches the option value, not only the label', async () => {
+    renderSearchable()
+    await openDropdown()
+    // "2024" exists in the VALUE of the snapshot option; its label hides it.
+    await typeInSearch('2024')
+    expect(itemTexts()).toEqual(['gpt-4o (fixed snapshot)'])
+  })
+
+  it('shows a No matches message for an empty filtered list', async () => {
+    renderSearchable()
+    await openDropdown()
+    await typeInSearch('zzz')
+    expect(itemTexts()).toHaveLength(0)
+    expect(menu().textContent).toContain('No matches.')
+  })
+
+  it('reports onChange for an option picked from a filtered list', async () => {
+    renderSearchable({ value: 'user_confirm' })
+    await openDropdown()
+    await typeInSearch('deep')
+    act(() => {
+      menuItem('deepseek-chat').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenCalledWith('deepseek-chat')
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+  })
+
+  it('resets the search when the menu closes so the next open lists everything', async () => {
+    renderSearchable()
+    await openDropdown()
+    await typeInSearch('gpt')
+    expect(itemTexts()).toHaveLength(2)
+
+    act(() => {
+      menu().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+
+    await openDropdown()
+    expect(menu().querySelector<HTMLInputElement>('input')?.value).toBe('')
+    expect(itemTexts()).toHaveLength(5)
+  })
+})

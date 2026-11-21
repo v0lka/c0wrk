@@ -278,6 +278,10 @@ export function GetBranches() {
   return window['go']['desktop']['App']['GetBranches']();
 }
 
+export function GetBuiltinModelNames() {
+  return window['go']['desktop']['App']['GetBuiltinModelNames']();
+}
+
 export function GetCapabilityModes() {
   return window['go']['desktop']['App']['GetCapabilityModes']();
 }

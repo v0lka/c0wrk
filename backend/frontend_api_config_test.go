@@ -1275,6 +1275,30 @@ func TestGetModelConfig_NilConfig(t *testing.T) {
 	}
 }
 
+// --- GetBuiltinModelNames ---
+
+func TestGetBuiltinModelNames(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	names := f.GetBuiltinModelNames()
+	if len(names) == 0 {
+		t.Fatal("expected a non-empty list of built-in model names")
+	}
+	if !slices.IsSorted(names) {
+		t.Errorf("built-in model names are not sorted: first=%q last=%q", names[0], names[len(names)-1])
+	}
+	// gpt-4o is a stable built-in registry entry (llm.makeBuiltInRegistry).
+	if !slices.Contains(names, "gpt-4o") {
+		t.Error(`expected "gpt-4o" in the built-in model list`)
+	}
+	// Registry keys are bare model ids — no entry may be empty.
+	for _, n := range names {
+		if n == "" {
+			t.Error("found an empty model name in the built-in list")
+		}
+	}
+}
+
 // --- SetModelConfig ---
 
 func TestSetModelConfig_BothFieldsNonDefault(t *testing.T) {

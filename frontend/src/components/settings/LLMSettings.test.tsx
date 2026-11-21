@@ -332,9 +332,9 @@ describe('LLMSettings TLS pin proxy gate', () => {
 
   /**
    * Expand the compatible provider's accordion so its form is mounted, then
-   * open the pin collapse block so its field is mounted too (the block ships
-   * collapsed by default; the fixed provider has no pin section, hence the
-   * guard).
+   * open the Advanced settings section so the pin field is mounted too (the
+   * section ships collapsed by default; the guard skips a DOM with no form
+   * mounted).
    */
   async function expandProvider() {
     const header = Array.from(container.querySelectorAll('button')).find((b) =>
@@ -346,10 +346,10 @@ describe('LLMSettings TLS pin proxy gate', () => {
     })
     await flush()
 
-    const pinTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
-    if (pinTrigger) {
+    const advancedTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
+    if (advancedTrigger) {
       await act(async () => {
-        pinTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        advancedTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       })
       await flush()
     }
@@ -442,10 +442,19 @@ describe('LLMSettings TLS pin proxy gate', () => {
     })
     await flush()
 
-    // Only the compatible provider's section can exist; the fixed one has no
-    // base_url and talks to a vendor endpoint with a public certificate.
+    // Open Advanced settings, where the compatible form's pin block lives.
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // Only the compatible provider's form carries a pin: the fixed one has
+    // no base_url and talks to a vendor endpoint with a public certificate.
     const inputs = container.querySelectorAll('input[placeholder*="SPKI DER"]')
     expect(inputs).toHaveLength(0)
+    expect(container.textContent).not.toContain('Pin TLS certificate')
   })
 })
 
@@ -479,6 +488,19 @@ describe('LLMSettings auto-retry interval', () => {
     await flush()
   }
 
+  /**
+   * The form's Advanced settings section (which houses the auto-retry field)
+   * ships collapsed by default; open it so the field is mounted.
+   */
+  async function expandAdvanced() {
+    const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
+    expect(trigger).not.toBeNull()
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+  }
+
   it('renders the field with the persisted interval for a compatible provider', async () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
@@ -500,6 +522,7 @@ describe('LLMSettings auto-retry interval', () => {
 
     await renderSettings()
     await expandProvider('lmstudio')
+    await expandAdvanced()
 
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
     expect(input).not.toBeNull()
@@ -524,6 +547,7 @@ describe('LLMSettings auto-retry interval', () => {
 
     await renderSettings()
     await expandProvider('Anthropic')
+    await expandAdvanced()
 
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')?.value).toBe('0')
     expect(container.textContent).not.toContain('Base URL')
@@ -553,6 +577,7 @@ describe('LLMSettings auto-retry interval', () => {
 
     await renderSettings()
     await expandProvider('lmstudio')
+    await expandAdvanced()
 
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
     expect(input?.value).toBe('120')
@@ -594,6 +619,7 @@ describe('LLMSettings auto-retry interval', () => {
 
     await renderSettings()
     await expandProvider('Anthropic')
+    await expandAdvanced()
 
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
     expect(input?.value).toBe('0')
@@ -634,6 +660,7 @@ describe('LLMSettings auto-retry interval', () => {
 
     await renderSettings()
     await expandProvider('ChatGPT')
+    await expandAdvanced()
 
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
     expect(input?.value).toBe('30')

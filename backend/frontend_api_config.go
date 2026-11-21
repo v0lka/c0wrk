@@ -2266,6 +2266,18 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 	return resp, nil
 }
 
+// GetBuiltinModelNames returns the sorted model names of the sp4rk built-in
+// model registry (llm.BuiltInModelNames with the empty tokenizer filter = all
+// entries). Pure in-memory catalog data: no config access, no network — the
+// receiver is not consulted at all, so the call is safe before the config
+// loads or the ModelRegistry initializes. The web transport resolves the
+// method via reflection (MethodByName), so no extra registration is needed.
+func (f *FrontendAPI) GetBuiltinModelNames() []string {
+	// BuiltInModelNames already returns a fresh, sorted (sort.Strings) slice
+	// of registry keys — no copy or re-sort here.
+	return llm.BuiltInModelNames("")
+}
+
 // SetModelConfig persists per-model overrides from the Configure dialog.
 // Only fields differing from the built-in default are stored (others take
 // their "inherit" sentinel; when everything matches, the entry is dropped —

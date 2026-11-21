@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Info, ScrollText } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { getLogLevel, setLogLevel as apiSetLogLevel } from '@/api/config'
 import { logger } from '@/lib/logger'
 
@@ -46,32 +46,22 @@ export function LogLevelSelector() {
         <ScrollText className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">Log Level</span>
       </div>
-      <div className="flex gap-1 p-1 bg-muted rounded-lg">
-        {logLevelOptions.map((option) => (
-          <Button
-            key={option.value}
-            variant={logLevel === option.value ? 'secondary' : 'ghost'}
-            size="sm"
-            className={`flex-1 gap-2 justify-center text-xs transition-all duration-200 ${
-              logLevel === option.value
-                ? 'bg-background shadow-sm text-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => handleLogLevelChange(option.value)}
-          >
-            {/* Literal ternary (the four-level enum is closed) so the
-                buttonTitleInvariant guard proves the static label — the label
-                IS the explanation, no echo title needed. */}
-            {option.label === 'Debug'
-              ? 'Debug'
-              : option.label === 'Info'
-                ? 'Info'
-                : option.label === 'Warn'
-                  ? 'Warn'
-                  : 'Error'}
-          </Button>
-        ))}
-      </div>
+      {/* The shared app-wide segmented control (radio semantics, same chrome
+          as Security → Autonomy mode). String labels are the segments' static
+          visible text — the SegmentedControl renders them inside a <span>, so
+          the buttonTitleInvariant scan never sees a bare <button> here. */}
+      <SegmentedControl<LogLevel>
+        semantic="radio"
+        fullWidth
+        ariaLabel="Log level"
+        itemClassName="flex-1"
+        items={logLevelOptions.map((option) => ({
+          value: option.value,
+          label: option.label,
+        }))}
+        value={logLevel}
+        onValueChange={(level) => void handleLogLevelChange(level)}
+      />
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
         <p>
