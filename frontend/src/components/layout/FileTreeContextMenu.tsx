@@ -74,13 +74,14 @@ function toRelativePath(path: string, workspaceRoot?: string | null): string {
 }
 
 /**
- * Contextual menu for a file-tree entry: Open in Viewer (files only),
- * Open in Terminal (directories only), New File / New Folder (directories),
- * Rename, Delete, Open Containing Folder, Copy Path, Copy Relative Path,
- * Add to .gitignore, and View History. The two git-dependent actions are
- * shown only when the active project's workspace is a git repository. The
- * mutation/reveal actions dispatch to the panel's callbacks; in rootMode the
- * menu offers only New File / New Folder on the workspace root.
+ * Contextual menu for a file-tree entry: Open Containing Directory (first),
+ * Open in Viewer (files only), Open in Terminal (directories only) followed
+ * by a separator, New File / New Folder (directories), Rename, Delete,
+ * Copy Path, Copy Relative Path, Add to .gitignore, and View History. The
+ * two git-dependent actions are shown only when the active project's
+ * workspace is a git repository. The mutation/reveal actions dispatch to the
+ * panel's callbacks; in rootMode the menu offers only New File / New Folder
+ * on the workspace root.
  * Self-contained for its original actions — calls the API and stores
  * directly, so no callback prop threading is required for those.
  */
@@ -377,6 +378,20 @@ export function FileTreeContextMenu({
             </>
           ) : (
             <>
+              {onRevealContaining && (
+                <button
+                  role="menuitem"
+                  data-testid="file-reveal-containing"
+                  onClick={() => {
+                    onRevealContaining(entry)
+                    onClose()
+                  }}
+                  className={menuItemClass}
+                >
+                  <FolderOpen className="size-3.5" />
+                  Open Containing Directory
+                </button>
+              )}
               {!entry.is_dir && (
                 <button
                   role="menuitem"
@@ -412,6 +427,7 @@ export function FileTreeContextMenu({
                   Open in Terminal
                 </button>
               )}
+              {entry.is_dir && <MenuSeparator />}
               {entry.is_dir && onRequestCreate && (
                 <>
                   <button
@@ -439,20 +455,6 @@ export function FileTreeContextMenu({
                     New Folder
                   </button>
                 </>
-              )}
-              {onRevealContaining && (
-                <button
-                  role="menuitem"
-                  data-testid="file-reveal-containing"
-                  onClick={() => {
-                    onRevealContaining(entry)
-                    onClose()
-                  }}
-                  className={menuItemClass}
-                >
-                  <FolderOpen className="size-3.5" />
-                  Open Containing Folder
-                </button>
               )}
               {onRequestRename && (
                 <button
@@ -482,7 +484,10 @@ export function FileTreeContextMenu({
                   Delete
                 </button>
               )}
-              {(onRequestCreate || onRequestRename || onRequestDelete || onRevealContaining) && <MenuSeparator />}
+              {/* The reveal item lives at the top of the menu now — the gate
+                  covers only the mutation group directly above this divider,
+                  so an only-reveal menu can't stack a second separator. */}
+              {(onRequestCreate || onRequestRename || onRequestDelete) && <MenuSeparator />}
               <button
                 role="menuitem"
                 onClick={handleCopyPath}
