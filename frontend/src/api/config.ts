@@ -41,6 +41,12 @@ function isModelConfigResponse(v: unknown): v is ModelConfigResponse {
     && typeof o.has_override === 'boolean'
 }
 
+/** Guard for the GetBuiltinModelNames response: a plain array of non-empty
+ *  strings (the sorted model names of the sp4rk built-in registry). */
+function isNonEmptyStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((item) => typeof item === 'string' && item !== '')
+}
+
 export async function getConfig(): Promise<ConfigResponse> {
   try {
     const app = getApp()
@@ -175,6 +181,26 @@ export async function getModelConfig(model: string): Promise<ModelConfigResponse
     return result
   } catch (err) {
     logger.error('Failed to get model config:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch the sorted model names of the sp4rk built-in model registry (the
+ * catalog of factory-known models). Pure in-memory data on the backend — no
+ * config access, no network — so the call is safe while the config is still
+ * loading or before the ModelRegistry initializes.
+ */
+export async function getBuiltinModelNames(): Promise<string[]> {
+  try {
+    const app = getApp()
+    const result = await app.GetBuiltinModelNames()
+    if (!isNonEmptyStringArray(result)) {
+      throw new Error('getBuiltinModelNames: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get built-in model names:', err)
     throw err
   }
 }

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { getModelConfig, setModelConfig } from '@/api/config'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { getModelConfig, getBuiltinModelNames, setModelConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
 import type { ModelCapabilities, ModelMetadataInfo } from '@/types/models'
 import {
@@ -74,7 +74,10 @@ const CAPABILITY_FIELDS: Array<{ key: keyof ModelCapabilities; label: string; hi
  * a fetched model shows what its endpoint actually serves. The built-in
  * factory default is shown as a hint. On save, only values that differ from
  * the built-in default are persisted to config.yaml (the backend handles the
- * field-level omission); values equal to the default clear the override.
+ * field-level omission); values equal to the default clear the override. The
+ * leading "The same as…" block copies another registry model's built-in
+ * defaults into every field (local state only — Save rules are unchanged) and
+ * offers a dialog-wide reset to the current model's factory defaults.
  */
 export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, onSaved }: ModelConfigDialogProps) {
   const [loading, setLoading] = useState(false)
@@ -111,11 +114,32 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
     protocol: '',
     capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
   })
+  // Sorted names of the sp4rk built-in model registry, for the "The same as…"
+  // prefills: picking one copies that model's built-in defaults into the
+  // fields. Loading is soft — a failure leaves the combobox empty without
+  // blocking the rest of the dialog.
+  const [registryModels, setRegistryModels] = useState<string[]>([])
+  // While another model's defaults are being fetched for the copy operation.
+  const [applyingDefaults, setApplyingDefaults] = useState(false)
+  // Stale-copy guard. A "The same as…" pick resolves asynchronously, so an
+  // older pick — or one still in flight when the dialog reloads for another
+  // model or the user resets — must not overwrite the fields now on screen.
+  // `applySeqRef` applies the same latest-wins rule as `useLatestAsync`, but
+  // also cancels from non-async paths (reload, Reset) and owns the busy flag:
+  // only the LATEST pick clears it, so an abandoned copy can never leave the
+  // picker disabled forever.
+  const applySeqRef = useRef(0)
+  const cancelPendingApply = useCallback(() => {
+    applySeqRef.current += 1
+    setApplyingDefaults(false)
+  }, [])
 
   // Fetch the model's effective config + built-in defaults whenever the dialog
   // opens for a (possibly different) model. The effect re-runs when `open`
   // transitions to true or `model` changes while open.
   const load = useCallback(async () => {
+    // A copy aimed at the PREVIOUS model must not land on this one's fields.
+    cancelPendingApply()
     setLoading(true)
     setError(null)
     try {
@@ -155,11 +179,75 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
     } finally {
       setLoading(false)
     }
-  }, [model, listingMetadata])
+  }, [model, listingMetadata, cancelPendingApply])
 
   useEffect(() => {
     if (open) load()
   }, [open, load])
+
+  // Registry names for the "The same as…" combobox, loaded once per open.
+  // Kept separate from `load` so a registry fetch failure degrades softly
+  // (empty combobox) instead of failing the whole dialog load.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getBuiltinModelNames()
+      .then((names) => {
+        if (!cancelled) setRegistryModels(names)
+      })
+      .catch((err) => {
+        logger.error('Failed to load built-in model names:', err)
+        if (!cancelled) setRegistryModels([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  /**
+   * "The same as…" pick: fill every field group with the SELECTED model's
+   * built-in factory defaults. Pure local state — nothing is persisted until
+   * Save, and Save keeps comparing against the CURRENT model's defaults, so
+   * copied values that differ from it persist as overrides (the existing
+   * rule) while copies equal to the current model's defaults stay clear.
+   */
+  const handleApplyModelDefaults = async (name: string) => {
+    const seq = applySeqRef.current + 1
+    applySeqRef.current = seq
+    setApplyingDefaults(true)
+    setError(null)
+    try {
+      const cfg = await getModelConfig(name)
+      // A newer pick (or a reload/Reset) superseded this one: it owns the
+      // fields AND the busy flag, so neither is touched here.
+      if (seq !== applySeqRef.current) return
+      setContextWindow(cfg.default_context_window)
+      setOutputLimit(cfg.default_output_limit)
+      setTokenizerType(cfg.default_tokenizer_type)
+      setFamily(cfg.default_family)
+      setProtocol(cfg.default_protocol)
+      setCapabilities(cfg.default_capabilities)
+    } catch (err) {
+      // A superseded failure is not the user's current action — stay silent.
+      if (seq !== applySeqRef.current) return
+      logger.error(`Failed to load defaults of ${name}:`, err)
+      setError(`Failed to load the defaults of ${name}.`)
+    } finally {
+      if (seq === applySeqRef.current) setApplyingDefaults(false)
+    }
+  }
+
+  /** Reset every field group to the CURRENT model's built-in defaults. */
+  const handleResetToDefaults = () => {
+    // A copy still in flight would overwrite the reset when it lands.
+    cancelPendingApply()
+    setContextWindow(defaults.contextWindow)
+    setOutputLimit(defaults.outputLimit)
+    setTokenizerType(defaults.tokenizerType)
+    setFamily(defaults.family)
+    setProtocol(defaults.protocol)
+    setCapabilities(defaults.capabilities)
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -212,13 +300,46 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
           </div>
         ) : (
           <div className="space-y-4">
+            {/* "The same as…" — the first block: copy another registry
+                model's built-in defaults into all field groups below, or
+                reset everything to the current model's factory defaults.
+                Both are local-state operations; Save still persists only
+                values that differ from the current model's defaults. A copy
+                resolves asynchronously, so the field groups and Save stay
+                locked while it is in flight: an edit would be silently
+                overwritten, and a Save would persist the pre-copy values and
+                close the dialog, discarding the pick. The header Reset stays
+                armed — it is the explicit escape hatch and cancels the copy. */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-foreground">The same as…</label>
+                <ResetButton
+                  onClick={handleResetToDefaults}
+                  disabled={saving || loading}
+                  scope="dialog"
+                />
+              </div>
+              <Combobox
+                ariaLabel="Copy built-in defaults from a registry model"
+                value=""
+                placeholder="Pick a registry model..."
+                onChange={(name) => void handleApplyModelDefaults(name)}
+                disabled={saving || loading || applyingDefaults}
+                searchable
+                options={registryModels.map((name) => ({ value: name, label: name }))}
+              />
+              <p className="text-xs text-muted-foreground">
+                Copy another model&apos;s built-in defaults into the fields.
+                Nothing is saved until you press Save.
+              </p>
+            </div>
             <NumberField
               label="Context Window"
               value={contextWindow}
               onChange={setContextWindow}
               defaultValue={defaults.contextWindow}
               onReset={() => setContextWindow(defaults.contextWindow)}
-              disabled={saving}
+              disabled={saving || applyingDefaults}
             />
             <NumberField
               label="Max Output Tokens"
@@ -226,7 +347,7 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
               onChange={setOutputLimit}
               defaultValue={defaults.outputLimit}
               onReset={() => setOutputLimit(defaults.outputLimit)}
-              disabled={saving}
+              disabled={saving || applyingDefaults}
             />
             <SelectField
               label="Tokenizer Type"
@@ -235,7 +356,7 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
               onChange={setTokenizerType}
               defaultValue={defaults.tokenizerType}
               onReset={() => setTokenizerType(defaults.tokenizerType)}
-              disabled={saving}
+              disabled={saving || applyingDefaults}
             />
             <SelectField
               label="Family"
@@ -244,7 +365,7 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
               onChange={setFamily}
               defaultValue={defaults.family}
               onReset={() => setFamily(defaults.family)}
-              disabled={saving}
+              disabled={saving || applyingDefaults}
             />
             <SelectField
               label="Protocol"
@@ -253,14 +374,14 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
               onChange={setProtocol}
               defaultValue={defaults.protocol}
               onReset={() => setProtocol(defaults.protocol)}
-              disabled={saving}
+              disabled={saving || applyingDefaults}
             />
             <CapabilitiesField
               capabilities={capabilities}
               onToggle={toggleCapability}
               onReset={() => setCapabilities(defaults.capabilities)}
               capsAtDefault={capsAtDefault}
-              disabled={saving}
+              disabled={saving || applyingDefaults}
             />
             {error && (
               <p className="text-xs text-destructive">{error}</p>
@@ -272,7 +393,7 @@ export function ModelConfigDialog({ model, open, onOpenChange, listingMetadata, 
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={loading || saving}>
+          <Button onClick={handleSave} disabled={loading || saving || applyingDefaults}>
             {saving ? 'Saving...' : 'Save'}
           </Button>
         </DialogFooter>
@@ -407,8 +528,18 @@ function CapabilitiesField({ capabilities, onToggle, onReset, capsAtDefault, dis
   )
 }
 
-/** Small inline "Reset to default" link shown when a field differs from default. */
-function ResetButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+/** Small inline "Reset to default" link shown when a field differs from default.
+ *  `scope="dialog"` renders the plural label the "The same as…" header row uses.
+ *  The label is an all-literal ternary INSIDE the button so the
+ *  buttonTitleInvariant's static-label channel proves it — an echo `title` over
+ *  always-visible text is the anti-pattern the title policy removed
+ *  (specs/domains/frontend/button-tooltips.md). */
+function ResetButton({ onClick, disabled, scope = 'field' }: {
+  onClick: () => void
+  disabled?: boolean
+  /** 'dialog' = the dialog-wide reset in the "The same as…" header row. */
+  scope?: 'field' | 'dialog'
+}) {
   return (
     <button
       type="button"
@@ -416,7 +547,7 @@ function ResetButton({ onClick, disabled }: { onClick: () => void; disabled?: bo
       disabled={disabled}
       className="text-xs text-muted-foreground underline-offset-2 hover:underline disabled:opacity-50"
     >
-      Reset to default
+      {scope === 'dialog' ? 'Reset to defaults' : 'Reset to default'}
     </button>
   )
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Monitor, RefreshCw, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   getWebviewGpuPolicy,
   setWebviewGpuPolicy,
@@ -56,26 +57,24 @@ export function WebviewGpuPolicySettings() {
         <Monitor className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">Webview GPU Acceleration</span>
       </div>
-      <div className="flex gap-1 p-1 bg-muted rounded-lg">
-        {POLICY_OPTIONS.map((option) => (
-          <Button
-            key={option.value}
-            variant={info?.setting === option.value ? 'secondary' : 'ghost'}
-            size="sm"
-            disabled={busy}
-            title={option.label}
-            data-testid={`webview-gpu-${option.value}`}
-            className={`flex-1 gap-2 justify-center text-xs transition-all duration-200 ${
-              info?.setting === option.value
-                ? 'bg-background shadow-sm text-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => void applySetting(option.value)}
-          >
-            {option.label}
-          </Button>
-        ))}
-      </div>
+      {/* The shared app-wide segmented control (radio semantics, same chrome
+          as Security → Autonomy mode). Each item keeps its stable
+          `webview-gpu-*` test hook; the string label doubles as the native
+          title (the primitive's default), matching the former buttons. */}
+      <SegmentedControl<WebviewGpuPolicySetting>
+        semantic="radio"
+        fullWidth
+        ariaLabel="Webview GPU acceleration"
+        disabled={busy}
+        itemClassName="flex-1"
+        items={POLICY_OPTIONS.map((option) => ({
+          value: option.value,
+          label: option.label,
+          testId: `webview-gpu-${option.value}`,
+        }))}
+        value={info?.setting ?? null}
+        onValueChange={(setting) => void applySetting(setting)}
+      />
       {info && (
         <p className="text-xs text-muted-foreground" data-testid="webview-gpu-running">
           Rendering now: <span className="text-foreground">{info.running}</span>

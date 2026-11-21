@@ -148,6 +148,8 @@ export function GetBranchBases():Promise<Array<workspace.BranchBase>>;
 
 export function GetBranches():Promise<Array<workspace.Branch>>;
 
+export function GetBuiltinModelNames():Promise<Array<string>>;
+
 export function GetCapabilityModes():Promise<backend.CapabilitiesInfo>;
 
 export function GetChatGPTAuthStatus():Promise<backend.ChatGPTAuthStatusResponse>;

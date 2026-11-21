@@ -76,11 +76,12 @@ interface RenderOpts {
    *  omit for the 3600 a healthy backend always publishes. */
   autoRetryMax?: number
   /**
-   * The pin section ships COLLAPSED by default; tests that touch the field
-   * expand it first (the default), mirroring the user's click on the section
-   * header. The collapse behavior itself is tested with expandPin: false.
+   * The Advanced settings section (auto-retry interval + TLS pin) ships
+   * COLLAPSED by default; tests that touch its fields expand it first (the
+   * default), mirroring the user's click on the section header. The collapse
+   * behavior itself is tested with expandAdvanced: false.
    */
-  expandPin?: boolean
+  expandAdvanced?: boolean
 }
 
 function render({
@@ -93,7 +94,7 @@ function render({
   bypassList = [],
   autoRetry,
   autoRetryMax,
-  expandPin = true,
+  expandAdvanced = true,
 }: RenderOpts = {}) {
   act(() => {
     useProxyDraftStore.setState({ active: proxyActive, bypassList })
@@ -111,13 +112,14 @@ function render({
       />,
     )
   })
-  if (expandPin) {
-    // Expand while the field is not yet mounted: Radix renders the closed
-    // content div but strips its children, so the input's presence is the
-    // real "expanded" signal — repeated render() calls reuse the component
-    // instance, and a blind click would TOGGLE an expanded block back shut.
-    // Fixed providers have no trigger at all — nothing to expand.
-    const inputMounted = container.querySelector('input[placeholder*="SPKI DER"]')
+  if (expandAdvanced) {
+    // Expand while the fields are not yet mounted: Radix renders the closed
+    // content div but strips its children, so the auto-retry input's
+    // presence is the real "expanded" signal (it renders for every
+    // provider, fixed ones included) — repeated render() calls reuse the
+    // component instance, and a blind click would TOGGLE an expanded block
+    // back shut.
+    const inputMounted = container.querySelector('input[aria-label="Auto-retry interval"]')
     const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
     if (trigger && !inputMounted) {
       act(() => {
@@ -161,6 +163,9 @@ describe('ProviderConfigForm TLS section visibility', () => {
       render({ provider, baseUrl: '' })
       expect(fingerprintInput()).toBeNull()
       expect(getButton()).toBeNull()
+      // Their Advanced section carries only the auto-retry field: no pin
+      // block, no leftover pin title.
+      expect(container.textContent).not.toContain('Pin TLS certificate')
     }
   })
 
@@ -182,7 +187,7 @@ describe('ProviderConfigForm TLS section visibility', () => {
   })
 })
 
-describe('ProviderConfigForm collapse block', () => {
+describe('ProviderConfigForm Advanced settings block', () => {
   function collapseTrigger(): HTMLButtonElement | null {
     return container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
   }
@@ -191,21 +196,30 @@ describe('ProviderConfigForm collapse block', () => {
     return container.querySelector<HTMLElement>('[data-slot="collapsible-content"]')
   }
 
+  function retryInput(): HTMLInputElement | null {
+    return container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
+  }
+
   // The old "Certificate fingerprint (SPKI, base64)" label is gone; the
-  // section is introduced by the collapse trigger instead.
-  it('titles the section "Pin TLS certificate (optional)" and drops the SPKI label', () => {
-    render({ expandPin: false })
-    expect(collapseTrigger()?.textContent).toBe('Pin TLS certificate (optional)')
+  // collapsed section also hides auto-retry and the pin, while Base URL and
+  // the API key stay outside on the always-visible path.
+  it('titles the section "Advanced settings" and keeps Base URL / API key visible', () => {
+    render({ expandAdvanced: false })
+    expect(collapseTrigger()?.textContent).toBe('Advanced settings')
     expect(container.textContent).not.toContain('Certificate fingerprint (SPKI, base64)')
+    expect(container.textContent).not.toContain('Pin TLS certificate')
+    expect(container.querySelector('input[placeholder="http://localhost:1234"]')).not.toBeNull()
+    expect(container.querySelector('input[type="password"]')).not.toBeNull()
   })
 
   // Radix renders the closed content div but strips its children, so
-  // "collapsed by default" means the field is absent from the DOM until the
-  // header is clicked — the visual collapse itself is the presentational
+  // "collapsed by default" means the fields are absent from the DOM until
+  // the header is clicked — the visual collapse itself is the presentational
   // contract.
-  it('is collapsed by default and mounts the field on expand', async () => {
-    render({ fingerprint: pin, expandPin: false })
+  it('is collapsed by default and mounts auto-retry and the pin on expand', async () => {
+    render({ fingerprint: pin, expandAdvanced: false })
     expect(collapseContent()?.getAttribute('data-state')).toBe('closed')
+    expect(retryInput()).toBeNull()
     expect(fingerprintInput()).toBeNull()
 
     await act(async () => {
@@ -215,8 +229,21 @@ describe('ProviderConfigForm collapse block', () => {
       await Promise.resolve()
     })
     expect(collapseContent()?.getAttribute('data-state')).toBe('open')
+    expect(retryInput()).not.toBeNull()
     expect(fingerprintInput()?.value).toBe(pin)
     expect(getButton()).not.toBeNull()
+  })
+
+  // The pin block itself is NOT collapsible: a plain field + Get button
+  // inside Advanced, titled without the "(optional)" suffix (the pin is the
+  // switch — an empty field already means "standard verification").
+  it('renders the pin as a plain block titled "Pin TLS certificate"', () => {
+    render({ fingerprint: pin })
+    expect(container.textContent).toContain('Pin TLS certificate')
+    expect(container.textContent).not.toContain('(optional)')
+    // Exactly one collapsible trigger — the Advanced settings header; the
+    // pin block introduces no nested collapse.
+    expect(container.querySelectorAll('[data-slot="collapsible-trigger"]')).toHaveLength(1)
   })
 })
 

@@ -1,12 +1,14 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CheckIcon, ChevronDownIcon } from 'lucide-react'
 
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { MenuSearchInput } from '@/components/ui/MenuSearchInput'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSelectedOptionScroll } from '@/components/ui/useSelectedOptionScroll'
 import { cn } from '@/lib/utils'
@@ -65,6 +67,16 @@ interface ComboboxProps {
   fitToOptions?: boolean
   /** Overrides for the portaled menu, independent of the trigger sizing. */
   contentClassName?: string
+  /**
+   * Render a search-input line at the top of the portaled menu and filter the
+   * option list by it (case-insensitive substring over label and value).
+   * Modeled on BranchDropdown: a `MenuSearchInput` (whose keydown guard keeps
+   * Radix's menu typeahead from stealing focus) plus in-portal filtering, for
+   * long option lists (~hundreds of entries) where type-ahead alone is
+   * unusable. The filter resets when the menu closes, so the next open shows
+   * the full list again.
+   */
+  searchable?: boolean
 }
 
 /**
@@ -100,17 +112,42 @@ export function Combobox({
   className,
   fitToOptions = false,
   contentClassName,
+  searchable = false,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
+  // Search text for the searchable mode — the filter is applied only while the
+  // menu is open and is cleared on close so the next open lists everything.
+  const [search, setSearch] = useState('')
 
   // `disabled` reaches the TRIGGER only, so a menu opened before the flip stays
   // mounted in its portal with clickable items — a control that just became
   // unavailable would still accept a pick. Force it shut. The functional update
   // returns `prev` whenever the control is usable, so this is a no-op (no
-  // re-render) for the five consumers that never pass `disabled`.
+  // re-render) for the five consumers that never pass `disabled`. A disabled
+  // flip also drops the search filter: the closed menu must not reopen with a
+  // stale filtered list.
   useEffect(() => {
     setOpen((prev) => (disabled ? false : prev))
+    if (disabled) setSearch('')
   }, [disabled])
+
+  const handleOpenChange = useCallback((o: boolean) => {
+    setOpen(o)
+    if (!o) setSearch('')
+  }, [])
+
+  // Case-insensitive substring filter over label AND value (registry model
+  // lists have label === value, but the primitive stays generic). Recomputed
+  // only while `searchable` — the memo keeps the non-searchable consumers on
+  // the plain array reference.
+  const visibleOptions = useMemo(() => {
+    if (!searchable) return options
+    const q = search.trim().toLowerCase()
+    if (!q) return options
+    return options.filter(
+      (opt) => opt.label.toLowerCase().includes(q) || opt.value.toLowerCase().includes(q),
+    )
+  }, [searchable, search, options])
 
   const selected = options.find((o) => o.value === value) ?? null
   const displayLabel = selected?.label ?? placeholder ?? value
@@ -126,7 +163,7 @@ export function Combobox({
   const handleContentRef = useSelectedOptionScroll(open)
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild disabled={disabled}>
         <button
           type="button"
@@ -160,10 +197,30 @@ export function Combobox({
         align="start"
         className={cn(MIN_WIDTH_CLASS, MAX_HEIGHT_CLASS, contentClassName)}
       >
-        {options.length === 0 && (
-          <div className="px-3 py-2 text-xs text-muted-foreground italic">No options available.</div>
+        {searchable && (
+          <>
+            {/* Search line above the option list (BranchDropdown pattern). The
+                MenuSearchInput's keydown guard keeps Radix's menu typeahead
+                from intercepting printable keys and stealing focus. */}
+            <div className="px-2 py-1.5">
+              <MenuSearchInput
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search..."
+                aria-label={`Search ${ariaLabel}`}
+                className="h-8 text-sm"
+                autoFocus
+              />
+            </div>
+            <DropdownMenuSeparator />
+          </>
         )}
-        {options.map((opt) => {
+        {visibleOptions.length === 0 && (
+          <div className="px-3 py-2 text-xs text-muted-foreground italic">
+            {searchable && search.trim() !== '' ? 'No matches.' : 'No options available.'}
+          </div>
+        )}
+        {visibleOptions.map((opt) => {
           const isSelected = opt.value === value
           const item = (
             <DropdownMenuItem
