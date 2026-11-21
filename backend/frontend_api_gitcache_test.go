@@ -162,30 +162,71 @@ func TestCachedGitStatus_ColdSingleflight(t *testing.T) {
 // revalidate: a stale read returns the last snapshot immediately (no git run
 // on the RPC's critical path), launches exactly one background refresh, and
 // the next read after it settles serves the fresh snapshot.
+//
+// The git seam parks every run on a gate that the read-side assertions
+// release only afterwards: the background refresh's run is concurrent with
+// the stale read, so sampling the global call counter right after the read
+// cannot distinguish "the critical path ran git" from "the background launch
+// already started" (that sampling raced the legitimate launch on loaded CI
+// runners and failed the suite spuriously). The critical-path property is
+// pinned structurally instead: the read runs behind a bounded watchdog while
+// the gate still holds every git run, so a read that invoked git could
+// neither return the seed (the recompute is still parked) nor return at all.
 func TestCachedGitStatus_StaleServedWhileRefreshing(t *testing.T) {
 	ws := t.TempDir()
 	var calls atomic.Int32
+	var startedOnce sync.Once
+	started := make(chan struct{}) // closed when the first git run enters the seam
+	gate := make(chan struct{})    // parks every git run until the read is asserted
 	settled := make(chan error, 4)
 	f := newGitCacheTestAPI(ws)
 	f.gitRefreshSettled = func(key string, err error) { settled <- err }
-	f.gitStatusFn = genStatusSeam(&calls)
+	f.gitStatusFn = func(string) (map[string]GitStatusEntry, error) {
+		n := calls.Add(1)
+		startedOnce.Do(func() { close(started) })
+		<-gate
+		return map[string]GitStatusEntry{fmt.Sprintf("f%d.txt", n): {Status: "M"}}, nil
+	}
 
 	f.ensureGitCaches()
 	f.gitStatusCache.seed(gitCacheKey(ws), map[string]GitStatusEntry{"f0.txt": {Status: "A"}}, true)
 
-	// Stale read: instant serve, no git run on this path.
-	staleStatus, err := f.cachedGitStatus(ws)
-	if err != nil {
-		t.Fatalf("stale read: %v", err)
+	// Stale read: instant serve, no git run on this path (the bounded
+	// watchdog turns a regression to a synchronous recompute — the read
+	// parked on the gate — into a failure instead of a deadlock).
+	type readResult struct {
+		status map[string]GitStatusEntry
+		err    error
 	}
-	if _, ok := staleStatus["f0.txt"]; !ok {
-		t.Fatalf("stale read must serve the seeded snapshot, got %v", staleStatus)
+	readDone := make(chan readResult, 1)
+	go func() {
+		st, err := f.cachedGitStatus(ws)
+		readDone <- readResult{st, err}
+	}()
+	var staleStatus readResult
+	select {
+	case staleStatus = <-readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stale read must return without running git, timed out")
 	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("stale read must not spawn git on the critical path, spawned %d", got)
+	if staleStatus.err != nil {
+		t.Fatalf("stale read: %v", staleStatus.err)
+	}
+	if _, ok := staleStatus.status["f0.txt"]; !ok {
+		t.Fatalf("stale read must serve the seeded snapshot, got %v", staleStatus.status)
 	}
 
-	// The background refresh settles (bounded watchdog against a hang).
+	// The read launched the background refresh: its git run entered the seam
+	// and parked on the still-closed gate.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background refresh never launched")
+	}
+
+	// Release the seam; the refresh completes and settles (bounded watchdog
+	// against a hang).
+	close(gate)
 	select {
 	case err := <-settled:
 		if err != nil {
