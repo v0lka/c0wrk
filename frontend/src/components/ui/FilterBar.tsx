@@ -23,9 +23,9 @@ interface FilterBarProps {
   rightSlot?: ReactNode
   /**
    * Extra classes merged into the root row — e.g. `flex-1 border-b-0` when
-   * the embedding row places sibling controls beside the bar (the git
-   * history tab's graph button). Without it the bar keeps its standalone
-   * full-width form.
+   * the embedding row places sibling controls beside the bar (the Git
+   * history page's diff-mode toggle). Without it the bar keeps its
+   * standalone full-width form.
    */
   className?: string
 }
@@ -33,7 +33,7 @@ interface FilterBarProps {
 /**
  * Reusable glob/regex filter bar: a text input plus a toggle button that
  * switches between glob and regex matching modes. Shared by the file-tree
- * panel and the git history panel so the filter UX stays identical.
+ * panel and the viewer's Git history page so the filter UX stays identical.
  */
 export function FilterBar({ value, onChange, mode, onToggleMode, placeholder, leftSlot, rightSlot, className }: FilterBarProps) {
   const label = placeholder ?? 'Filter'

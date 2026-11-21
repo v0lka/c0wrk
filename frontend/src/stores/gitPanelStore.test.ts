@@ -489,9 +489,9 @@ describe('gitPanelStore', () => {
   })
 })
 
-// --- Phase 6: merge/rebase state & history tab ---
+// --- Phase 6: merge/rebase state ---
 
-describe('gitPanelStore — Phase 6 (merge/rebase state & history tab)', () => {
+describe('gitPanelStore — Phase 6 (merge/rebase state)', () => {
   beforeEach(() => {
     resetStore()
   })

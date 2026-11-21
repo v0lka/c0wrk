@@ -92,7 +92,7 @@ Note: Wails auto-generates TypeScript types from Go structs using snake_case JSO
 - highlight.js 11 (syntax highlighting in rendered messages)
 - Mermaid 11 (lazy-loaded diagrams), sanitized with DOMPurify 3 in `MermaidBlock`
 - xterm.js 6 (`@xterm/xterm` + `@xterm/addon-fit`) — embedded terminal
-- @tanstack/react-virtual 3 — virtualized lists (the Git History tab)
+- @tanstack/react-virtual 3 — virtualized lists (the viewer's Git History page)
 - diff 9 (`diffWords`) — character-level diffs in `lib/diffParser.ts`
 - hast-util-sanitize 5 — the paper HTML sanitize schema in `lib/paperHtmlSanitize.ts`
 
@@ -330,7 +330,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 - [tabs.md](tabs.md) — the workspace tab layer: always-live model, `tabsEnabled` flag scope, single activation engine, snapshot slices ([ADR-085](../../decisions/085-workspace-tabs-single-engine.md))
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips
-- [git-history.md](git-history.md) — Git History: the Git panel's compact History tab (fixed-height rows + SVG lane gutter, per-commit stats, client-side file filter, SHA-click review) and the viewer's `c0wrk:graph` Git-graph page (expandable commit cards: full message, changed files, per-file diffs in the shared unified/split mode) over one shared paginated source — deterministic heights, `title` on icon-only buttons, lazy per-SHA RPCs
+- [git-history.md](git-history.md) — Git History: the Git panel's right-edge icon-button (the History glyph) opening the viewer's `c0wrk:graph` Git-graph page (expandable commit cards: full message, changed files, per-file diffs in the shared unified/split mode; refs on the author line collapsing into a «+N» badge on measured overflow) over one shared paginated source — deterministic heights, `title` on icon-only buttons, lazy per-SHA RPCs
 - [sound-notifications.md](sound-notifications.md) — the audible notification channel: Web Audio-synthesized cues (no assets), webview autoplay-suspension recovery, and the persisted master toggle
 - [system-notifications.md](system-notifications.md) — the visual notification channel: native OS banners raised from the same cued session events, plus banner-click routing back to the session
 - [events.md](events.md) — event handling architecture

@@ -127,15 +127,17 @@ describe('FileViewerTabBar — research pseudo-path icon', () => {
 
   it('renders the graph icon for the c0wrk:graph tab without any getFileIcon RPC for it', async () => {
     // The commit-graph viewer tab (GIT_GRAPH_TAB_PATH) is special-cased at
-    // the call site like the research tab: its tinted Waypoints glyph renders
-    // directly and TabFileIcon never runs for it.
+    // the call site like the research tab: its tinted History glyph — the
+    // same one the Git panel's open-history button uses — renders directly
+    // and TabFileIcon never runs for it.
     useFileViewerStore.setState({
       openTabs: [GIT_GRAPH_TAB_PATH, '/ws/main.go'],
       activeFile: GIT_GRAPH_TAB_PATH,
     })
     await renderBar()
 
-    expect(document.querySelector('svg.lucide-waypoints')).not.toBeNull()
+    expect(document.querySelector('svg.lucide-history')).not.toBeNull()
+    expect(document.querySelector('svg.lucide-waypoints')).toBeNull()
     expect(getFileIconMock).not.toHaveBeenCalledWith(GIT_GRAPH_TAB_PATH)
     expect(getFileIconMock).toHaveBeenCalledWith('/ws/main.go')
     expect(useFileViewerStore.getState().fileIcons[GIT_GRAPH_TAB_PATH]).toBeUndefined()

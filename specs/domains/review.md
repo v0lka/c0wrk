@@ -26,7 +26,7 @@ The review feature lets the user inspect uncommitted changes (staged + unstaged 
 ### Activation paths
 
 1. **Review button** in `ChangesToolbar` — the only entry point into the interactive review loop (manual): it opens the `c0wrk:review` pseudo-path tab, loads the session's review buffer, and sets the backend status to `active`.
-2. **Commit SHA click** in the Git panel's History tab (`GitHistoryTab`) — the read-only commit review: the `c0wrk:commit:<sha>` pseudo-path renders `ReviewPage` in commit mode (no session, no comments, no loop, no re-fetch).
+2. **View Commit** in the Git history context menu (the viewer's `GitGraphPage`; the Git panel has no History section) — the read-only commit review: the `c0wrk:commit:<sha>` pseudo-path renders `ReviewPage` in commit mode (no session, no comments, no loop, no re-fetch); the graph page's per-file "Open in Viewer" opens the narrowed `c0wrk:commit:<sha>/<path>` variant.
 
 The automatic post-task prompt (`review_prompt` card injected on `task_complete`) was removed by [ADR-060](../decisions/060-remove-post-task-review-prompt.md): it fired on nearly every task against a perpetually dirty tree and trained the user to dismiss it unread. The one automatic behavior that remains is the **review-loop reopen** below, which only applies while the user is already in a review loop. Legacy `review_prompt` rows persisted before the removal are dropped at history load ([ADR-062](../decisions/062-hide-legacy-review-prompt-rows.md)) by `isLegacyReviewPromptRow` (`frontend/src/lib/chatUtils.ts`) through the filter in `frontend/src/lib/sessionHistoryReload.ts`; a row that ever bypasses the filter still converts to the muted `status` service line with its stable `review-prompt-{prompt_id}` id.
 

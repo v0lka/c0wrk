@@ -1,13 +1,13 @@
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
-import { formatRelativeTime } from '@/lib/formatters'
 import { shortSha, type GraphNode } from '@/lib/gitGraphLayout'
-import { statBucket, statColorClass, countFileStats, totalChanges } from '@/lib/commitStats'
+import { statBucket, statColorClass, countFileStats } from '@/lib/commitStats'
 import { Markdown } from '@/lib/markdownConfig'
 import { cn } from '@/lib/utils'
-import { ROW_SPACING, refColor } from '@/components/GitPanel/gitGraphRender'
+import { ROW_SPACING } from '@/components/GitPanel/gitGraphRender'
 import type { CommitFile, CommitStats, GitHistoryCommit } from '@/types/models'
 import { FILE_LINE_HEIGHT, EXPANDED_TOP_PAD, EXPANDED_BOTTOM_PAD, LOADING_LINE_HEIGHT, NO_FILES_HEIGHT, STATUS_LINE_HEIGHT, messageAreaHeight, fileDiffAreaHeight, type FileDiffUiState } from './gitGraphCardHeights'
 import { CommitFileDiff } from './CommitFileDiff'
+import { GitGraphCardMeta } from './GitGraphCardMeta'
 
 /** Render the full commit message as a Markdown blockquote: every line gets
  *  the `> ` prefix, so the shared Markdown pipeline styles it via
@@ -52,8 +52,9 @@ interface GitGraphCardProps {
 }
 
 /**
- * One commit card in the Git-graph page: the two-line collapsed card (the
- * Git panel's row look) that expands — via the chevron — into the full
+ * One commit card in the Git-graph page: the two-line collapsed card —
+ * subject + sha above, the author · time / stats / ref decorations line
+ * below (GitGraphCardMeta) — that expands — via the chevron — into the full
  * commit message, then the changed-file list (status letter + path), where
  * every file toggles its own inline diff.
  *
@@ -114,31 +115,10 @@ export function GitGraphCard({
             <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="min-w-0 truncate flex-1 select-text">{node.message}</span>
-          {node.refs.map((ref) => (
-            <span
-              key={ref}
-              className={cn(
-                'shrink-0 rounded bg-muted/40 px-1 py-px text-xs font-medium leading-none',
-                refColor(ref),
-              )}
-            >
-              {ref.replace(/^tag:\s*/, '')}
-            </span>
-          ))}
           <span className="shrink-0 font-mono text-xs text-info select-text">{shortSha(node.sha)}</span>
         </div>
-        <div className="flex items-center gap-2 pl-7 text-xs leading-none text-muted-foreground">
-          <span className="min-w-0 truncate select-text">
-            {commit.author} · {formatRelativeTime(commit.date)}
-          </span>
-          {stats && totalChanges(stats) > 0 && (
-            <span className="flex shrink-0 items-center gap-1 tabular-nums">
-              <span className="text-success">+{stats.added}</span>
-              <span className="text-warning">~{stats.modified}</span>
-              <span className="text-destructive">−{stats.deleted}</span>
-            </span>
-          )}
-        </div>
+        {/* Second header line: author · time, stats, refs (GitGraphCardMeta). */}
+        <GitGraphCardMeta author={commit.author} date={commit.date} refs={node.refs} stats={stats} />
       </button>
       {expanded && (
         <div className="pl-7 pr-2 overflow-hidden">

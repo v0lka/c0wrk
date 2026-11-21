@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff, FlaskConical, Waypoints } from "lucide-react";
+import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff, FlaskConical, History } from "lucide-react";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
 import { RESEARCH_TAB_PATH } from "@/stores/researchStore";
 import { GIT_GRAPH_TAB_PATH } from "@/stores/gitPanelStore";
@@ -139,7 +139,9 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                   {path === RESEARCH_TAB_PATH ? (
                     <FlaskConical className="size-3.5 text-success" />
                   ) : path === GIT_GRAPH_TAB_PATH ? (
-                    <Waypoints className="size-3.5 text-info" />
+                    /* The same History glyph the Git panel's "Open history
+                       viewer" button uses (GitPanel/index.tsx). */
+                    <History className="size-3.5 text-info" />
                   ) : (
                     <TabFileIcon path={path} />
                   )}

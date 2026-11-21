@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
 // Tests for the shared FilterBar: the optional leftSlot renders BEFORE the
-// input (the file tree's open-workspace / open-temp buttons live there) and
-// the existing rightSlot contract is unchanged — the git history tab's
-// consumer must stay byte-identical.
+// input (the file tree's open-workspace / open-temp buttons live there), the
+// optional rightSlot renders after the mode toggle, and className merges
+// into the root row (the Git history page embeds the bar beside its
+// diff-mode toggle).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'

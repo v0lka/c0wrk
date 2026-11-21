@@ -22,7 +22,7 @@ vi.mock('@/api/review', () => apiMocks)
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
 // Mock the virtualizer so all rows render in jsdom (no layout engine).
-// Same mock as GitHistoryTab.test: every item with correct offsets.
+// Same mock shape as the former GitHistoryTab.test: every item with correct offsets.
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: (options: {
     count: number
@@ -64,6 +64,7 @@ import { cardHeight, expandedCardHeight, DIFF_ROW_HEIGHT, type CardExpansionStat
 import { useReviewStore } from '@/stores/reviewStore'
 import { useGitGraphStore } from '@/stores/gitGraphStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -110,6 +111,8 @@ beforeEach(() => {
   useGitGraphStore.setState({ byProject: {} })
   // The page scopes its expansion decisions to the active project.
   useProjectStore.setState({ activeProjectId: 'proj-1' })
+  // No queued history filter unless a test sets one explicitly.
+  useGitPanelStore.setState({ pendingHistoryFilter: null })
   fileViewerMocks.openFile.mockReset()
   fileViewerMocks.openVirtualFile.mockReset()
   fileViewerMocks.setCollapsed.mockReset()
@@ -238,6 +241,35 @@ describe('GitGraphPage — shell', () => {
   })
 })
 
+describe('GitGraphPage — pending history filter', () => {
+  it('consumes gitPanelStore.pendingHistoryFilter into the file filter once, then clears it', async () => {
+    // The "View History" file-tree action queues the filter before (or while)
+    // opening this page; the page applies it on arrival and clears the store
+    // so it never re-applies on subsequent renders.
+    act(() => {
+      useGitPanelStore.getState().setPendingHistoryFilter('src/foo.ts')
+    })
+
+    renderPage()
+    await flush()
+    await flush()
+
+    const input = container.querySelector<HTMLInputElement>('input[placeholder^="Filter by file"]')
+    expect(input?.value).toBe('src/foo.ts')
+    expect(useGitPanelStore.getState().pendingHistoryFilter).toBeNull()
+  })
+
+  it('leaves the filter untouched when no pending filter is queued', async () => {
+    renderPage()
+    await flush()
+    await flush()
+
+    const input = container.querySelector<HTMLInputElement>('input[placeholder^="Filter by file"]')
+    expect(input?.value).toBe('')
+    expect(useGitPanelStore.getState().pendingHistoryFilter).toBeNull()
+  })
+})
+
 describe('GitGraphPage — file filter', () => {
   /** Set a controlled input's value in a way React detects. */
   function setInputValue(input: HTMLInputElement, value: string) {
@@ -319,7 +351,7 @@ describe('GitGraphPage — commit context menu', () => {
     })
     await flush()
 
-    // The SAME menu component the Git panel's History tab renders.
+    // The shared GitHistoryContextMenu component; the page owns this instance.
     const menu = container.querySelector('[role="menu"][aria-label="Commit actions"]')
     expect(menu).toBeTruthy()
     expect(menu!.textContent).toContain('View Commit')

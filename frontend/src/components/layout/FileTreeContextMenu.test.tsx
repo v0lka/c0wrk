@@ -12,7 +12,6 @@ import { createRoot, type Root } from 'react-dom/client'
 const gitPanelMock = vi.hoisted(() => ({
   isGitRepo: false,
   gitRepoProjectId: null as string | null,
-  setActiveTab: vi.fn(),
   setPendingHistoryFilter: vi.fn(),
   setError: vi.fn(),
 }))
@@ -24,6 +23,8 @@ const uiMock = vi.hoisted(() => ({
 }))
 const fileViewerMock = vi.hoisted(() => ({
   openFile: vi.fn(),
+  openVirtualFile: vi.fn(),
+  setCollapsed: vi.fn(),
 }))
 
 // Study-paper dispatch goes through the shared message sender; mock it so the
@@ -39,6 +40,7 @@ vi.mock('@/hooks/useMessageSender', () => ({
 }))
 
 vi.mock('@/stores/gitPanelStore', () => ({
+  GIT_GRAPH_TAB_PATH: 'c0wrk:graph',
   // The component both subscribes (selector call) and imperatively reads
   // (getState) — the mock must be callable AND expose getState.
   useGitPanelStore: Object.assign(
@@ -242,8 +244,9 @@ describe('FileTreeContextMenu — View History', () => {
     // against a project whose workspace IS a git repository.
     gitPanelMock.isGitRepo = true
     gitPanelMock.gitRepoProjectId = 'p1'
-    gitPanelMock.setActiveTab.mockClear()
     gitPanelMock.setPendingHistoryFilter.mockClear()
+    fileViewerMock.openVirtualFile.mockClear()
+    fileViewerMock.setCollapsed.mockClear()
     uiMock.setWorkspaceTab.mockClear()
     container = document.createElement('div')
     document.body.replaceChildren(container)
@@ -319,7 +322,7 @@ describe('FileTreeContextMenu — View History', () => {
     expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledWith('src/a\\+\\(\\*\\)\\[b\\].ts')
   })
 
-  it('switches the workspace to the Git panel on the history action', async () => {
+  it('switches the workspace to the Git panel and opens the viewer history page', async () => {
     renderMenu(fileEntry, '/ws')
 
     await act(async () => {
@@ -328,7 +331,10 @@ describe('FileTreeContextMenu — View History', () => {
     })
 
     expect(uiMock.setWorkspaceTab).toHaveBeenCalledWith('p1', 'git')
-    expect(gitPanelMock.setActiveTab).toHaveBeenCalledWith('p1', 'history')
+    // The Git history page opens in the file viewer as a VIRTUAL tab and the
+    // viewer is expanded so the page is visible.
+    expect(fileViewerMock.openVirtualFile).toHaveBeenCalledWith('c0wrk:graph')
+    expect(fileViewerMock.setCollapsed).toHaveBeenCalledWith(false)
   })
 
   it('hides git-only actions when the workspace is not a git repository', () => {

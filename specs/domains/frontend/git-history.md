@@ -2,7 +2,7 @@
 
 ## Role
 
-The commit-history surfaces: the Git panel's History tab — a compact, virtualized commit list with per-commit changed-file stats and a client-side file filter — and the file viewer's history page (`c0wrk:graph` pseudo-tab) — the lane layout with richer expandable commit cards: full commit message, changed-file list and per-file inline diffs. The two views share one paginated data source and one graph-layout engine; only the card presentation differs.
+The commit-history surface: the file viewer's history page (`c0wrk:graph` pseudo-tab) — the lane layout with expandable commit cards: full commit message, changed-file list and per-file inline diffs. The Git panel has NO History section: an icon-button at the right edge of its tab strip opens this viewer page. One paginated data source and one graph-layout engine back the page.
 
 ## Key Files
 
@@ -14,11 +14,11 @@ The commit-history surfaces: the Git panel's History tab — a compact, virtuali
 - `frontend/src/hooks/useCommitFiles.ts` — the shared changed-files cache (`fetchFiles`/`fetchMany`, deduped against cache + in-flight)
 - `frontend/src/hooks/useGitHistoryFilter.ts` — the client-side file filter (decides WHEN to fetch, uses the shared files cache)
 - `frontend/src/lib/commitStats.ts` — `statBucket`/`countFileStats`/`statColorClass`/`totalChanges` (client-side mirror of the backend bucketing)
-- `frontend/src/components/GitPanel/GitHistoryTab.tsx` — the compact view: virtualizer, history button, filter bar, context menu
-- `frontend/src/components/GitPanel/GitHistoryRow.tsx` — the inert fixed-height commit row (stats cell, SHA click)
+- `frontend/src/components/GitPanel/index.tsx` — the Git panel tab strip: Files | Changes segments plus the right-aligned icon-button ("Open history viewer") that opens the `c0wrk:graph` viewer page
 - `frontend/src/components/GitPanel/GitGraphGutter.tsx` + `frontend/src/lib/gitGraphLayout.ts` + `frontend/src/components/GitPanel/gitGraphRender.ts` — the shared lane-graph engine (`ROW_SPACING = 32`, `NODE_OFFSET = 11`, `LANE_SPACING = 22`)
 - `frontend/src/components/gitGraph/GitGraphPage.tsx` — the viewer page: header + diff-mode toggle, expansion state, lazy fetches
 - `frontend/src/components/gitGraph/GitGraphCard.tsx` — the expandable commit card (presentational; all state via props)
+- `frontend/src/components/gitGraph/GitGraphCardMeta.tsx` — the card's second header line (author · time, stats triple, ref decorations) with the measured overflow collapse into the «+N» badge and its folded-refs tooltip
 - `frontend/src/components/gitGraph/gitGraphCardHeights.ts` — the deterministic height + diff-slice math (pure, no React/DOM)
 - `frontend/src/components/gitGraph/CommitFileDiff.tsx` — one file's diff body (review tables + highlight.js, capped scroll container)
 - `frontend/src/components/diff/DiffViewModeToggle.tsx` — the shared unified/split toggle bound to `reviewStore.diffViewMode`
@@ -26,31 +26,33 @@ The commit-history surfaces: the Git panel's History tab — a compact, virtuali
 
 ## Behavior
 
-### Data source (shared by both views)
+### Data source
 
 `useGitHistory` calls `getGitHistory` (`GetGitHistory`) with a fixed page size of 300. The first page loads eagerly; `loadMore` requests the page at the previous `next_skip` and appends — never replaces — so already-rendered rows keep identity and per-row UI state. `loadMore` is idempotent: an in-flight ref plus the `hasMore` flag make repeated invocations (scroll edge trigger, button clicks) harmless. A reload bumps an epoch token so an in-flight page from the previous epoch can never append stale commits after a refresh.
 
 `GetGitHistory` returns `GitHistoryPage{Commits, NextSkip, HasMore}`; `HasMore` is page saturation (`len == limit`), `NextSkip = skip + len(Commits)`. Each `GitHistoryCommit` carries the log fields (author/email/date/subject), the graph topology (`parents`, parsed `refs` decorations) and `stats` — the file-change buckets counted from `--name-status`: `A` → added, `D` → deleted, any other letter (M/R/C/T with similarity scores bucketed by their leading letter) → modified. Rename detection is pinned with an explicit `-M` in the invocation — a rename reports a single R entry → modified, matching `GetCommitFiles` and independent of the ambient `diff.renames` config. Merge commits always report zero stats (git records no per-file name-status for them); the root commit is diffed against the empty tree (`--root`) so its files count. The wire field is typed optional on the frontend (`stats?: CommitStats`) so a stale-bindings backend that omits it degrades to stats-less rows instead of breaking.
 
-### Compact representation (Git panel History tab)
+### Panel entry point (Git panel tab strip)
 
-A vertical list of fixed-height commit rows (`ROW_SPACING = 32` px, two lines). Rows are virtualized (`@tanstack/react-virtual`, constant `estimateSize`, SHA keys, overscan 8); only visible rows mount. There is NO lane graph in the panel — the SVG lane gutter renders exclusively in the viewer's history page, which keeps the compact rows full-width in every mode (filtered or not).
+The Git panel's tab strip offers only Files | Changes segments plus one icon-button pressed to the right edge — the same History glyph the removed compact History tab carried. The button is icon-only, so its native `title` ("Open history viewer") is its only label; clicking it opens the `c0wrk:graph` pseudo-tab in the file viewer as a VIRTUAL tab (`openVirtualFile`, the canonical `openResearch`/`openPaper` pattern) and expands the viewer (`setCollapsed(false)`). The virtual flag is what keeps the viewer's data layers away from the pseudo-path: the active-file loader never fires a ReadFile RPC for it, the coalesced `workspace:tree_changed` reload skips it, and the persisted-snapshot partialize excludes it (a restart never rehydrates it).
 
-Row anatomy (line 1): truncating commit message (selectable), ref chips (`tag:` prefix stripped, `refColor` tint — HEAD → highlight, tag → warning, branch → the theme's keyword purple `text-hljs-keyword`), the stats cell `+A ~M -D` colored `success`/`warning`/`destructive` with a native `title` spelling the triple out — the cell is omitted entirely when the backend sent no stats — and the short SHA. Line 2: `author · relative time`. The row body is inert: the only interactive element is the short SHA (a `role="button"` span with Enter/Space handling) which opens `c0wrk:commit:<sha>` — the read-only commit-diff review page in the file viewer. Hovering a row shows a tooltip with the full date and the commit subject; right-clicking opens the commit context menu (tag management, reset-to-commit; its mutations trigger a history reload).
-
-The toolbar row carries the history button and the shared `FilterBar` (glob/regex file filter, same matcher semantics as the file-tree filter). The history button — icon-only, so its `title` is its only label ("Open history viewer") — opens the `c0wrk:graph` pseudo-tab in the file viewer as a VIRTUAL tab (`openVirtualFile`, the canonical `openResearch`/`openPaper` pattern) and expands the viewer (`setCollapsed(false)`), moving the full-width history (lane graph, expandable cards) out of the panel. The virtual flag is what keeps the viewer's data layers away from the pseudo-path: the active-file loader never fires a ReadFile RPC for it, the coalesced `workspace:tree_changed` reload skips it, and the persisted-snapshot partialize excludes it (a restart never rehydrates it).
-
-The filter is CLIENT-SIDE over the loaded window: it never queries the backend and only sees commits paged in so far — loading more pages extends the match set. To match, every loaded commit's changed files must be known: uncached SHAs are fetched once per valid-filter activation through the shared `useCommitFiles` cache via `GetCommitFilesBatch` (one batched RPC, deduped per SHA), with a "Resolving files…" indicator; invalid regex renders "Invalid regex", no matches renders "No matching commits". An external filter intent (`gitPanelStore.pendingHistoryFilter`, e.g. "View History" on a file) is consumed once on arrival.
+The panel's persisted per-project tab value may still be the legacy `'history'` (an old snapshot): the panel renders the explorer for it — the compact History tab no longer exists.
 
 ### Full representation (viewer Git-graph page)
 
-`FileViewerContent` renders `GitGraphPage` when the active file is `GIT_GRAPH_TAB_PATH` (`'c0wrk:graph'`, a synthetic pseudo-tab — no session and no disk file involved). The tab bar renders the tinted `GitGraph` glyph directly for it — `TabFileIcon`/`getFileIcon` never runs for it and no `fileIcons` cache entry is created (the icon hook guards on the whole `c0wrk:` pseudo-path prefix) — and the tab title is pinned by `fileNameFromPath` (`'c0wrk:graph'` → "Git History"; the literal is inlined in the lib so it stays store-free).
+`FileViewerContent` renders `GitGraphPage` when the active file is `GIT_GRAPH_TAB_PATH` (`'c0wrk:graph'`, a synthetic pseudo-tab — no session and no disk file involved). The tab bar renders the tinted `History` glyph directly for it — the SAME image the Git panel's open-history button carries — so `TabFileIcon`/`getFileIcon` never runs for it and no `fileIcons` cache entry is created (the icon hook guards on the whole `c0wrk:` pseudo-path prefix); the tab title is pinned by `fileNameFromPath` (`'c0wrk:graph'` → "Git History"; the literal is inlined in the lib so it stays store-free).
 
-The page toolbar carries NO title (the viewer tab already names the page): only the shared `FilterBar` file filter (same client-side glob/regex semantics as the panel — the gutter hides while filtering, "Invalid regex" / "No matching commits" / "Resolving files…" render as in the panel) and the shared `DiffViewModeToggle` (unified/split), which reads and writes `reviewStore.diffViewMode` — one app-wide, persisted preference shared with the review page; callers never thread the mode through props, and the mode is part of every height computation.
+The page toolbar carries NO title (the viewer tab already names the page): only the shared `FilterBar` file filter and the shared `DiffViewModeToggle` (unified/split), which reads and writes `reviewStore.diffViewMode` — one app-wide, persisted preference shared with the review page; callers never thread the mode through props, and the mode is part of every height computation.
 
-Right-clicking a card opens the commit context menu — the SAME `GitHistoryContextMenu` component instance pattern the panel's History tab renders (View Commit, Copy SHA, Create › Branch/Tag, Reset `<branch>`, per-tag actions); the page owns its own instance fed by the card's SHA/refs/pointer position, takes `currentBranch` from `gitPanelStore`, and its mutations trigger a history `reload`.
+The filter is CLIENT-SIDE over the loaded window: it never queries the backend and only sees commits paged in so far — loading more pages extends the match set (the gutter hides while a filter is active, since a filtered subset is not a connected graph). To match, every loaded commit's changed files must be known: uncached SHAs are fetched once per valid-filter activation through the shared `useCommitFiles` cache via `GetCommitFilesBatch` (one batched RPC, deduped per SHA), with a "Resolving files…" indicator; invalid regex renders "Invalid regex", no matches renders "No matching commits". An external filter intent (`gitPanelStore.pendingHistoryFilter`, e.g. "View History" on a file — the action also opens this page) is consumed once on arrival.
 
-The lane gutter and pagination behave exactly as in the compact view. The difference is the card: a `GitGraphCard` is the same two-line collapsed look (chevron, message, refs, short SHA, author · time, stats badges) plus a chevron-driven inline expansion. Exactly ONE card is expanded at a time. The expansion renders:
+Right-clicking a card opens the commit context menu — the SAME `GitHistoryContextMenu` component the removed panel tab used to render; the page owns its own instance fed by the card's SHA/refs/pointer position (View Commit, Copy SHA, Create › Branch/Tag, Reset `<branch>`, per-tag actions), takes `currentBranch` from `gitPanelStore`, and its mutations trigger a history `reload`.
+
+The lane gutter and pagination behave exactly as the shared engine defines. The card: a `GitGraphCard` is a two-line collapsed look — subject + short SHA above, the `GitGraphCardMeta` line below — plus a chevron-driven inline expansion.
+
+The meta line (`GitGraphCardMeta`) carries author · time, the stats triple and the ref decorations right-aligned past them. When the line cannot fit at its natural width — the refs would crowd onto the author/time text and the stats to their left — only the FIRST ref keeps its badge and the rest collapse into a single «+N» pill carrying the first hidden ref's kind icon (Tag for a `tag:` decoration, GitBranch otherwise); hovering it opens a tooltip listing every folded ref, each with its kind icon and its color. The collapse decision is measured, not guessed: a hidden absolute layer renders the line's exact content at natural width (author untruncated, ALL refs) inside the line's true available width, and a ResizeObserver re-runs the comparison — the measured layer never reflects the collapsed state, so the flag cannot oscillate. The author text still truncates (`min-w-0`) when even the collapsed form cannot fit.
+
+Exactly ONE card is expanded at a time. The expansion renders:
 
 1. **Full commit message** — lazily fetched via `getCommitMessage` on first expansion (one fetch per SHA, cached, in-flight deduped), rendered as a MARKDOWN QUOTE: every line is `> `-prefixed and passed through the shared `Markdown` component (sanitized pipeline; `.prose blockquote` styling) inside the same capped scrollable box — the box height stays the deterministic line-count estimate from `gitGraphCardHeights` (capped, scrolls internally, determinism over pixel-perfection). Loading and failure render fixed-height placeholder lines.
 2. **Changed files** — from the shared `useCommitFiles` cache (status letter + path rows). Loaded-empty lists render one empty-state line whose text matches the backend's behavior: "No diff (merge commit)" (diff-tree emits no merge patch), "No files (root commit)" (no parent to diff against), otherwise "No files". Right-clicking a file row opens the per-file context menu (`CommitFileContextMenu`): a single **"Open in Viewer"** entry that opens the file's version AT THE COMMIT — the `c0wrk:commit:<sha>/<path>` virtual tab rendering a read-only review narrowed to that file (its commit diff), never the current working-tree copy. Left-click keeps toggling the inline diff.
@@ -78,15 +80,15 @@ A history load error renders only when no commits are loaded (inline error state
 
 ## Invariants
 
-- Rows in the compact view NEVER expand inline: row heights are constant (`ROW_SPACING`), the panel carries no lane graph, and full-width inspection lives in the viewer's history page.
-- Every card expansion height is a deterministic function of UI state — computed by pure functions in `gitGraphCardHeights.ts`, consumed identically by the virtualizer and the lane gutter, with no DOM measurement anywhere in either view.
+- Every card expansion height is a deterministic function of UI state — computed by pure functions in `gitGraphCardHeights.ts`, consumed identically by the virtualizer and the lane gutter, with no DOM measurement anywhere in the view.
+- The refs meta line collapses only on measured overflow: the hidden natural-width layer always renders ALL refs regardless of the collapse state, so the measured comparison cannot oscillate; the collapsed «+N» badge exists only when at least one ref is folded (a lone overflowing ref stays visible) and its tooltip lists exactly the folded refs.
 - Sections render with explicit pixel heights from the same constants the height math uses, so DOM height ≡ reserved height; overflow is absorbed by capped internal scrolling, never by growing a row.
 - An icon-only button carries a native `title` as its only label (the history button: "Open history viewer"), per the button-tooltip convention — exactly one channel.
 - The `c0wrk:graph` pseudo-tab is opened as a virtual file (`openVirtualFile`): it never triggers the file-icon RPC, never enters a `fileIcons` cache entry, is never fetched by the viewer's data loader (no ReadFile RPC, no `tree_changed` reload), never persists in the tab snapshot, and opening it expands the file viewer.
 - History pages load lazily and append-only: `loadMore` is idempotent (in-flight guard + `hasMore`), and an epoch token prevents a stale in-flight page from appending after a reload.
 - Per-commit detail (message, files, diff) is fetched lazily, at most once per SHA per resource, deduped against the cache and in-flight requests.
 - The viewer page's expansion decisions persist for the whole application session in `gitGraphStore` (in-memory, keyed per project, never localStorage): a remount restores the expanded card and its open file diffs; a persisted SHA applies only while it is present in the loaded history; an app restart starts collapsed.
-- The file filter is client-side over the loaded window only; it never queries the backend. (The panel has no lane graph to hide; the viewer's page hides its gutter while a filter is active.)
+- The file filter is client-side over the loaded window only; it never queries the backend, and the viewer's page hides its gutter while a filter is active.
 - Commit stats are file-change buckets (A/D/other-letter); merge commits report zeros on the wire; the frontend renders the backend triple when present and derives the same buckets client-side from the fetched file list otherwise; a stats-less row (no backend value, files not loaded) renders no stats cell.
 - Empty-state texts distinguish merge ("No diff (merge commit)") from root ("No files (root commit)") from ordinary file-less commits ("No files"), matching the backend's `diff-tree` behavior.
 - The unified/split diff mode is the single shared `reviewStore.diffViewMode` preference (persisted, app-wide, no session affinity) driven only through `DiffViewModeToggle`.
@@ -94,7 +96,7 @@ A history load error renders only when no commits are loaded (inline error state
 ## Related Specs
 
 - [desktop-frontend.md](../../contracts/desktop-frontend.md) — the `GetGitHistory` (stats + pagination), `GetCommitMessage`, `GetCommitFiles`/`GetCommitFilesBatch` and `GetCommitDiff` RPC contract, and the Git-panel focus resolution every history RPC resolves through
-- [git-changes-list.md](git-changes-list.md) — the Changes tab list (the other Git-panel tab)
+- [git-changes-list.md](git-changes-list.md) — the Changes tab list (the other Git-panel section)
 - [git-operation-console.md](git-operation-console.md) — the mutation-result log the history context menu's operations feed
 - [button-tooltips.md](button-tooltips.md) — the tooltip convention behind the icon-only history button and the SHA/stats `title`s
 - [stores.md](stores.md) — `gitPanelStore` (`GIT_GRAPH_TAB_PATH`, `pendingHistoryFilter`), `fileViewerStore` (tab + expansion), `reviewStore` (`diffViewMode`)

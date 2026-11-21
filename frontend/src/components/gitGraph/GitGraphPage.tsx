@@ -31,8 +31,8 @@ const EMPTY_EXPANDED_FILES: Record<string, ReadonlySet<string>> = {}
  * gutter + expandable commit cards (full commit message, changed files with
  * status + stats, per-file inline diffs via the review tables) driven by the
  * SHARED reviewStore.diffViewMode (DiffViewModeToggle). The lane gutter
- * renders here only — the Git panel's History tab is a plain full-width row
- * list — and hides while the file filter is active, since a filtered subset
+ * renders here only — the Git panel has no history section of its own —
+ * and hides while the file filter is active, since a filtered subset
  * is not a connected graph.
  *
  * Data comes from the same paginated source as the Git panel
@@ -72,10 +72,26 @@ export function GitGraphPage() {
     fetchFiles,
     pendingShas,
   } = useGitHistoryFilter(commits)
+
+  // Consume a pending history filter set externally (e.g. "View History" from
+  // the file-tree context menu, which also opens this page). The filter is
+  // applied once and then cleared from the store so it doesn't re-apply on
+  // subsequent renders. Subscribing reactively (rather than via getState())
+  // ensures the effect re-runs even when the page is already mounted — e.g.
+  // the user is already viewing history and right-clicks another file in the
+  // tree.
+  const pendingHistoryFilter = useGitPanelStore((s) => s.pendingHistoryFilter)
+  const clearPendingHistoryFilter = useGitPanelStore((s) => s.clearPendingHistoryFilter)
+  useEffect(() => {
+    if (pendingHistoryFilter !== null) {
+      setFilterText(pendingHistoryFilter)
+      clearPendingHistoryFilter()
+    }
+  }, [pendingHistoryFilter, setFilterText, clearPendingHistoryFilter])
+
   const diffViewMode = useReviewStore((s) => s.diffViewMode)
   // Current branch name — used by the commit context menu to label the
-  // "Reset <branch> to This Commit" submenu (the SAME menu the Git panel's
-  // History tab renders; this page owns its own instance).
+  // "Reset <branch> to This Commit" submenu.
   const currentBranch = useGitPanelStore((s) => s.branch.name)
 
   // ── Card expansion state (gitGraphStore — app-session scope) ────────
@@ -217,8 +233,8 @@ export function GitGraphPage() {
     [messagePhases, messagesBySha, pendingShas, filesBySha, expandedSha, activeFileDiffs],
   )
 
-  // ── Commit context menu (bespoke position-based; mirrors the Git panel's
-  // History tab: a single page-level instance fed by right-clicks). ──────
+  // ── Commit context menu (bespoke position-based; a single page-level
+  // instance fed by card right-clicks). ─────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{
     sha: string
     refs: string[]
@@ -343,8 +359,8 @@ export function GitGraphPage() {
     getItemKey: (i: number) => visibleNodes[i]?.sha ?? i,
   })
 
-  // Infinite-scroll edge trigger (idempotent loadMore; see the Git panel's
-  // History tab). The "Load more" button below is the keyboard path.
+  // Infinite-scroll edge trigger (idempotent loadMore — see useGitHistory).
+  // The "Load more" button below is the keyboard path.
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el || !hasMore || isLoadingMore) return

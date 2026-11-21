@@ -323,7 +323,7 @@ describe('GitHistoryContextMenu — Reset', () => {
   it('hard reset keeps its target after the parent clears the menu state on close', async () => {
     const onAfterMutation = vi.fn()
     const fullSha = '0123456789abcdef'
-    // Mirror the real host (GitHistoryTab): the menu state drives both props,
+    // Mirror the real host (GitGraphPage): the menu state drives both props,
     // and onClose() clears it — `sha` becomes '' and `position` null while the
     // component instance (and its dialogs) stay mounted.
     function Host() {

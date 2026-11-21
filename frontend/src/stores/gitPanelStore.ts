@@ -6,8 +6,8 @@ import type { Branch, BranchInfo, GitPanelFocus, GitWorktree, MergeRebaseState }
  * Synthetic pseudo-path the file viewer renders as the commit-graph tab
  * (parallels RESEARCH_TAB_PATH in researchStore / REVIEW_TAB_PATH in
  * reviewStore; the constant lives in the store of the owning subsystem).
- * GitHistoryTab's filter-bar button opens it so the lane DAG can be
- * inspected full-width in the viewer. The tab is VIRTUAL — never backed by
+ * GitGraphPage (and the Git panel's history icon-button) open it so the
+ * lane DAG can be inspected full-width in the viewer. The tab is VIRTUAL — never backed by
  * a file on disk; the title shown on the tab is pinned by
  * `fileNameFromPath` in lib/fileViewerUtils.
  */
@@ -51,9 +51,13 @@ export type SortBy = 'path' | 'status' | 'extension'
 export type GroupBy = 'none' | 'status' | 'directory'
 
 /**
- * Active GitPanel tab. 'graph' was merged into 'history' (unified view);
- * 'files' hosts the workspace file explorer (FilterBar + tree) as the first
- * section, shown only for git-repository projects. Persisted per project.
+ * Active GitPanel tab. 'files' hosts the workspace file explorer (FilterBar +
+ * tree) as the first section, shown only for git-repository projects. The
+ * compact 'history' section was REMOVED from the panel — the icon-button in
+ * the tab strip opens the Git history page in the file viewer instead — but
+ * the value stays in the type and in the persisted-state validation as a
+ * LEGACY entry: an old snapshot may still carry it, and the panel renders the
+ * explorer for it. Persisted per project.
  */
 export type GitPanelTab = 'files' | 'changes' | 'history'
 
@@ -237,9 +241,8 @@ interface GitPanelState {
   /**
    * Active GitPanel tab per project, keyed by project id. Persisted so each
    * project's tab survives switch-away and CHAT↔CODE mode switches. Absent
-   * keys default to 'files' (see selectGitPanelTab). 'graph' was merged into
-   * 'history' (unified view); 'files' hosts the workspace file explorer
-   * (FilterBar + tree) as the first section, shown only for git repositories.
+   * keys default to 'files' (see selectGitPanelTab). The legacy 'history'
+   * value renders the explorer too (see GitPanelTab above).
    */
   activeTabByProject: Record<string, GitPanelTab>
   /**
@@ -266,7 +269,7 @@ interface GitPanelState {
    * specs/domains/frontend/branch-list.md.
    */
   branchListTree: boolean
-  /** Transient: set by "View History" file-tree action, consumed by GitHistoryTab, cleared after use. */
+  /** Transient: set by "View History" file-tree action, consumed by the viewer's GitGraphPage, cleared after use. */
   pendingHistoryFilter: string | null
   /**
    * Transient: a ref (SHA/branch/tag) to pre-select as the base for the next
@@ -353,7 +356,7 @@ interface GitPanelActions {
   setGroupBy: (mode: GroupBy) => void
   /** Set the branch-list display mode (false = flat, true = tree). */
   setBranchListTree: (tree: boolean) => void
-  /** Queue a file-path filter for the git history tab. */
+  /** Queue a file-path filter for the viewer's git history page. */
   setPendingHistoryFilter: (filter: string) => void
   /** Clear the pending history filter after it has been consumed. */
   clearPendingHistoryFilter: () => void

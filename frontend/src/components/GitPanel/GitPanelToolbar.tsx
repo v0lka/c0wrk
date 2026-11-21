@@ -4,7 +4,7 @@ import { BranchDropdown } from './BranchDropdown'
 
 /**
  * Top toolbar of the Git panel — spans the full panel width and stays visible
- * across all tabs (changes / history).
+ * above the panel's tab strip (Files / Changes).
  *
  * - Left: the {@link BranchDropdown} field — clicking it opens the inline
  *   branch list (not the modal).
