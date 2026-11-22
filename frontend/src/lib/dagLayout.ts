@@ -151,7 +151,15 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
     const parents = item.dependsOn
     let assignedLane: number
     if (parents.length === 0) {
-      assignedLane = allocateLane(0, Infinity)
+      // No incoming edge exists, so nothing can pierce this node — take a
+      // freed anchor lane 0 directly (allocateLane itself never returns the
+      // anchor; see specs/domains/frontend/plan-dag-graph.md).
+      if (freeLanes.includes(0)) {
+        removeFreeLane(0)
+        assignedLane = 0
+      } else {
+        assignedLane = allocateLane(0, Infinity)
+      }
     } else if (parents.length === 1) {
       const parentId = parents[0]!
       const parentLane = laneOf.get(parentId)!

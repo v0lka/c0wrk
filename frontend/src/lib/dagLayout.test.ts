@@ -189,6 +189,31 @@ describe('freed-lane reuse (drop piercing)', () => {
   })
 })
 
+describe('freed anchor lane 0 (parentless reclaim)', () => {
+  it('lets a parentless item take a freed anchor lane 0', () => {
+    // C frees lane 0 at row 3 (M parks on F's lane 1, the only lane left:
+    // F forks from row 1 above C's parked tail, making lane 0 ineligible for
+    // M). F2 must still not ride the freed lane 0 (it has a fork parent), but
+    // the following parentless P has no incoming edge and reclaims it.
+    const items: DAGItem[] = [
+      { id: 'A', dependsOn: [] },
+      { id: 'F', dependsOn: [] },
+      { id: 'C', dependsOn: ['A'] },
+      { id: 'M', dependsOn: ['C', 'F'] },
+      { id: 'F2', dependsOn: ['F'] },
+      { id: 'P', dependsOn: [] },
+    ]
+    const layout = computeDAGLayout(items)
+    expect(laneOf(layout, 'A')).toBe(0)
+    expect(laneOf(layout, 'F')).toBe(1)
+    expect(laneOf(layout, 'C')).toBe(0)
+    expect(laneOf(layout, 'M')).toBe(1)
+    expect(laneOf(layout, 'F2')).toBe(2)
+    expect(laneOf(layout, 'P')).toBe(0)
+    expectCleanLayout(items, 'parentless-anchor-reclaim')
+  })
+})
+
 describe('lane-continuation broken marking (BUG4)', () => {
   // B is an independent root whose lane 1 is freed when C parks on A's lane 0;
   // F later allocates that freed lane, so the lane-1 continuation runs from B
