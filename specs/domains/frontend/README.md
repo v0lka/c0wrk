@@ -335,5 +335,6 @@ Frontend configuration is derived from backend (no separate frontend config file
 - [system-notifications.md](system-notifications.md) — the visual notification channel: native OS banners raised from the same cued session events, plus banner-click routing back to the session
 - [events.md](events.md) — event handling architecture
 - [rendering.md](rendering.md) — message display pipeline
+- [plan-dag-graph.md](plan-dag-graph.md) — the Execution plan panel's SVG lane gutter: owner-checked lane assignment, fork/merge fan stacking, honest broken continuations, and the deterministic geometry shared with the step rows
 - [../../contracts/desktop-frontend.md](../../contracts/desktop-frontend.md) — RPC surface
 - [../../contracts/event-catalog.md](../../contracts/event-catalog.md) — event types
