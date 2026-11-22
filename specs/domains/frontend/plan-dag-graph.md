@@ -9,13 +9,13 @@ The SVG lane gutter of the collapsible Execution plan panel: one node circle per
 - `frontend/src/components/chat/ExecutionPanels.tsx` — the panel surface: collapsible "Execution plan" header (ListChecks glyph, `completed/total` count, failed count) over a `max-h-48` scroll area; per plan group a flex row mounting the gutter and the step rows
 - `frontend/src/components/chat/DAGGraph.tsx` — the renderer: computes the layout and draws one `<svg>` (node circles, every edge as a single `<path>`); owns the renderer-side geometry constants
 - `frontend/src/components/chat/dagEdgePath.ts` — pure SVG path builder (`buildEdgePath`) + lane geometry constants, kept out of the component file for fast-refresh compliance and direct unit testing
-- `frontend/src/lib/dagLayout.ts` — pure layout: `computeDAGLayout(items) → { nodes, connectors, maxLane }` (owner-checked lane assignment, connector computation, lane-continuation synthesis)
+- `frontend/src/lib/dagLayout.ts` — pure layout: `computeDAGLayout(items) → { nodes, connectors, maxLane }` (input normalization via the exported `drawnDeps`, owner-checked lane assignment, connector computation, lane-continuation synthesis)
 - `frontend/src/stores/planStore.ts` — the single plan group (`planGroups[0]`) and its per-step statuses the graph visualizes
-- `frontend/src/lib/dagLayout.test.ts` — the invariant battery: fixed topologies plus a seeded-random sweep (fixed seed list, 500 DAGs per run) asserting the invariants below on every graph
+- `frontend/src/lib/dagLayout.test.ts` — the invariant battery: fixed topologies (including forward references, mixed declaration order, duplicate `depends_on` entries and undeclared ids) plus seeded-random sweeps over a topological corpus (500 DAGs per run) and a shuffled declaration-order corpus (100 graphs per run), asserting the invariants below on every graph
 
 ## Behavior
 
-The panel renders only when a plan group exists and the session is not E2S (an E2S session renders the Execution State panel instead — [../e2s.md](../e2s.md)). The graph is collapsed/expanded with the panel; the step rows beside it are `PlanView`'s 24px rows (status icon, title, duration), clickable to scroll to the step's chat block. Input is `PlanItem[]` in topological order with unique ids and `depends_on` entries referencing declared ids — the `declare_plan` contract guarantees this ([../../contracts/conductor-tools.md](../../contracts/conductor-tools.md)); layout output depends only on `id` and `dependsOn`, so a re-render is deterministic with no DOM measurement.
+The panel renders only when a plan group exists and the session is not E2S (an E2S session renders the Execution State panel instead — [../e2s.md](../e2s.md)). The graph is collapsed/expanded with the panel; the step rows beside it are `PlanView`'s 24px rows (status icon, title, duration), clickable to scroll to the step's chat block. Input is `PlanItem[]` with unique ids and `depends_on` entries referencing declared ids — the `declare_plan` contract guarantees this shape ([../../contracts/conductor-tools.md](../../contracts/conductor-tools.md)) but not the declaration order (steps may reference ids declared later; waves keep declaration order verbatim). The layout normalizes dependencies first (`drawnDeps`): duplicate entries collapse to one edge, and an entry naming a later-declared or undeclared id is dropped — an edge pointing upward renders as nothing. Layout output depends only on `id` and `dependsOn`, so a re-render is deterministic with no DOM measurement.
 
 `computeDAGLayout` runs three passes:
 
@@ -41,7 +41,7 @@ SVG size: `width = (maxLane + 1)·LANE_WIDTH + 2·PADDING`, `height = rows·BASE
 
 ## Error Handling
 
-An empty plan (`maxLane === -1`) renders nothing. The layout is pure and total over its input contract — a valid topologically-ordered item list always produces a layout; there are no partial-failure states. The seeded-random battery doubles as a regression gate: any invariant violation in a future change fails the frontend test suite rather than shipping a mangled gutter.
+An empty plan (`maxLane === -1`) renders nothing. The layout is pure and total over its input contract — a contract-valid item list in any declaration order always produces a layout over the drawn edges; there are no partial-failure states, and out-of-order input degrades gracefully (forward-referenced edges do not render; the remaining graph keeps every invariant below). The seeded-random batteries double as a regression gate: any invariant violation in a future change fails the frontend test suite rather than shipping a mangled gutter — the shuffled corpus and the forward-reference cases pin the normalization against non-terminating layouts.
 
 ## Invariants
 
@@ -51,10 +51,11 @@ An empty plan (`maxLane === -1`) renders nothing. The layout is pure and total o
 - **Row-band sync:** `BASE_ROW_HEIGHT` in `DAGGraph.tsx` is defined as the `ROW_HEIGHT_PX` exported from `dagLayout.ts` — the dy-band argument holds under the shared pitch.
 - **Determinism:** the SVG is a pure function of the items — same input, same layout, same paths; no DOM measurement, no randomness.
 - **Legacy compatibility:** connectors with zero `exitDy`/`entryDy` render byte-identically to the pre-fan shapes; absent optional fields ≡ zero/solid.
+- **Order-independent safety:** the layout terminates and holds every invariant above on contract-valid input in any declaration order — a `depends_on` entry naming a later-declared or undeclared id is dropped by normalization and renders no edge; duplicate entries render one edge.
 
 ## Related Specs
 
 - [rendering.md](rendering.md) — the chat display pipeline whose `plan_step` blocks these rows scroll to (click-to-scroll via the ScrollContext)
 - [../e2s.md](../e2s.md) — the Execution State panel that replaces the plan view (and this gutter) for E2S sessions
 - [stores.md](stores.md) — `planStore`: the single plan group and step statuses feeding the graph
-- [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md) — the `declare_plan` contract (mandatory `depends_on`, acyclicity) that guarantees the layout's input ordering
+- [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md) — the `declare_plan` contract (mandatory `depends_on`, unique resolvable ids, acyclicity) that guarantees the input's DAG shape while leaving declaration order free — the layout normalizes it

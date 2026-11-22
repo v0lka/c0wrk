@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeDAGLayout, type DAGItem, type DAGLayout } from './dagLayout'
+import { computeDAGLayout, drawnDeps, type DAGItem, type DAGLayout } from './dagLayout'
 
 describe('computeDAGLayout', () => {
   it('returns empty layout for empty input', () => {
@@ -214,6 +214,41 @@ describe('freed anchor lane 0 (parentless reclaim)', () => {
   })
 })
 
+describe('allocateLane scan order (right side first)', () => {
+  it('prefers the eligible freed lane on the anchor\'s right over the one on its left', () => {
+    // W0 frees lane 0 (its merge parks on K's lane, completing U0); W frees
+    // lane 2 (lane 0 is ineligible for it: U0 sits below K's fork row). By
+    // the time D2 allocates around anchor lane 1, both neighbors are free
+    // with their last occupants above P's row, and D1 owns the anchor. The
+    // documented order (anchor+1 before anchor-1) must return lane 2 — a
+    // left-first scan would return 0, a broken anchor pickup would return 1.
+    const items: DAGItem[] = [
+      { id: 'A', dependsOn: [] }, // lane 0
+      { id: 'K', dependsOn: [] }, // lane 1 — fork (W0, W)
+      { id: 'B', dependsOn: ['A'] }, // lane 0
+      { id: 'U0', dependsOn: ['B'] }, // lane 0, last occupant at row 3
+      { id: 'V', dependsOn: [] }, // fresh lane 2 (lane 0 not free yet)
+      { id: 'W0', dependsOn: ['K', 'U0'] }, // parks lane 1 (K owns it), frees lane 0
+      { id: 'W', dependsOn: ['K', 'V'] }, // fresh lane 3 (lane 0 ineligible), frees lane 2
+      { id: 'P', dependsOn: ['W0'] }, // lane 1 — fork (D1, D2)
+      { id: 'D1', dependsOn: ['P'] }, // lane 1 (takes ownership from P)
+      { id: 'D2', dependsOn: ['P'] }, // allocateLane(1, row 7) -> lane 2
+    ]
+    const layout = computeDAGLayout(items)
+    expect(laneOf(layout, 'A')).toBe(0)
+    expect(laneOf(layout, 'K')).toBe(1)
+    expect(laneOf(layout, 'B')).toBe(0)
+    expect(laneOf(layout, 'U0')).toBe(0)
+    expect(laneOf(layout, 'V')).toBe(2)
+    expect(laneOf(layout, 'W0')).toBe(1)
+    expect(laneOf(layout, 'W')).toBe(3)
+    expect(laneOf(layout, 'P')).toBe(1)
+    expect(laneOf(layout, 'D1')).toBe(1)
+    expect(laneOf(layout, 'D2')).toBe(2)
+    expectCleanLayout(items, 'right-side-first')
+  })
+})
+
 describe('lane-continuation broken marking (BUG4)', () => {
   // B is an independent root whose lane 1 is freed when C parks on A's lane 0;
   // F later allocates that freed lane, so the lane-1 continuation runs from B
@@ -310,6 +345,72 @@ describe('side-aware fork fan', () => {
   })
 })
 
+describe('input normalization (declaration order & duplicates)', () => {
+  // The declare_plan contract guarantees a DAG, not topological declaration
+  // order. A forward reference used to send allocateLane into a synchronous
+  // infinite loop (NaN anchor): this case is the canary — a regression here
+  // wedges the whole test run instead of failing a single test.
+  it('terminates on a forward reference and lays the child out as a root', () => {
+    const items: DAGItem[] = [
+      { id: 'b', dependsOn: ['a'] },
+      { id: 'a', dependsOn: [] },
+    ]
+    const layout = computeDAGLayout(items)
+    expect(layout.nodes).toEqual([
+      { id: 'b', lane: 0 },
+      { id: 'a', lane: 1 },
+    ])
+    expect(layout.connectors).toEqual([])
+    expectCleanLayout(items, 'forward-ref')
+  })
+
+  it('draws back-references and drops forward ones in mixed declaration order', () => {
+    // Diamond A→B, A→C, B+C→D declared as [A, D, B, C]: the A→B/A→C
+    // back-references render, the B→D/C→D forward references drop, and D
+    // lays out as a root.
+    const items: DAGItem[] = [
+      { id: 'A', dependsOn: [] },
+      { id: 'D', dependsOn: ['B', 'C'] },
+      { id: 'B', dependsOn: ['A'] },
+      { id: 'C', dependsOn: ['A'] },
+    ]
+    const layout = computeDAGLayout(items)
+    expect(layout.nodes.map(n => n.lane)).toEqual([0, 1, 0, 2])
+    const edges = layout.connectors.map(c => `${c.fromRow}->${c.toRow}`).sort()
+    expect(edges).toEqual(['0->2', '0->3'])
+    expectCleanLayout(items, 'mixed-order')
+  })
+
+  it('collapses duplicate depends_on entries to a single connector', () => {
+    const items: DAGItem[] = [
+      { id: 'a', dependsOn: [] },
+      { id: 'b', dependsOn: ['a', 'a'] },
+    ]
+    const layout = computeDAGLayout(items)
+    expect(layout.nodes).toEqual([
+      { id: 'a', lane: 0 },
+      { id: 'b', lane: 0 },
+    ])
+    expect(layout.connectors).toEqual([
+      { fromLane: 0, toLane: 0, fromRow: 0, toRow: 1, type: 'vertical' },
+    ])
+    expectCleanLayout(items, 'duplicate-dep')
+  })
+
+  it('drops a reference to an undeclared id', () => {
+    const items: DAGItem[] = [
+      { id: 'a', dependsOn: [] },
+      { id: 'b', dependsOn: ['a', 'ghost'] },
+    ]
+    const layout = computeDAGLayout(items)
+    expect(layout.nodes.map(n => n.lane)).toEqual([0, 0])
+    expect(layout.connectors).toEqual([
+      { fromLane: 0, toLane: 0, fromRow: 0, toRow: 1, type: 'vertical' },
+    ])
+    expectCleanLayout(items, 'undeclared-ref')
+  })
+})
+
 // --- Invariant battery ------------------------------------------------------
 
 const ROW_PX = 24
@@ -398,11 +499,14 @@ function expectCleanLayout(items: DAGItem[], label: string): void {
  * edge-backed continuations stay unmarked (solid, unchanged shape).
  */
 function continuationDefects(items: DAGItem[], layout: DAGLayout): string[] {
+  // Mirror the layout's edge set (drawnDeps): the invariant is about the
+  // edges the layout draws, not the raw depends_on lists.
+  const depsOf = drawnDeps(items)
   const children = new Map<string, string[]>()
-  for (const item of items) {
-    for (const dep of item.dependsOn) {
+  for (let i = 0; i < items.length; i++) {
+    for (const dep of depsOf[i]!) {
       const list = children.get(dep) ?? []
-      list.push(item.id)
+      list.push(items[i]!.id)
       children.set(dep, list)
     }
   }
@@ -446,6 +550,8 @@ function mulberry32(seed: number): () => number {
 const SWEEP_SEEDS: readonly number[] = [0xd46e6a, 0x1b873593, 0x9e3779b9, 0x85ebca6b, 0xcc9e2d51]
 /** Random graphs generated per seed. */
 const GRAPHS_PER_SEED = 100
+/** Shuffled (out-of-order declaration) graphs generated per seed. */
+const SHUFFLED_GRAPHS_PER_SEED = 20
 
 /** Random topologically ordered DAG: node i depends on up to 3 earlier nodes. */
 function randomDag(rng: () => number, n: number): DAGItem[] {
@@ -474,6 +580,29 @@ function sweepDefects(seed: number): string[] {
     const items = randomDag(rng, n)
     const layout = computeDAGLayout(items)
     const ctx = `seed 0x${seed.toString(16)} graph #${g} (n=${n})`
+    defects.push(...findDefects(layout).map(d => `${ctx}: ${d}`))
+    defects.push(...continuationDefects(items, layout).map(d => `${ctx}: ${d}`))
+  }
+  return defects
+}
+
+/**
+ * Shuffled corpus: a random topological DAG re-declared in a random order.
+ * Normalization keeps only the back-references (roughly half the edges), so
+ * this hunts the invariant set under out-of-order input — the class of input
+ * the topological sweep never exercises.
+ */
+function sweepShuffledDefects(seed: number): string[] {
+  const gen = mulberry32(seed + 0x2545f491)
+  const defects: string[] = []
+  for (let g = 0; g < SHUFFLED_GRAPHS_PER_SEED; g++) {
+    const items = randomDag(gen, 5 + Math.floor(gen() * 36))
+    for (let i = items.length - 1; i > 0; i--) {
+      const j = Math.floor(gen() * (i + 1))
+      ;[items[i], items[j]] = [items[j]!, items[i]!]
+    }
+    const layout = computeDAGLayout(items)
+    const ctx = `shuffled seed 0x${seed.toString(16)} graph #${g} (n=${items.length})`
     defects.push(...findDefects(layout).map(d => `${ctx}: ${d}`))
     defects.push(...continuationDefects(items, layout).map(d => `${ctx}: ${d}`))
   }
@@ -625,6 +754,16 @@ describe('layout invariant battery', () => {
         + 'V overlaps only at shared endpoint nodes, zero solid continuations without an edge',
       () => {
         expect(sweepDefects(seed)).toEqual([])
+      },
+    )
+  }
+
+  for (const seed of SWEEP_SEEDS) {
+    it(
+      `shuffled declaration-order sweep (seed 0x${seed.toString(16)}): the same invariants `
+        + 'hold after normalization drops the forward references',
+      () => {
+        expect(sweepShuffledDefects(seed)).toEqual([])
       },
     )
   }

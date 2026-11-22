@@ -38,8 +38,39 @@ export const ROW_HEIGHT_PX = 24
 const FAN_DY_MAX_PX = 9
 
 /**
- * Compute lane assignments and SVG connector segments from plan items
- * in topological order (guaranteed by backend).
+ * Dependencies the layout actually draws, per item: deduplicated, restricted
+ * to back-references. The declare_plan contract guarantees unique resolvable
+ * acyclic depends_on ids, but steps may reference ids declared LATER (waves
+ * keep declaration order verbatim) and an edge pointing upward renders as
+ * nothing — so a forward or undeclared reference is dropped and duplicates
+ * collapse to one edge. Every pass (children map, lane assignment,
+ * connectors) reads the same normalized set.
+ */
+export function drawnDeps(items: DAGItem[]): string[][] {
+  const rowOf = new Map<string, number>()
+  for (let i = 0; i < items.length; i++) {
+    rowOf.set(items[i]!.id, i)
+  }
+  return items.map((item, row) => {
+    const seen = new Set<string>()
+    const deps: string[] = []
+    for (const dep of item.dependsOn) {
+      if (seen.has(dep)) continue
+      seen.add(dep)
+      const depRow = rowOf.get(dep)
+      if (depRow !== undefined && depRow < row) deps.push(dep)
+    }
+    return deps
+  })
+}
+
+/**
+ * Compute lane assignments and SVG connector segments from plan items.
+ *
+ * The declare_plan contract guarantees unique, resolvable, acyclic ids — but
+ * NOT declaration order — so dependencies are normalized first (drawnDeps):
+ * duplicate entries collapse, and references to later-declared or undeclared
+ * ids are dropped (such an edge cannot render upward and does not draw).
  *
  * Lanes are owner-checked: a child parks on a parent's lane only while that
  * parent still owns it, and a freed lane is handed out only when its last
@@ -55,13 +86,16 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
     rowOf.set(items[i]!.id, i)
   }
 
+  // Normalized dependencies: one entry per drawn edge (see drawnDeps).
+  const depsOf = drawnDeps(items)
+
   // Build children map
   const childrenMap = new Map<string, string[]>()
-  for (const item of items) {
-    for (const dep of item.dependsOn) {
+  for (let i = 0; i < items.length; i++) {
+    for (const dep of depsOf[i]!) {
       let children = childrenMap.get(dep)
       if (!children) { children = []; childrenMap.set(dep, children) }
-      children.push(item.id)
+      children.push(items[i]!.id)
     }
   }
 
@@ -148,7 +182,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   const nodes: DAGNode[] = []
   for (let row = 0; row < items.length; row++) {
     const item = items[row]!
-    const parents = item.dependsOn
+    const parents = depsOf[row]!
     let assignedLane: number
     if (parents.length === 0) {
       // No incoming edge exists, so nothing can pierce this node — take a
@@ -210,7 +244,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   for (let row = 0; row < items.length; row++) {
     const item = items[row]!
     const childLane = laneOf.get(item.id)!
-    for (const parentId of item.dependsOn) {
+    for (const parentId of depsOf[row]!) {
       const parentRow = rowOf.get(parentId)!
       const parentLane = laneOf.get(parentId)!
       let type: DAGConnector['type']
@@ -230,6 +264,9 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
         const free = !hPlaced.some(r => r.yPx === yPx && Math.min(r.hi, hi) > Math.max(r.lo, lo))
         if (free || dy >= FAN_DY_MAX_PX) break
       }
+      // The loop exits on a free step or the cap itself; the clamp keeps runs
+      // inside the row band even if FAN_STEP_PX stops dividing FAN_DY_MAX_PX.
+      dy = Math.min(dy, FAN_DY_MAX_PX)
       hPlaced.push({ yPx: hRow * ROW_HEIGHT_PX + dy, lo, hi })
       const connector: DAGConnector = { fromLane: parentLane, toLane: childLane, fromRow: parentRow, toRow: row, type }
       if (type === 'fork') connector.exitDy = dy
@@ -266,11 +303,12 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
       if (!existingVerticals.has(key)) {
         // False continuation guard (BUG4): consecutive occupants of a lane with
         // no dependency edge between them must not render as an unbroken chain.
+        // Normalized edges always point down (depRow < row), so only the upper
+        // occupant's child list can contain the lower one — checking the reverse
+        // direction can never be true.
         const fromId = items[from]!.id
         const toId = items[to]!.id
-        const edgeBacked =
-          (childrenMap.get(fromId)?.includes(toId) ?? false) ||
-          (childrenMap.get(toId)?.includes(fromId) ?? false)
+        const edgeBacked = childrenMap.get(fromId)?.includes(toId) ?? false
         const connector: DAGConnector = { fromLane: lane, toLane: lane, fromRow: from, toRow: to, type: 'vertical' }
         if (!edgeBacked) connector.broken = true
         connectors.push(connector)
