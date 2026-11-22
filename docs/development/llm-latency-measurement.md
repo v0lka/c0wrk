@@ -180,8 +180,9 @@ defined in § Extraction filter.
 
 ### Environment limits (honest statement)
 
-- **No after-era run exists yet.** The changes are uncommitted c0wrk work on
-  top of `e6d1f597`; the running desktop instance predates them. Verified:
+- **No after-era run exists yet.** The changes were uncommitted c0wrk work
+  on top of `e6d1f597` at recording time (committed since as `5d946078`);
+  the running desktop instance predates them. Verified:
   all 178 session dumps on disk carry usage keys
   `{input_tokens, output_tokens}` only, and `session_messages` contains no
   persisted `agent_metrics` row with the step_5 mirror fields (every
@@ -207,14 +208,24 @@ defined in § Extraction filter.
 
 - sp4rk: `1df9c68` `feat(llm,memory,agent): prompt-cache stability,
   Anthropic caching + thinking, usage cache detail` — published; pinned in
-  c0wrk `go.mod` as `v0.17.4-0.20261122031032-1df9c6800045`.
-- c0wrk: worktree at `e6d1f597` + the cycle's uncommitted changes
-  (observability seam, `executor.historyMutation.cohortSize`, ADR-134
-  schedule, continuation fast-path, picker/docs). Verification state:
-  `make lint` green (gofmt clean, golangci-lint 0 issues, eslint clean);
-  `go test -count=1 -skip '^TestStress' ./...` green (all packages `ok`,
-  zero FAIL/panic/race in the verbose streams); frontend vitest 491 files /
-  7838 tests pass.
+  c0wrk `go.mod` as `v0.17.4-0.20261122031032-1df9c6800045` when the before
+  baseline below was recorded. The pin moved within the same cycle: the
+  changeset bumped it to the sp4rk fix commit `49a5ab06cf68` (`fix(llm):
+  gate thinking-block carriage to first step and strip stale blocks`), and
+  c0wrk `go.mod` now pins `v0.17.4-0.20261122144906-49a5ab06cf68`.
+- c0wrk: the cycle's changes were uncommitted work on top of `e6d1f597` at
+  measurement time (observability seam, `executor.historyMutation.cohortSize`,
+  ADR-134 schedule, continuation fast-path, picker/docs); committed since as
+  `5d946078`.
+- Verification state: the original green run (`make lint` green — gofmt
+  clean, golangci-lint 0 issues, eslint clean; `go test -count=1 -skip
+  '^TestStress' ./...` green; frontend vitest 491 files / 7838 tests pass)
+  belongs to the `1df9c68` tree. Re-run on the shipped `49a5ab06cf68` pin
+  (`GOWORK=off`, published pin only): `make lint` checks green (gofmt
+  clean, golangci-lint 0 issues, eslint clean); `go test -count=1 -skip
+  '^TestStress' ./...` green (core 33/33, backend 10/10, desktop 1/1,
+  internal 7/7 packages `ok`, 4 packages without test files — zero
+  FAIL/panic); frontend vitest 491 files / 7838 tests pass.
 
 ### Before baseline — complaining-user profile (`Z-ai/glm-5.3-flash`), real usage
 

@@ -526,16 +526,19 @@ type LLMConfig struct {
 	Kimi                KimiConfig                           `yaml:"kimi"`
 	Models              map[string]ModelOverride             `yaml:"models"`
 	Retry               LLMRetryConfig                       `yaml:"retry"`
-	// NetworkAutoRetrySeconds governs the network-class auto-resend interval
-	// (ADR-128): the global seconds between task-level re-sends of
-	// connection-level provider failures (StatusCode 0 carrying one of the
-	// dns/connect/reset/timeout classes) — every provider, the fixed ones
-	// included. *int keeps the ADR's two semantics apart: nil (absent key)
-	// materializes the default via ApplyDefaults (omission ≠ off), while an
-	// explicit 0 stays the kill-switch ("never auto-resend on network
-	// errors") and is persisted verbatim. Like the per-provider knob this is
-	// not mapped into ToBuilderConfig — the timer lives in the c0wrk session
-	// layer. See specs/decisions/128-auto-resend-network-errors.md.
+	// NetworkAutoRetrySeconds arms the network-class auto-resend (ADR-134,
+	// amending ADR-128): any positive value enables the code-owned growing
+	// schedule (15 s → 30 s → 60 s, capped at 90 s) between task-level
+	// re-sends of connection-level provider failures (StatusCode 0 carrying
+	// one of the dns/connect/reset/timeout classes) — every provider, the
+	// fixed ones included; the value itself no longer sets the wait. *int
+	// keeps the ADR's two semantics apart: nil (absent key) materializes
+	// the default via ApplyDefaults (omission ≠ off), while an explicit 0
+	// stays the kill-switch ("never auto-resend on network errors") and is
+	// persisted verbatim. Like the per-provider knob this is not mapped
+	// into ToBuilderConfig — the timer lives in the c0wrk session layer.
+	// See specs/decisions/134-network-retry-schedule.md and
+	// specs/decisions/128-auto-resend-network-errors.md.
 	NetworkAutoRetrySeconds *int `yaml:"network_auto_retry_seconds,omitempty"`
 	// ServiceModels re-routes the one-shot service LLM calls onto dedicated
 	// models, keyed by the fixed service key (judge, router, reflector,
@@ -595,11 +598,11 @@ type OpenAICompatibleConfig struct {
 const maxAutoRetrySeconds = 3600
 
 // defaultNetworkAutoRetrySeconds materializes for an absent
-// llm.network_auto_retry_seconds (ADR-128): the middle of the 60–120 s band,
-// longer than and separate from the rate-limit cadence because
-// connection-level outages heal on minutes-scale with no server-signposted
-// window. Unlike the per-provider knob (omitted = disabled), omission here
-// equals this default — only an explicit 0 is the kill-switch.
+// llm.network_auto_retry_seconds (ADR-134): the knob is a switch, so this
+// value only materializes the enabled posture — the actual waits come from
+// the code-owned growing schedule, whose cap is this same figure. Unlike the
+// per-provider knob (omitted = disabled), omission here equals this default —
+// only an explicit 0 is the kill-switch.
 const defaultNetworkAutoRetrySeconds = 90
 
 // DefaultNetworkAutoRetrySeconds exposes defaultNetworkAutoRetrySeconds so
@@ -2949,11 +2952,13 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate the global network-class auto-retry interval (ADR-128): the
-	// same inclusive [0, 3600] window as the per-provider knob, shared for
-	// the same reason. validate() runs after ApplyDefaults, so a nil pointer
-	// here means a hand-built config bypassed defaults — treat absent as the
-	// documented default rather than skipping the bound.
+	// Validate the global network-class switch value (ADR-134, amending
+	// ADR-128): the same inclusive [0, 3600] window as the per-provider
+	// knob, shared for the same reason — the switch value is bound-checked
+	// even though the waits it arms come from the code-owned schedule.
+	// validate() runs after ApplyDefaults, so a nil pointer here means a
+	// hand-built config bypassed defaults — treat absent as the documented
+	// default rather than skipping the bound.
 	networkInterval := defaultNetworkAutoRetrySeconds
 	if cfg.LLM.NetworkAutoRetrySeconds != nil {
 		networkInterval = *cfg.LLM.NetworkAutoRetrySeconds
