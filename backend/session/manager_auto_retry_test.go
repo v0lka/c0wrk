@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	oai "github.com/openai/openai-go"
+
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/llmbudget"
 	"github.com/v0lka/sp4rk/llm"
@@ -88,7 +91,7 @@ func TestMaybeAutoRetryAt_QualifyingCauseStampsDeadline(t *testing.T) {
 	})
 
 	before := time.Now().Unix()
-	got := manager.maybeAutoRetryAt(&llm.Error{
+	got := manager.maybeAutoRetryAt("sess-1", "task-1", &llm.Error{
 		Provider:   "selfhosted",
 		StatusCode: 429,
 		ErrKind:    llm.ErrKindRateLimit,
@@ -121,7 +124,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 	t.Run("nil cause", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 30 })
-		if got := manager.maybeAutoRetryAt(nil); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-1", nil); got != 0 {
 			t.Errorf("nil cause returned %d, want 0", got)
 		}
 	})
@@ -129,7 +132,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 	t.Run("non-llm cause", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 30 })
-		if got := manager.maybeAutoRetryAt(errors.New("boom")); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-1", errors.New("boom")); got != 0 {
 			t.Errorf("non-llm cause returned %d, want 0", got)
 		}
 	})
@@ -138,7 +141,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 30 })
 		wrapped := fmt.Errorf("execution failed: %w", rateLimitErr)
-		if got := manager.maybeAutoRetryAt(wrapped); got == 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-1", wrapped); got == 0 {
 			t.Error("wrapped qualifying cause returned 0, want a deadline (errors.As must see through the chain)")
 		}
 	})
@@ -147,7 +150,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 30 })
 		err := &llm.Error{Provider: "selfhosted", StatusCode: 500, Retryable: true}
-		if got := manager.maybeAutoRetryAt(err); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-1", err); got != 0 {
 			t.Errorf("500 cause returned %d, want 0", got)
 		}
 	})
@@ -156,14 +159,14 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 		manager, _, _ := testManager(t)
 		// A disabled provider resolves to 0: no auto-resend.
 		manager.SetAutoRetryResolver(func(string) int { return 0 })
-		if got := manager.maybeAutoRetryAt(rateLimitErr); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-1", rateLimitErr); got != 0 {
 			t.Errorf("zero interval returned %d, want 0", got)
 		}
 	})
 
 	t.Run("no resolver wired", func(t *testing.T) {
 		manager, _, _ := testManager(t)
-		if got := manager.maybeAutoRetryAt(rateLimitErr); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-1", rateLimitErr); got != 0 {
 			t.Errorf("nil resolver returned %d, want 0", got)
 		}
 	})
@@ -287,10 +290,12 @@ func TestEmitTaskComplete_DegradedCauseStampsAutoRetryAt(t *testing.T) {
 }
 
 // TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval pins the ADR-128 knob
-// split: a connection-class failure rides the GLOBAL network interval on
-// EVERY provider — the fixed providers included, whose rate-limit answer is
-// always 0 — and the network kill-switch (0) silences the class without
-// touching the rate-limit knob.
+// split as amended by ADR-134: a connection-class failure rides the GLOBAL
+// network switch on EVERY provider — the fixed providers included, whose
+// rate-limit answer is always 0 — arming the code-owned schedule (the
+// configured value no longer sets the interval; the first re-send waits the
+// schedule's first step), and the network kill-switch (0) silences the class
+// without touching the rate-limit knob.
 func TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval(t *testing.T) {
 	connectErr := &llm.Error{
 		Provider:   "chatgpt",
@@ -298,20 +303,22 @@ func TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval(t *testing.T) {
 		Err:        &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
 	}
 
-	t.Run("fixed provider arms via the global interval", func(t *testing.T) {
+	t.Run("fixed provider arms via the global switch (first schedule step)", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		// The rate-limit resolver answers 0 for everything (fixed provider).
 		manager.SetAutoRetryResolver(func(string) int { return 0 })
+		// Any positive value arms the class; 90 — the old ADR-128 interval —
+		// must NOT leak into the stamped wait.
 		manager.SetNetworkAutoRetryResolver(func() int { return 90 })
 
 		before := time.Now().Unix()
-		got := manager.maybeAutoRetryAt(connectErr)
+		got := manager.maybeAutoRetryAt("sess-1", "task-net", connectErr)
 		after := time.Now().Unix()
 		if got == 0 {
 			t.Fatal("expected a stamped deadline for a network-class failure on a fixed provider, got 0")
 		}
-		if got < before+90 || got > after+90 {
-			t.Errorf("deadline %d outside [%d, %d] (now+90s window — the GLOBAL interval, not a provider answer)", got, before+90, after+90)
+		if got < before+15 || got > after+15 {
+			t.Errorf("deadline %d outside [%d, %d] (now+15s — the schedule's first step, not the configured 90)", got, before+15, after+15)
 		}
 	})
 
@@ -319,7 +326,7 @@ func TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 30 })
 		manager.SetNetworkAutoRetryResolver(func() int { return 0 })
-		if got := manager.maybeAutoRetryAt(connectErr); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-net", connectErr); got != 0 {
 			t.Errorf("network kill-switch stamped %d, want 0", got)
 		}
 	})
@@ -327,7 +334,7 @@ func TestMaybeAutoRetryAt_NetworkClassUsesGlobalInterval(t *testing.T) {
 	t.Run("no network resolver wired", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 30 })
-		if got := manager.maybeAutoRetryAt(connectErr); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-net", connectErr); got != 0 {
 			t.Errorf("nil network resolver stamped %d, want 0", got)
 		}
 	})
@@ -356,7 +363,7 @@ func TestMaybeAutoRetryAt_RateLimitSemanticsUnchanged(t *testing.T) {
 		manager.SetNetworkAutoRetryResolver(func() int { return 90 })
 
 		before := time.Now().Unix()
-		got := manager.maybeAutoRetryAt(rateLimitErr)
+		got := manager.maybeAutoRetryAt("sess-1", "task-rl", rateLimitErr)
 		after := time.Now().Unix()
 		if got == 0 {
 			t.Fatal("expected a stamped deadline for the rate-limit class, got 0")
@@ -370,7 +377,7 @@ func TestMaybeAutoRetryAt_RateLimitSemanticsUnchanged(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.SetAutoRetryResolver(func(string) int { return 0 })
 		manager.SetNetworkAutoRetryResolver(func() int { return 90 })
-		if got := manager.maybeAutoRetryAt(rateLimitErr); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-rl", rateLimitErr); got != 0 {
 			t.Errorf("rate-limit class resolved %d from the network knob, want 0", got)
 		}
 	})
@@ -440,7 +447,7 @@ func TestMaybeAutoRetryAt_RealBudgetDeathNeverArms(t *testing.T) {
 		if isAutoRetryableCause(cause) {
 			t.Error("budget death classified auto-retryable; the ADR-071 escalation must stay the only cure")
 		}
-		if got := manager.maybeAutoRetryAt(cause); got != 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-budget", cause); got != 0 {
 			t.Errorf("budget death stamped auto_retry_at %d, want 0", got)
 		}
 	})
@@ -455,7 +462,7 @@ func TestMaybeAutoRetryAt_RealBudgetDeathNeverArms(t *testing.T) {
 		if !isAutoRetryableCause(cause) {
 			t.Fatal("provider-side timeout must stay in the network class")
 		}
-		if got := manager.maybeAutoRetryAt(cause); got == 0 {
+		if got := manager.maybeAutoRetryAt("sess-1", "task-budget", cause); got == 0 {
 			t.Error("provider-side timeout returned no deadline; want the global network interval")
 		}
 	})
@@ -489,7 +496,7 @@ func TestMaybeAutoRetryAtFixedProviderNames(t *testing.T) {
 				cause := *tc.cause
 				cause.Provider = provider
 				before := time.Now().Unix()
-				got := manager.maybeAutoRetryAt(fmt.Errorf("terminal request: %w", &cause))
+				got := manager.maybeAutoRetryAt("sess-1", "task-fixed", fmt.Errorf("terminal request: %w", &cause))
 				if !tc.want {
 					if got != 0 {
 						t.Errorf("maybeAutoRetryAt(%s, %+v) = %d, want 0", provider, &cause, got)
@@ -502,4 +509,315 @@ func TestMaybeAutoRetryAtFixedProviderNames(t *testing.T) {
 			})
 		}
 	}
+}
+
+// rateLimitWithRetryAfter builds a rate-limit-class cause whose chain carries
+// the openai-compatible transport's error with (or without) a Retry-After
+// header — the only transport whose error type preserves the HTTP response,
+// and therefore the only one whose header this seam can honor (ADR-134).
+func rateLimitWithRetryAfter(value string, set bool) error {
+	header := http.Header{}
+	if set {
+		header.Set("Retry-After", value)
+	}
+	oaiErr := &oai.Error{
+		StatusCode: http.StatusTooManyRequests,
+		Request: &http.Request{
+			Method: http.MethodPost,
+			URL:    &url.URL{Scheme: "http", Host: "gw.lan", Path: "/v1/chat/completions"},
+		},
+		Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: header},
+	}
+	return &llm.Error{
+		Provider:   "selfhosted",
+		StatusCode: http.StatusTooManyRequests,
+		ErrKind:    llm.ErrKindRateLimit,
+		Err:        fmt.Errorf("429 Too Many Requests: %w", oaiErr),
+	}
+}
+
+// TestMaybeAutoRetryAt_NetworkScheduleGrowsOnRearms pins the ADR-134 growing
+// schedule end to end: successive stamped re-sends of ONE task-failure
+// episode wait 15 s → 30 s → 60 s → 90 s → 90 s… — the code-owned steps, not
+// the configured switch value, in charge — and the re-arms stay unlimited
+// (the fifth stamp past the schedule end still arms, at the cap). Windows are
+// computed per stamp against time.Now(); nothing sleeps.
+func TestMaybeAutoRetryAt_NetworkScheduleGrowsOnRearms(t *testing.T) {
+	manager, _, _ := testManager(t)
+	// 90 — the old ADR-128 interval — arms the class but must never surface
+	// as the wait: every step comes from the schedule.
+	manager.SetNetworkAutoRetryResolver(func() int { return 90 })
+	connectErr := &llm.Error{
+		Provider:   "selfhosted",
+		StatusCode: 0,
+		Err:        &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+	}
+	for i, want := range []int{15, 30, 60, 90, 90} {
+		before := time.Now().Unix()
+		got := manager.maybeAutoRetryAt("sess-1", "task-net", connectErr)
+		after := time.Now().Unix()
+		if got == 0 {
+			t.Fatalf("re-send %d: expected a stamped deadline, got 0 (unlimited re-arm must hold)", i+1)
+		}
+		if got < before+int64(want) || got > after+int64(want) {
+			t.Errorf("re-send %d: deadline %d outside [%d, %d] (want now+%ds, the schedule step)", i+1, got, before+int64(want), after+int64(want), want)
+		}
+	}
+}
+
+// TestMaybeAutoRetryAt_ScheduleIsPerTask pins the episode scoping: two
+// concurrent task-failure episodes in the same session each start at the
+// schedule's first step — the counter is keyed per task, never shared.
+func TestMaybeAutoRetryAt_ScheduleIsPerTask(t *testing.T) {
+	manager, _, _ := testManager(t)
+	manager.SetNetworkAutoRetryResolver(func() int { return 90 })
+	connectErr := &llm.Error{
+		Provider:   "selfhosted",
+		StatusCode: 0,
+		Err:        &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+	}
+	// Advance task A deep into the schedule.
+	for i := 0; i < 3; i++ {
+		if manager.maybeAutoRetryAt("sess-1", "task-a", connectErr) == 0 {
+			t.Fatalf("advance stamp %d returned 0", i+1)
+		}
+	}
+	// Task B's first failure still waits the first step.
+	before := time.Now().Unix()
+	got := manager.maybeAutoRetryAt("sess-1", "task-b", connectErr)
+	if got < before+15 || got > time.Now().Unix()+15 {
+		t.Errorf("task-b first deadline %d outside now+15s (the ladder must be per task)", got)
+	}
+}
+
+// TestMaybeAutoRetryAt_LadderCountsEveryStampedRearm pins that ONE counter
+// drives the schedule regardless of which class stamped: n is the episode's
+// prior auto re-sends (ADR-134), so a network → rate-limit → network sequence
+// walks 15 → 30 (the rate-limit knob's window) → 60.
+func TestMaybeAutoRetryAt_LadderCountsEveryStampedRearm(t *testing.T) {
+	manager, _, _ := testManager(t)
+	manager.SetAutoRetryResolver(func(provider string) int {
+		if provider == "selfhosted" {
+			return 30
+		}
+		return 0
+	})
+	manager.SetNetworkAutoRetryResolver(func() int { return 90 })
+	connectErr := &llm.Error{
+		Provider:   "selfhosted",
+		StatusCode: 0,
+		Err:        &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+	}
+	rateLimitErr := &llm.Error{
+		Provider:   "selfhosted",
+		StatusCode: 429,
+		ErrKind:    llm.ErrKindRateLimit,
+		Err:        errors.New("429 Too Many Requests"),
+	}
+	stamp := func(cause error, want int, label string) {
+		t.Helper()
+		before := time.Now().Unix()
+		got := manager.maybeAutoRetryAt("sess-1", "task-mix", cause)
+		after := time.Now().Unix()
+		if got == 0 {
+			t.Fatalf("%s: expected a stamped deadline, got 0", label)
+		}
+		if got < before+int64(want) || got > after+int64(want) {
+			t.Errorf("%s: deadline %d outside [%d, %d] (want now+%ds)", label, got, before+int64(want), after+int64(want), want)
+		}
+	}
+	stamp(connectErr, 15, "first network failure (schedule step 0)")
+	stamp(rateLimitErr, 30, "rate-limit failure (configured window; advances the counter)")
+	stamp(connectErr, 60, "second network failure (schedule step 2 — the rate-limit stamp counted)")
+}
+
+// TestMaybeAutoRetryAt_LadderResetsOnEpisodeEnd pins the episode lifecycle
+// (ADR-134): resolving the banner with any terminal decision — cancel, or a
+// mode-takeover abandonment — clears the counter so the next failure of the
+// same task starts at the first step, while a "resumed" resolution (the
+// auto fire and a manual resume are indistinguishable here) deliberately
+// keeps the ladder running.
+func TestMaybeAutoRetryAt_LadderResetsOnEpisodeEnd(t *testing.T) {
+	connectErr := &llm.Error{
+		Provider:   "chatgpt",
+		StatusCode: 0,
+		Err:        &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+	}
+	newArmedManager := func(t *testing.T) *Manager {
+		t.Helper()
+		manager, _, _ := testManager(t)
+		manager.SetNetworkAutoRetryResolver(func() int { return 90 })
+		return manager
+	}
+	stamp := func(manager *Manager, want int, label string) {
+		t.Helper()
+		before := time.Now().Unix()
+		got := manager.maybeAutoRetryAt("sess-1", "task-cycle", connectErr)
+		after := time.Now().Unix()
+		if got == 0 {
+			t.Fatalf("%s: expected a stamped deadline, got 0", label)
+		}
+		if got < before+int64(want) || got > after+int64(want) {
+			t.Errorf("%s: deadline %d outside [%d, %d] (want now+%ds)", label, got, before+int64(want), after+int64(want), want)
+		}
+	}
+
+	t.Run("a cancel resets the ladder", func(t *testing.T) {
+		manager := newArmedManager(t)
+		stamp(manager, 15, "first failure")
+		stamp(manager, 30, "second failure")
+		manager.resolveResumableTaskMessage("sess-1", "task-cycle", "cancelled")
+		stamp(manager, 15, "failure after cancel (fresh episode)")
+	})
+
+	t.Run("a mode-takeover abandonment resets the ladder", func(t *testing.T) {
+		manager := newArmedManager(t)
+		stamp(manager, 15, "first failure")
+		stamp(manager, 30, "second failure")
+		manager.resolveResumableTaskMessage("sess-1", "task-cycle", "abandoned_for_e2s")
+		stamp(manager, 15, "failure after abandonment (fresh episode)")
+	})
+
+	t.Run("a resume keeps the ladder running", func(t *testing.T) {
+		manager := newArmedManager(t)
+		stamp(manager, 15, "first failure")
+		stamp(manager, 30, "second failure")
+		manager.resolveResumableTaskMessage("sess-1", "task-cycle", "resumed")
+		stamp(manager, 60, "failure after resume (episode continues)")
+	})
+}
+
+// TestMaybeAutoRetryAt_RetryAfterHonoredClampedAndDated pins the ADR-134
+// Retry-After support on the rate-limit class: a header the provider supplies
+// replaces the configured interval, in both RFC 7231 forms, and a window
+// past the inclusive config bound clamps to it. No sleeps — every window is
+// computed against time.Now().
+func TestMaybeAutoRetryAt_RetryAfterHonoredClampedAndDated(t *testing.T) {
+	manager, _, _ := testManager(t)
+	manager.SetAutoRetryResolver(func(provider string) int {
+		if provider == "selfhosted" {
+			return 30
+		}
+		return 0
+	})
+	stamp := func(cause error, want int, label string) {
+		t.Helper()
+		before := time.Now().Unix()
+		got := manager.maybeAutoRetryAt("sess-1", "task-ra", cause)
+		after := time.Now().Unix()
+		if got == 0 {
+			t.Fatalf("%s: expected a stamped deadline, got 0", label)
+		}
+		if got < before+int64(want) || got > after+int64(want) {
+			t.Errorf("%s: deadline %d outside [%d, %d] (want now+%ds)", label, got, before+int64(want), after+int64(want), want)
+		}
+	}
+
+	t.Run("delay-seconds honored over the configured interval", func(t *testing.T) {
+		stamp(rateLimitWithRetryAfter("120", true), 120, "Retry-After: 120")
+	})
+
+	t.Run("clamped to the inclusive config bound", func(t *testing.T) {
+		stamp(rateLimitWithRetryAfter("7200", true), config.MaxAutoRetrySeconds(), "Retry-After: 7200")
+	})
+
+	t.Run("HTTP-date form honored", func(t *testing.T) {
+		date := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+		stamp(rateLimitWithRetryAfter(date, true), 90, "Retry-After as HTTP-date (+90s)")
+	})
+}
+
+// TestMaybeAutoRetryAt_RetryAfterFallsBackCleanly pins the fallback: an
+// absent header, an empty value, a non-positive delay (0, negative, a past
+// date) and an unparseable value all report absent, and the configured
+// per-provider interval answers instead (ADR-134).
+func TestMaybeAutoRetryAt_RetryAfterFallsBackCleanly(t *testing.T) {
+	manager, _, _ := testManager(t)
+	manager.SetAutoRetryResolver(func(provider string) int {
+		if provider == "selfhosted" {
+			return 30
+		}
+		return 0
+	})
+	pastDate := time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat)
+	for _, tc := range []struct {
+		name  string
+		value string
+		set   bool
+	}{
+		{"no header at all", "", false},
+		{"empty value", "", true},
+		{"zero delay", "0", true},
+		{"negative delay", "-5", true},
+		{"unparseable value", "soon", true},
+		{"past date", pastDate, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := time.Now().Unix()
+			got := manager.maybeAutoRetryAt("sess-1", "task-fallback", rateLimitWithRetryAfter(tc.value, tc.set))
+			after := time.Now().Unix()
+			if got == 0 {
+				t.Fatal("expected the configured interval to answer, got 0")
+			}
+			if got < before+30 || got > after+30 {
+				t.Errorf("deadline %d outside [%d, %d] (want now+30s, the configured fallback)", got, before+30, after+30)
+			}
+		})
+	}
+}
+
+// TestMaybeAutoRetryAt_RetryAfterNeverArmsDisabledClass pins the kill-switch
+// precedence (ADR-134): a provider with auto_retry_seconds 0 has the class
+// OFF — a header the provider supplies refines the window of an armed class,
+// it never arms a disabled one (ADR-065's 0 = off contract, unchanged).
+func TestMaybeAutoRetryAt_RetryAfterNeverArmsDisabledClass(t *testing.T) {
+	manager, _, _ := testManager(t)
+	manager.SetAutoRetryResolver(func(string) int { return 0 })
+	if got := manager.maybeAutoRetryAt("sess-1", "task-off", rateLimitWithRetryAfter("60", true)); got != 0 {
+		t.Errorf("disabled class armed %d from the Retry-After header, want 0", got)
+	}
+}
+
+// TestEmitResumableIfUnfinished_LadderAdvancesAcrossRearms pins the payload
+// wiring of the ADR-134 schedule: successive failures of the SAME task
+// surface growing auto_retry_at deadlines in the emitted banners (15 s, then
+// 30 s), and a cancelled banner resets the episode so the next failure
+// surfaces the first step again.
+func TestEmitResumableIfUnfinished_LadderAdvancesAcrossRearms(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-123", SessionID: "sess-1", Status: "failed"},
+	})
+	manager.SetNetworkAutoRetryResolver(func() int { return 90 })
+	cause := &llm.Error{
+		Provider:   "chatgpt",
+		StatusCode: 0,
+		Err:        &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+	}
+	emit := func(want int, label string) {
+		t.Helper()
+		before := time.Now().Unix()
+		if !manager.emitResumableIfUnfinished("sess-1", "Connection failed.", cause) {
+			t.Fatalf("%s: expected the resumable banner, got none", label)
+		}
+		select {
+		case event := <-eventChan:
+			if event.Type != "task_failed_resumable" {
+				t.Fatalf("%s: expected task_failed_resumable, got %s", label, event.Type)
+			}
+			data, ok := event.Data.(TaskFailedResumableData)
+			if !ok {
+				t.Fatalf("%s: expected TaskFailedResumableData, got %T", label, event.Data)
+			}
+			if data.AutoRetryAt < before+int64(want) || data.AutoRetryAt > time.Now().Unix()+int64(want) {
+				t.Errorf("%s: auto_retry_at %d outside [%d, %d] (want now+%ds)", label, data.AutoRetryAt, before+int64(want), time.Now().Unix()+int64(want), want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s: timeout waiting for task_failed_resumable event", label)
+		}
+	}
+	emit(15, "first failure")
+	emit(30, "second failure")
+	manager.resolveResumableTaskMessage("sess-1", "task-123", "cancelled")
+	emit(15, "failure after cancel (fresh episode)")
 }

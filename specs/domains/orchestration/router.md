@@ -10,7 +10,8 @@ The canonical classification algorithm (prompt, domain/complexity scales, skill 
 
 - `core/router_adapter.go` — core adapter wrapping the sp4rk router (`newCoreRouter`: the c0wrk routing prompt, the last `router.history_window` messages (default 10) as routing context, and `formatRouterContextSections`, which appends the AGENTS.md block plus — in RESEARCH mode — the research-awareness block and the advisory intent→`research-*` skill hints)
 - `core/prompts/router_system.md` — routing classification prompt
-- `core/orchestrator_handle.go` — invokes the router and applies c0wrk-specific routing policy (`routeOrContinue` continuation fast-path, `routeAndActivateSkills` skill merge + Routing event, the essential-tools parse fallback)
+- `core/orchestrator_handle.go` — invokes the router and applies c0wrk-specific routing policy (`routeOrContinue` continuation fast-paths, `routeAndActivateSkills` skill merge + Routing event, the essential-tools parse fallback)
+- `core/continuation_fastpath.go` — the heuristic continuation fast-path: the closed continuation-phrase detector (`isContinuationStyleMessage`) and the session-scoped routing-verdict cache (`routingVerdictCache` + the `noteRoutingVerdict` / `cachedRoutingVerdict` / `invalidateRoutingVerdict` orchestrator methods)
 
 Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Route` method) — see [the sp4rk router spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/router.md).
 
@@ -69,7 +70,15 @@ Selected (router-matched) skills are merged with user-specified skills (from `/s
 
 ### Continuation Fast-Path
 
-When `opts.TaskID` is non-empty (a continuation) AND the restored blackboard has BOTH an existing plan AND a routing decision, the orchestrator **skips the router LLM call entirely**, reuses the prior `RoutingDecision`, and reactivates skills. The plan gate prevents a plan-less continuation from mis-routing (e.g. "continue step 10" without a plan would be misclassified). Every FIRST user message passes through `Route`; only continuations with a restored plan AND routing take the fast-path.
+`routeOrContinue` skips the router LLM call on two fast-paths; both re-emit the Routing event with the reused decision and reactivate skills from it identically, so the downstream wiring (domain/complexity context, Routing event, skill activation) is byte-for-byte what a routed task would have produced.
+
+**Restored task.** When `opts.TaskID` is non-empty (a continuation) AND the restored blackboard has BOTH an existing plan AND a routing decision, the orchestrator reuses the prior `RoutingDecision` and reactivates skills from it. The plan gate prevents a plan-less continuation from mis-routing (e.g. "continue step 10" without a plan would be misclassified). The re-applied decision is noted into the verdict cache, keeping it warm across resume.
+
+**Heuristic continuation message** (`core/continuation_fastpath.go`). When the message is continuation-style — an exact match against a closed BILINGUAL phrase set (English and Russian: translations of the English entries plus common colloquial synonyms — "continue"/"продолжай", "ok"/"ок"/"хорошо", "thanks"/"спасибо", …) after normalization (lowercase, trailing sentence punctuation AND internal commas stripped — Russian politeness forms require the comma, "продолжай, пожалуйста" —, typographic apostrophes `’` folded to `'`, `ё` folded to `е`), bounded to one line and 32 runes, with question/tool/code/quoting markers (`?`, `/`, backticks, `@`, `"` and Cyrillic guillemets `«»„“”`, …) rejected outright — the orchestrator reuses the routing verdict the session last ran with instead of paying the routing round-trip. The trigger is exact-match-only: "continue step 10"/"продолжай с шага 10", "ok: run the tests", and every off-list message stay substantive and route. Goal mode never takes this fast-path (the goal loop routes its own entry); E2S never reaches routing at all.
+
+The verdict cache is a single slot on the session's own Orchestrator, stamped with the session ID and the active model. A session switch or a model switch invalidates it (a mismatched lookup clears the slot and reports a miss); every real routing stage clears the slot BEFORE the router runs, so a routing failure leaves no consultable verdict; and a substantive message always routes and re-notes the fresh verdict on success. The cache is c0wrk orchestration policy only — the sp4rk router is untouched.
+
+**Misroute window and compaction impact.** A stale-verdict reuse is bounded to at most one task. The reused domain/complexity drives that task's compaction-strategy selection (see the Domain → Compaction Strategy table above), the Conductor step budget (complexity × 30), and matched-skill reactivation — so one misroute may run a single turn under the previous task's compaction strategy (e.g. `summarization` instead of `sliding_window`) with a step budget off by one band. The next substantive message always routes and refreshes the cache, closing the window.
 
 ### No Project Mode
 In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` — there is no vector index without a project, so the tool would fail or return stale results from the previous CODE-mode project. All other tools, including `ripgrep` and `glob`, stay available under the normal `security.groups` policies, and no extra shell-command blacklist is installed (dev/build commands such as `git` follow the regular `execute` group policy). The routing domain is honest: code-flavored CHAT questions classify as `"code"` — its compaction strategy (`sliding_window`) assumes no project — instead of being rewritten to `"general"`.
@@ -79,13 +88,17 @@ In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` 
 - LLM call failure → return error (no fallback routing). The task row is flipped to failed only when it is live — a fresh task (`opts.TaskID == ""`) or the goal path; a normal-path continuation's restored status stays untouched.
 - Unparseable routing JSON → the engine's repair policy re-asks with the schema as the retry hint (two repair retries, three attempts total); exhaustion returns an error wrapping `router.ErrRoutingParse`.
 - `router.ErrRoutingParse` → return error — except when the Model Profiles essential-tools variant is enabled: the orchestrator then continues with a default routing decision (`RoutingDecision{Domain: general, Complexity: defaultResumeComplexity}` = 3, logged/emitted "Routing fallback: unparseable routing JSON — continuing with default routing") and the essential-tools filter still applies its static selection (the tool set is never re-expanded to the full registry). The unprofiled path errors as documented.
+- Routing-failure verdict invalidation: the routing stage clears the heuristic fast-path's cached verdict BEFORE the router runs, so a failed routing leaves the slot empty — a follow-up continuation-style message routes (and fails) again instead of silently reusing the pre-failure verdict.
 
 (Validation rules — domain clamping, complexity range, skill dedup — are engine behavior; see the sp4rk router spec.)
 
 ## Invariants
 
 - Route always returns a valid `RoutingDecision` (no nil on success)
-- The orchestrator's continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has BOTH an existing plan AND a routing decision
+- The orchestrator's task-continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has BOTH an existing plan AND a routing decision
+- The orchestrator's heuristic continuation fast-path skips the router only for an exact continuation-style message whose cached verdict is valid for BOTH the current session and the current model; goal mode never takes it, and E2S never reaches routing
+- A cached routing verdict is always stamped with the session ID and the active model it was captured under; a session switch or a model switch invalidates it
+- Every substantive message routes through the router and refreshes the cached verdict; a routing failure leaves no cached verdict
 - The router never modifies the tool registry or any state (pure classification)
 - c0wrk never branches on `RoutingDecision.NeedsClarification` (explicitly ignored in `orchestrator_handle.go`); clarification is a Conductor responsibility via `ask_user`. The field may still be set by the engine, but it drives no c0wrk pipeline branch.
 - User-specified skills are merged with router-matched skills in the orchestrator, not in the router

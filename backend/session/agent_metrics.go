@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // metricsState accumulates per-session agent quality counters, shared by an
@@ -20,6 +21,12 @@ type metricsState struct {
 	aborts           AgentMetricsCounters
 	steps            int
 	modelProfiles    ModelProfilesMetaInfo
+	// tokenStats is the latest session-wide cumulative token/latency/cache
+	// aggregate from the session_tokens stream (core.SessionTokenCallStats);
+	// replaced per emission, never reset by snapshot — the quality counters
+	// cover one run, the token observability is session-scoped like
+	// OutputTokens.
+	tokenStats core.SessionTokenCallStats
 }
 
 // observeDiagnostic maps an executor diagnostic event name onto the counters;
@@ -85,20 +92,37 @@ func (m *metricsState) setModelProfiles(info ModelProfilesMetaInfo) {
 	m.modelProfiles = info
 }
 
+// observeTokenStats records the latest session-wide cumulative token/latency/
+// cache aggregates (core.SessionTokenCallStats) from the session_tokens
+// stream; each emission replaces the previous snapshot.
+func (m *metricsState) observeTokenStats(stats core.SessionTokenCallStats) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokenStats = stats
+}
+
 // snapshot renders the accumulated counters as the "agent_metrics" payload
-// and resets them: one event covers exactly one task run.
+// and resets them: one event covers exactly one task run. The token
+// observability snapshot is carried as-is (session-scoped, not reset).
 func (m *metricsState) snapshot(finish string, outputTokens int) AgentMetricsData {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	data := AgentMetricsData{
-		Finish:           finish,
-		ParseErrors:      m.parseErrors,
-		InvalidToolCalls: m.invalidToolCalls,
-		Nudges:           m.nudges,
-		Aborts:           m.aborts,
-		Steps:            m.steps,
-		OutputTokens:     outputTokens,
-		ModelProfiles:    modelProfilesInfoSnapshot(m.modelProfiles),
+		Finish:                 finish,
+		ParseErrors:            m.parseErrors,
+		InvalidToolCalls:       m.invalidToolCalls,
+		Nudges:                 m.nudges,
+		Aborts:                 m.aborts,
+		Steps:                  m.steps,
+		OutputTokens:           outputTokens,
+		LLMCallCount:           m.tokenStats.CallCount,
+		CachedInputTokensTotal: m.tokenStats.CachedInputTokensTotal,
+		CacheWriteTokensTotal:  m.tokenStats.CacheWriteTokensTotal,
+		CacheHitPercent:        m.tokenStats.CacheHitPercent,
+		MedianCallMillis:       m.tokenStats.MedianCallMillis,
+		MeanCallMillis:         m.tokenStats.MeanCallMillis,
+		MaxCallMillis:          m.tokenStats.MaxCallMillis,
+		ModelProfiles:          modelProfilesInfoSnapshot(m.modelProfiles),
 	}
 	m.parseErrors = 0
 	m.invalidToolCalls = 0

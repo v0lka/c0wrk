@@ -21,15 +21,15 @@ llm:
   # the intended provider unambiguously.
   default_model: "anthropic/claude-sonnet-4-20250514"
 
-  # Automatic resend on connection-level failures (ADR-128): when a task dies
-  # of a network-class provider error — DNS failure, refused/unreachable
-  # endpoint, reset connection, stalled/timed-out connection (no HTTP response
-  # at all) — the session waits this many seconds, then re-sends the task
-  # automatically instead of asking how to proceed. One GLOBAL knob covering
-  # EVERY provider, the fixed ones (anthropic/chatgpt/kimi/embedded)
-  # included. Longer than, and separate from, the per-provider
-  # auto_retry_seconds knob below (rate-limit class): refused sockets heal on
-  # minutes-scale with no server-signposted window. 0 = off (never
+  # Automatic resend on connection-level failures (ADR-128, schedule ADR-134):
+  # when a task dies of a network-class provider error — DNS failure,
+  # refused/unreachable endpoint, reset connection, stalled/timed-out
+  # connection (no HTTP response at all) — the session re-sends the task
+  # automatically instead of asking how to proceed, waiting the code-owned
+  # growing schedule 15s -> 30s -> 60s, capped at 90s, on the task's
+  # successive re-sends. One GLOBAL switch covering EVERY provider, the fixed
+  # ones (anthropic/chatgpt/kimi/embedded) included; any positive value arms
+  # the schedule (the value itself no longer sets the wait), 0 = off (never
   # auto-resend on network errors); omitted = this default of 90. Same
   # inclusive upper bound of 3600 as auto_retry_seconds. Not a router-level
   # retry knob: the timer lives in the c0wrk session layer. Budget deaths
@@ -241,6 +241,12 @@ llm:
   #     # writers of this key — your hand-edit and the embedded LLM's `/props`
   #     # context readback — are bounded by the same constant.
   #     context_window: 128000
+  #     # Subscription note: for ChatGPT-oauth (Codex) models this override is
+  #     # how you pin the window the SUBSCRIPTION actually serves (legacy
+  #     # 272000 baseline / current flagship 500000) — the built-in registry
+  #     # values describe the public OpenAI API instead, and the lazy runtime
+  #     # probe deliberately skips oauth entries. See
+  #     # docs/chatgpt-context-caps.md for when and how to set it.
   #     # Maximum tokens the model may emit in a single response.
   #     output_limit: 8192
   #     # Fixed per-model request budget in seconds (ADR-071). A positive
@@ -931,6 +937,17 @@ executor:
   # compaction (which triggers at fill % thresholds).
   historyMutation:
     toolResultEvictionStep: 10 # Evict tool results to cache refs after N steps (0 = disabled)
+    # Eviction/pruning boundaries advance in K-step cohorts: between cohort
+    # boundaries consecutive requests keep the conversation prefix byte-stable
+    # (only new steps are appended), so provider prompt caches stop being
+    # invalidated every turn. At each boundary a batch of K tool results
+    # crosses the threshold together (each still recoverable via
+    # tool_result_read). Higher K = warmer cache but older context retained
+    # longer; 1 = the legacy per-step advance (context trimmed eagerly, cache
+    # cold every turn). Same-build mechanisms (evictStepStatus,
+    # dedupRepeatedReads) are never delayed by the cohort. Applies to sessions
+    # started after the change; a running session keeps its startup snapshot.
+    cohortSize: 5
     evictStepStatus: false # Evict update_checklist results immediately (pure bookkeeping)
     dedupRepeatedReads: false # Replace duplicate file reads with cache reference
 

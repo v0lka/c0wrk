@@ -1635,6 +1635,7 @@ type ToolOutputPruningConfig struct {
 // BuildPrompt call, replacing old tool results with cache references.
 type HistoryMutationConfig struct {
 	ToolResultEvictionStep int  `yaml:"toolResultEvictionStep"` // evict tool results to cache refs after N steps (default: 10)
+	CohortSize             int  `yaml:"cohortSize"`             // advance eviction/pruning boundaries in K-step cohorts (default: 5; 1 = legacy per-step advance)
 	EvictStepStatus        bool `yaml:"evictStepStatus"`        // evict update_checklist results immediately
 	DedupRepeatedReads     bool `yaml:"dedupRepeatedReads"`     // replace duplicate file reads with reference
 }

@@ -330,9 +330,13 @@ type BuilderVerifyOnEditConfig struct {
 }
 
 // BuilderHistoryMutation configures regular history mutation (tool result
-// eviction to cache references, step-status eviction, dedup).
+// eviction to cache references, step-status eviction, dedup). CohortSize
+// quantizes the eviction/pruning boundaries into K-step cohorts so the
+// request prefix stays byte-stable between boundaries (provider prompt-cache
+// stability); values <= 1 preserve the legacy per-step advance.
 type BuilderHistoryMutation struct {
 	ToolResultEvictionStep int
+	CohortSize             int
 	EvictStepStatus        bool
 	DedupRepeatedReads     bool
 }

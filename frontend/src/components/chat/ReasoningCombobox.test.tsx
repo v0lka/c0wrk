@@ -146,7 +146,7 @@ describe('ReasoningCombobox persistence across restart', () => {
 
     // The fetch resolves (models_ready): the stored option is valid for the
     // now-resolvable family, so the trigger shows the explicit choice —
-    // not the "Auto" fallback.
+    // not the "Default (provider)" fallback.
     configData.allModels = REASONING_MODELS
     configData.defaultModel = 'anthropic/claude-sonnet'
     configData.loaded = true
@@ -154,7 +154,7 @@ describe('ReasoningCombobox persistence across restart', () => {
 
     expect(useInputModeStore.getState().selectedReasoning).toBe('medium')
     expect(trigger().textContent).toContain('medium')
-    expect(trigger().textContent).not.toContain('Auto (')
+    expect(trigger().textContent).not.toContain('Default (')
   })
 
   it('keeps the persisted selection while the selected model is unknown to the loaded list', () => {
@@ -174,13 +174,13 @@ describe('ReasoningCombobox persistence across restart', () => {
 describe('ReasoningCombobox reset semantics (loaded families)', () => {
   it('wipes the stored selection when the loaded family does not offer it', () => {
     // glm offers low/medium only: 'high' is positively known to be
-    // unsupported for the resolved family → reset to the family default.
+    // unsupported for the resolved family → reset to the provider default.
     useInputModeStore.setState({ selectedModel: 'PT/glm-5', selectedReasoning: 'high' })
 
     renderCombobox()
 
     expect(useInputModeStore.getState().selectedReasoning).toBeNull()
-    expect(trigger().textContent).toContain('Auto (medium)')
+    expect(trigger().textContent).toContain('Default (provider)')
   })
 
   it('wipes the stored selection when the resolved family has no reasoning support', () => {
@@ -201,7 +201,7 @@ describe('ReasoningCombobox selection UI', () => {
     useInputModeStore.setState({ selectedModel: null, selectedReasoning: null })
 
     renderCombobox()
-    expect(trigger().textContent).toContain('Auto (high)')
+    expect(trigger().textContent).toContain('Default (provider)')
 
     click(trigger())
     const options = menuButtons()
@@ -209,7 +209,7 @@ describe('ReasoningCombobox selection UI', () => {
     // the Default entry (no explicit selection yet). Each option's textContent
     // concatenates its label with the trailing status span.
     expect(options.map((b) => b.textContent)).toEqual([
-      'Default (high)active',
+      'Default (provider)active',
       'low',
       'medium',
       'high',
@@ -222,7 +222,7 @@ describe('ReasoningCombobox selection UI', () => {
     expect(trigger().textContent).toContain('medium')
   })
 
-  it('returns to the family default when the Default option is chosen', () => {
+  it('returns to the provider default when the Default option is chosen', () => {
     useInputModeStore.setState({ selectedModel: null, selectedReasoning: 'low' })
 
     renderCombobox()
@@ -230,7 +230,7 @@ describe('ReasoningCombobox selection UI', () => {
     click(findButtonByLabel('Default'))
 
     expect(useInputModeStore.getState().selectedReasoning).toBeNull()
-    expect(trigger().textContent).toContain('Auto (high)')
+    expect(trigger().textContent).toContain('Default (provider)')
   })
 
   it('renders nothing while the config has not loaded', () => {

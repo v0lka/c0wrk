@@ -43,7 +43,7 @@ Executor calls LLM → response tokens counted → ContextWindow CheckFill():
                  compaction attempt
 ```
 
-Tool-output pruning is a SEPARATE mechanism, independent of `CheckFill`: on every `BuildPrompt`, once fill reaches `toolOutputPruning.thresholdPercent` (default 50), tool outputs beyond `keepLastN` are replaced with a placeholder (protected tools are never pruned). History mutation runs unconditionally on every `BuildPrompt`. Both are engine behavior — see the sp4rk memory spec.
+Tool-output pruning is a SEPARATE mechanism, independent of `CheckFill`: on every `BuildPrompt`, once fill reaches `toolOutputPruning.thresholdPercent` (default 50), tool outputs beyond `keepLastN` are replaced with a placeholder (protected tools are never pruned). History mutation runs unconditionally on every `BuildPrompt`. Both advance their boundaries in K-step cohorts (`executor.historyMutation.cohortSize`, default 5): between cohort boundaries consecutive `BuildPrompt` calls keep the request prefix byte-stable, so provider prompt caches stop being invalidated every turn. Config changes apply to sessions started afterwards — each session's orchestrator snapshots the builder config at creation, so a running session keeps its cohort setting. Both are engine behavior — see the sp4rk memory spec.
 
 Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk context builder (after pruning/mutation, before the LLM call) — see [../../architecture/security-model.md](../../architecture/security-model.md) for c0wrk's session-root/auto-approval layer on top of that wrapping.
 
@@ -52,6 +52,7 @@ Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk c
 - Staying within the model's context limit is a design goal: compaction triggers proactively and the `reject` gate aborts the run instead of sending an over-limit request, while token estimates can under-count (see the sp4rk memory spec)
 - The system prompt is ALWAYS preserved (never compacted away)
 - Compaction is triggered proactively (before overflow, not after)
+- History-mutation and pruning boundaries advance in K-step cohorts; between cohort boundaries consecutive `BuildPrompt` calls keep the request prefix byte-stable (only new steps are appended)
 - Each executor instance has its own `ContextManager` (no sharing between Conductor and subagents)
 
 ## Configuration
@@ -82,6 +83,7 @@ From `config.yaml` (values are percentages, not fractions):
 | `executor.toolOutputPruning.protectedTools`            | `["store_fact","search_facts"]` | Tools whose outputs are never pruned       |
 | `executor.toolOutputPruning.thresholdPercent`          | 50      | Fill % below which pruning is skipped entirely (0 = always prune) |
 | `executor.historyMutation.toolResultEvictionStep`      | 10      | Evict tool results to cache refs after N steps (0 = disabled) |
+| `executor.historyMutation.cohortSize`                  | 5       | Eviction/pruning boundaries advance in K-step cohorts (byte-stable request prefix between boundaries; 1 = legacy per-step advance) |
 | `executor.historyMutation.evictStepStatus`             | false   | Evict update_checklist results immediately           |
 | `executor.historyMutation.dedupRepeatedReads`          | false   | Replace duplicate file reads with cache reference    |
 

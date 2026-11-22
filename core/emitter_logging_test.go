@@ -82,8 +82,8 @@ func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("Ski
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
 }
-func (s *spyEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
-	s.record("EmitSessionTokensWithThroughput", totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+func (s *spyEmitter) EmitSessionTokensWithStats(totalIn, totalOut int, model, family string, stats SessionTokenCallStats) {
+	s.record("EmitSessionTokensWithStats", totalIn, totalOut, model, family, stats)
 }
 func (s *spyEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	s.record("StepTodoUpdate", stepID, items)
@@ -260,7 +260,7 @@ func (l *legacyTokenInner) EmitSessionTokens(totalIn, totalOut int, _, _ string)
 	l.lastOut = totalOut
 }
 
-func TestLoggingEmitter_EmitSessionTokensWithThroughput_ForwardsToInner(t *testing.T) {
+func TestLoggingEmitter_EmitSessionTokensWithStats_ForwardsToInner(t *testing.T) {
 	spy := &spyEmitter{}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -271,16 +271,26 @@ func TestLoggingEmitter_EmitSessionTokensWithThroughput_ForwardsToInner(t *testi
 	if !ok {
 		t.Fatal("expected loggingEmitter to satisfy SessionTokenThroughputEmitter")
 	}
-	te.EmitSessionTokensWithThroughput(100, 50, "gpt-4o", "openai", 37.5, 4)
+	stats := SessionTokenCallStats{
+		MedianOutputTokPerSec:  37.5,
+		TokSSamples:            4,
+		MedianCallMillis:       910.5,
+		MeanCallMillis:         980.25,
+		MaxCallMillis:          1200,
+		CallCount:              7,
+		CachedInputTokensTotal: 5400,
+		CacheHitPercent:        62.5,
+	}
+	te.EmitSessionTokensWithStats(100, 50, "gpt-4o", "openai", stats)
 
 	if len(spy.calls) != 1 {
 		t.Fatalf("expected 1 call to inner, got %d", len(spy.calls))
 	}
 	call := spy.calls[0]
-	if call.method != "EmitSessionTokensWithThroughput" {
-		t.Fatalf("expected method EmitSessionTokensWithThroughput, got %q", call.method)
+	if call.method != "EmitSessionTokensWithStats" {
+		t.Fatalf("expected method EmitSessionTokensWithStats, got %q", call.method)
 	}
-	wantArgs := []any{100, 50, "gpt-4o", "openai", 37.5, 4}
+	wantArgs := []any{100, 50, "gpt-4o", "openai", stats}
 	if len(call.args) != len(wantArgs) {
 		t.Fatalf("expected %d args, got %d (%v)", len(wantArgs), len(call.args), call.args)
 	}
@@ -291,7 +301,7 @@ func TestLoggingEmitter_EmitSessionTokensWithThroughput_ForwardsToInner(t *testi
 	}
 }
 
-func TestLoggingEmitter_EmitSessionTokensWithThroughput_FallsBackToPlain(t *testing.T) {
+func TestLoggingEmitter_EmitSessionTokensWithStats_FallsBackToPlain(t *testing.T) {
 	inner := &legacyTokenInner{}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -301,7 +311,11 @@ func TestLoggingEmitter_EmitSessionTokensWithThroughput_FallsBackToPlain(t *test
 	if !ok {
 		t.Fatal("expected loggingEmitter to satisfy SessionTokenThroughputEmitter regardless of inner")
 	}
-	te.EmitSessionTokensWithThroughput(210, 90, "glm-5.2", "glm", 12.5, 64)
+	te.EmitSessionTokensWithStats(210, 90, "glm-5.2", "glm", SessionTokenCallStats{
+		MedianOutputTokPerSec: 12.5,
+		TokSSamples:           64,
+		CallCount:             64,
+	})
 
 	if inner.plainCalls != 1 {
 		t.Fatalf("expected degraded forward to inner EmitSessionTokens once, got %d", inner.plainCalls)

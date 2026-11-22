@@ -2541,7 +2541,7 @@ func (m *Manager) emitResumableIfUnfinished(sessionID, reason string, cause erro
 		message = reason + " You can resume to retry from where it left off."
 	}
 
-	autoRetryAt := m.maybeAutoRetryAt(cause)
+	autoRetryAt := m.maybeAutoRetryAt(sessionID, taskID, cause)
 
 	m.emitFunc(Event{
 		SessionID: sessionID,
@@ -2602,6 +2602,14 @@ func resumableReasonFromError(err error) string {
 // in-memory UI is already updated optimistically and a missed persist
 // self-heals via stale reconciliation on the next reload.
 func (m *Manager) resolveResumableTaskMessage(sessionID, taskID, decision string) {
+	// Any decision but "resumed" ends the task-failure episode (ADR-134): a
+	// cancelled or abandoned task resets its auto-retry ladder, so a later
+	// failure of the same task starts at the first schedule step. Cleared
+	// before the store guard — the counter is live-only state, independent of
+	// banner persistence.
+	if decision != "resumed" {
+		m.endTaskAutoRetryEpisode(sessionID, taskID)
+	}
 	m.mu.RLock()
 	store := m.sessionStore
 	m.mu.RUnlock()
@@ -2675,8 +2683,11 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 	// A successful completion is final — never offer a resume: warn if the
 	// just-completed row still reads unfinished (warnIfCompletionDidNotPersist)
 	// and cancel stale orphan rows (sweepStaleUnfinishedTasks). See
-	// specs/domains/session-lifecycle.md.
+	// specs/domains/session-lifecycle.md. The auto-retry ladder is per
+	// task-failure episode (ADR-134), so a terminal success resets the
+	// session's counters: a later failure starts at the first schedule step.
 	if success {
+		m.endSessionAutoRetryEpisodes(sessionID)
 		m.warnIfCompletionDidNotPersist(sessionID, result)
 		m.sweepStaleUnfinishedTasks(sessionID, result)
 		return

@@ -361,16 +361,19 @@ func (l *loggingEmitter) EmitSessionTokens(totalIn, totalOut int, model, family 
 	}
 }
 
-// EmitSessionTokensWithThroughput forwards totals plus median throughput,
-// degrading to the plain totals seam when the inner emitter predates it —
-// mirroring the builder's observer selection (specs/contracts/event-catalog.md,
-// "session_tokens").
-func (l *loggingEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+// EmitSessionTokensWithStats forwards totals plus the per-call latency and
+// prompt-cache aggregates, degrading to the plain totals seam when the inner
+// emitter predates it — mirroring the builder's observer selection
+// (specs/contracts/event-catalog.md, "session_tokens").
+func (l *loggingEmitter) EmitSessionTokensWithStats(totalIn, totalOut int, model, family string, stats SessionTokenCallStats) {
 	l.logger.Debug("session tokens update",
 		"totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family,
-		"medianOutputTokPerSec", medianOutputTokPerSec, "throughputSamples", throughputSamples)
+		"medianOutputTokPerSec", stats.MedianOutputTokPerSec, "throughputSamples", stats.TokSSamples,
+		"callCount", stats.CallCount, "medianCallMillis", stats.MedianCallMillis,
+		"maxCallMillis", stats.MaxCallMillis,
+		"cachedInputTokensTotal", stats.CachedInputTokensTotal, "cacheHitPercent", stats.CacheHitPercent)
 	if te, ok := l.inner.(SessionTokenThroughputEmitter); ok {
-		te.EmitSessionTokensWithThroughput(totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+		te.EmitSessionTokensWithStats(totalIn, totalOut, model, family, stats)
 		return
 	}
 	if te, ok := l.inner.(SessionTokenEmitter); ok {

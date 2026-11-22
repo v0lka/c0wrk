@@ -249,7 +249,7 @@ func ensureProposeGoalTool(list []sdktools.ToolDescriptor, registry *sdktools.To
 // specs/domains/goal-mode.md for the full loop contract.
 func (o *Orchestrator) runGoalLoop(
 	ctx context.Context,
-	message string,
+	message, sessionID string,
 	opts HandleOptions,
 	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
@@ -262,7 +262,10 @@ func (o *Orchestrator) runGoalLoop(
 	// Route once (routing invariant): continuation fast-path or full router.
 	// The RAW `message` goes to the router — it augments skill context itself,
 	// and the attachment-augmented form would double-prefix the skill reference.
-	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
+	// sessionID feeds only the verdict cache bookkeeping: the heuristic
+	// continuation fast-path is gated off for goal mode (opts.Goal), so the
+	// loop still routes exactly once on every entry.
+	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, sessionID, opts, bb, availableTools)
 	if err != nil {
 		return nil, err
 	}
