@@ -20,7 +20,7 @@ The panel renders only when a plan group exists and the session is not E2S (an E
 `computeDAGLayout` runs three passes:
 
 1. **Lane assignment (owner-checked parking).** Row = item index. A child parks on its parent's lane only while that parent still owns the lane, no co-parent shares it, and the lane is eligible. `laneLastRow` tracks the lowest visually claimed row per lane — the deepest parked node, extended by merge-drop tails (a merge connector dangles down its parent's lane to the child row, and that extent is claimed at assignment time). A freed lane is reallocated nearest-first around the parent's lane (right, then left: +1, −1, +2, −2 …), only when its claim ends at or above the earliest fork drop that would land on it; the anchor lane itself is never taken (it always carries parked nodes below its former owner); a fresh lane otherwise.
-2. **Connectors.** Each dependency edge becomes a `vertical` (parent and child share a lane), a `fork` (parent has multiple children: drop onto a horizontal run at the parent's row), or a `merge` (descend the parent's lane onto a horizontal run at the child's row). Overlapping horizontal runs at the same row stack downward in +3px steps (`exitDy`/`entryDy`) — a run conflicts only with an earlier run at the same final y AND overlapping lane range.
+2. **Connectors.** Each dependency edge becomes a `vertical` (parent and child share a lane), a `fork` (parent has multiple children: drop onto a horizontal run at the parent's row), or a `merge` (descend the parent's lane onto a horizontal run at the child's row). Overlapping horizontal runs at the same row stack downward in +3px steps (`exitDy`/`entryDy`) — a run conflicts only with an earlier run at the same final y AND overlapping lane range. Stacking caps at `FAN_DY_MAX_PX`; fans beyond the cap share the capped y.
 3. **Lane continuations.** Between consecutive occupants of a lane a vertical continuation segment is synthesized unless an edge-backed vertical already covers it. A continuation whose endpoints have no dependency edge between them (checked in both directions) is marked `broken` — the honest-continuation rule.
 
 `buildEdgePath` turns each connector into one SVG path. Verticals are straight lines; a broken continuation renders as two stubs separated by a visible gap at the segment midpoint. Forks drop from the parent node onto the run lowered by `exitDy`, then round a corner into the child's lane; merges round onto the child-row run lowered by `entryDy` with a short tail rising back up to the child node (tail omitted at zero offset). Zero `exitDy`/`entryDy` reproduces the legacy path shapes byte-identically.
@@ -29,7 +29,8 @@ The panel renders only when a plan group exists and the session is not E2S (an E
 
 | Constant | Value | File | Meaning |
 | -------- | ----- | ---- | ------- |
-| `ROW_HEIGHT_PX` / `BASE_ROW_HEIGHT` | 24 | `dagLayout.ts` / `DAGGraph.tsx` | Row pitch shared by layout and renderer; `rowY(row) = row·24 + 12` |
+| `ROW_HEIGHT_PX` / `BASE_ROW_HEIGHT` | 24 | `dagLayout.ts` / `DAGGraph.tsx` | Row pitch; `ROW_HEIGHT_PX` is the exported single source and `BASE_ROW_HEIGHT` is defined from it in the renderer; `rowY(row) = row·24 + 12` |
+| `FAN_DY_MAX_PX` | 9 | `dagLayout.ts` | Cap on stacked fork/merge `dy` — keeps runs inside their row band; fans beyond the cap share the capped y |
 | `FAN_STEP_PX` | 3 | `dagLayout.ts` | Vertical step between stacked overlapping fork/merge runs |
 | `LANE_WIDTH` | 14 | `dagEdgePath.ts` | Horizontal lane pitch; `laneX(lane) = lane·14 + PADDING + 7` |
 | `CORNER_RADIUS` | `LANE_WIDTH / 2` (7) | `dagEdgePath.ts` | Fork/merge rounded-corner radius — scales with the lane pitch |
@@ -46,8 +47,8 @@ An empty plan (`maxLane === -1`) renders nothing. The layout is pure and total o
 
 - **Edge-never-pierces-node:** no vertical segment crosses a node circle. Lanes are owner-checked; a freed lane is reused only when every node parked on it sits above the fork drop that would land on it; the anchor lane is never taken; a lane is never reused underneath a merge drop (`laneLastRow` includes the drop extent).
 - **Honest continuations:** a lane continuation renders solid only when a dependency edge backs it; unrelated consecutive occupants of a lane render as a broken (two-stub, visible gap) segment. `broken` is set only on synthesized continuations — edge-backed verticals never carry it, so absence ≡ solid.
-- **Fan rules:** fork runs exit at the parent's row, merge runs enter at the child's row; overlapping horizontal runs at the same final y never overlap in lane range — later runs stack downward in `FAN_STEP_PX` steps. The `dy` stacking keeps runs inside their 24px row band.
-- **Row-band sync:** `ROW_HEIGHT_PX` in `dagLayout.ts` must equal `BASE_ROW_HEIGHT` in `DAGGraph.tsx` — the dy-band argument holds only under the shared pitch.
+- **Fan rules:** fork runs exit at the parent's row, merge runs enter at the child's row; below the cap, overlapping horizontal runs never share a final y — later runs stack downward in `FAN_STEP_PX` steps up to `FAN_DY_MAX_PX`, keeping runs inside their 24px row band. Fans wider than the band saturate the cap and share the capped y — accepted degradation, mirrored by the battery's cap-only H-overlap exception.
+- **Row-band sync:** `BASE_ROW_HEIGHT` in `DAGGraph.tsx` is defined as the `ROW_HEIGHT_PX` exported from `dagLayout.ts` — the dy-band argument holds under the shared pitch.
 - **Determinism:** the SVG is a pure function of the items — same input, same layout, same paths; no DOM measurement, no randomness.
 - **Legacy compatibility:** connectors with zero `exitDy`/`entryDy` render byte-identically to the pre-fan shapes; absent optional fields ≡ zero/solid.
 

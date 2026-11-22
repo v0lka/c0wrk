@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
-import { computeDAGLayout } from '@/lib/dagLayout'
+import { computeDAGLayout, ROW_HEIGHT_PX } from '@/lib/dagLayout'
 import type { PlanItem } from '@/types/models'
 import { LANE_WIDTH, buildEdgePath } from './dagEdgePath'
 
-const BASE_ROW_HEIGHT = 24
+const BASE_ROW_HEIGHT = ROW_HEIGHT_PX
 const PADDING = 6
 const NODE_RADIUS = 3
 const STROKE_COLOR = 'var(--color-muted-foreground)'

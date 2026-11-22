@@ -269,14 +269,30 @@ describe('side-aware fork fan', () => {
     expect(merges.map(m => m.fromRow)).toEqual([1, 2])
     expect(merges.map(m => m.entryDy)).toEqual([0, 3])
   })
+
+  it('caps fan dy so stacked runs stay inside their 24px row band', () => {
+    // 10 roots merging into one child: dy stacks 0,3,6,9 then holds at the
+    // cap instead of walking out of the row band and across the next row's
+    // nodes (previously it reached 24 at ten parents).
+    const items: DAGItem[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, dependsOn: [] as string[] })),
+      { id: 'K', dependsOn: Array.from({ length: 10 }, (_, i) => `p${i}`) },
+    ]
+    const layout = computeDAGLayout(items)
+    const merges = layout.connectors.filter(c => c.type === 'merge').sort((a, b) => a.fromRow - b.fromRow)
+    expect(merges).toHaveLength(9) // p0's edge is vertical — K parks on its lane
+    expect(merges.map(m => m.entryDy)).toEqual([0, 3, 6, 9, 9, 9, 9, 9, 9])
+  })
 })
 
 // --- Invariant battery ------------------------------------------------------
 
 const ROW_PX = 24
+/** Cap offset from FAN_DY_MAX_PX in dagLayout.ts — the only dy where H overlaps are by design. */
+const FAN_DY_CAP_OFFSET_PX = 9
 
 interface VSeg { lane: number; top: number; bottom: number }
-interface HSeg { yPx: number; lo: number; hi: number; id: string }
+interface HSeg { yPx: number; dy: number; lo: number; hi: number; id: string }
 
 function geometry(layout: DAGLayout): { vsegs: VSeg[]; hsegs: HSeg[] } {
   const vsegs: VSeg[] = []
@@ -287,10 +303,10 @@ function geometry(layout: DAGLayout): { vsegs: VSeg[]; hsegs: HSeg[] } {
     if (c.type === 'vertical') {
       vsegs.push({ lane: c.fromLane, top: Math.min(c.fromRow, c.toRow), bottom: Math.max(c.fromRow, c.toRow) })
     } else if (c.type === 'fork') {
-      hsegs.push({ yPx: c.fromRow * ROW_PX + (c.exitDy ?? 0), lo, hi, id: `fork ${c.fromLane}->${c.toLane}@r${c.fromRow}` })
+      hsegs.push({ yPx: c.fromRow * ROW_PX + (c.exitDy ?? 0), dy: c.exitDy ?? 0, lo, hi, id: `fork ${c.fromLane}->${c.toLane}@r${c.fromRow}` })
       vsegs.push({ lane: c.toLane, top: c.fromRow, bottom: c.toRow })
     } else {
-      hsegs.push({ yPx: c.toRow * ROW_PX + (c.entryDy ?? 0), lo, hi, id: `merge ${c.fromLane}->${c.toLane}@r${c.toRow}` })
+      hsegs.push({ yPx: c.toRow * ROW_PX + (c.entryDy ?? 0), dy: c.entryDy ?? 0, lo, hi, id: `merge ${c.fromLane}->${c.toLane}@r${c.toRow}` })
       vsegs.push({ lane: c.fromLane, top: c.fromRow, bottom: c.toRow })
     }
   }
@@ -311,11 +327,15 @@ function findDefects(layout: DAGLayout): string[] {
     }
   }
 
-  // 2. No two horizontal runs at the same y may overlap in x.
+  // 2. No two horizontal runs at the same y may overlap in x — except at the
+  //    fan-dy cap itself (FAN_DY_MAX_PX in dagLayout.ts): fans wider than the
+  //    row band share the capped y by design; below the cap the stacking
+  //    search keeps every y unique.
   for (let i = 0; i < hsegs.length; i++) {
     for (let j = i + 1; j < hsegs.length; j++) {
       const a = hsegs[i]!, b = hsegs[j]!
-      if (a.yPx === b.yPx && Math.min(a.hi, b.hi) > Math.max(a.lo, b.lo)) {
+      const atFanCap = a.dy === FAN_DY_CAP_OFFSET_PX && b.dy === FAN_DY_CAP_OFFSET_PX
+      if (a.yPx === b.yPx && !atFanCap && Math.min(a.hi, b.hi) > Math.max(a.lo, b.lo)) {
         defects.push(`H overlap at y=${a.yPx}: ${a.id} vs ${b.id}`)
       }
     }

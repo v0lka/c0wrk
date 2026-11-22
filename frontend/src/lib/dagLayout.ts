@@ -15,9 +15,9 @@ export interface DAGConnector {
   fromRow: number
   toRow: number
   type: 'vertical' | 'fork' | 'merge'
-  /** px offset lowering the fork's horizontal run at fromRow; +3 per earlier overlapping run in the same row */
+  /** px offset lowering the fork's horizontal run at fromRow; +3 per earlier overlapping run in the same row, capped at FAN_DY_MAX_PX */
   exitDy?: number
-  /** px offset lowering the merge's horizontal run at toRow; +3 per earlier overlapping run in the same row */
+  /** px offset lowering the merge's horizontal run at toRow; +3 per earlier overlapping run in the same row, capped at FAN_DY_MAX_PX */
   entryDy?: number
   /** Lane continuation whose endpoints have no dependency edge between them — a false continuation, drawn broken */
   broken?: boolean
@@ -30,8 +30,12 @@ export interface DAGLayout {
 }
 
 const FAN_STEP_PX = 3
-/** Must match BASE_ROW_HEIGHT in DAGGraph.tsx — dy stacking keeps runs inside row bands. */
-const ROW_HEIGHT_PX = 24
+/** Single source of the row pitch — DAGGraph.tsx derives BASE_ROW_HEIGHT from this export. */
+export const ROW_HEIGHT_PX = 24
+/** Cap on stacked fork/merge dy: the largest FAN_STEP_PX multiple whose run (band middle + dy)
+ *  stays inside its 24px row band with the 7px corner dip (CORNER_RADIUS in dagEdgePath.ts)
+ *  clear of the next row's node circles; fans beyond the cap share the capped y. */
+const FAN_DY_MAX_PX = 9
 
 /**
  * Compute lane assignments and SVG connector segments from plan items
@@ -41,7 +45,7 @@ const ROW_HEIGHT_PX = 24
  * parent still owns it, and a freed lane is handed out only when its last
  * occupant sits above every fork drop that would land on it, so no vertical
  * segment crosses a node. Fork/merge horizontal runs sharing a row stack
- * +3px (exitDy/entryDy) per earlier overlapping run.
+ * +3px (exitDy/entryDy) per earlier overlapping run, capped at FAN_DY_MAX_PX.
  */
 export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   if (items.length === 0) return { nodes: [], connectors: [], maxLane: -1 }
@@ -191,7 +195,8 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   // Pass 2: Compute connectors
   const connectors: DAGConnector[] = []
   // Horizontal runs already placed (final y, x extent in lanes) — a new run
-  // takes the lowest +3px step whose y is free over its overlapping peers.
+  // takes the lowest +3px step whose y is free over its overlapping peers,
+  // capped at FAN_DY_MAX_PX (beyond the cap runs share the capped y).
   const hPlaced: { yPx: number; lo: number; hi: number }[] = []
 
   for (let row = 0; row < items.length; row++) {
@@ -214,7 +219,8 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
       let dy = 0
       for (;; dy += FAN_STEP_PX) {
         const yPx = hRow * ROW_HEIGHT_PX + dy
-        if (!hPlaced.some(r => r.yPx === yPx && Math.min(r.hi, hi) > Math.max(r.lo, lo))) break
+        const free = !hPlaced.some(r => r.yPx === yPx && Math.min(r.hi, hi) > Math.max(r.lo, lo))
+        if (free || dy >= FAN_DY_MAX_PX) break
       }
       hPlaced.push({ yPx: hRow * ROW_HEIGHT_PX + dy, lo, hi })
       const connector: DAGConnector = { fromLane: parentLane, toLane: childLane, fromRow: parentRow, toRow: row, type }
