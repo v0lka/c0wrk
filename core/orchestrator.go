@@ -334,6 +334,12 @@ type Orchestrator struct {
 	// Durable tasks load through taskStore on every entry, never from this cache.
 	mcpMentions sync.Map
 
+	// routingCache is the heuristic continuation fast-path's single-slot cache
+	// of the routing verdict the session last ran with (sessionID + model +
+	// decision); see continuation_fastpath.go and
+	// specs/domains/orchestration/router.md, "Continuation Fast-Path".
+	routingCache routingVerdictCache
+
 	// modelProfilesSettingsOverride mirrors e2sSettingsOverride for model-profile
 	// settings (SetModelProfilesSettings / modelProfilesSettings()).
 	modelProfilesSettingsOverride atomic.Pointer[ModelProfilesSettings]
@@ -2546,7 +2552,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		o.reactivateContinuationTask(bb, opts.TaskID)
 		// taskMessage, not the raw message: /goal /skill-only sends strip to
 		// empty and the goal derivation seeds from it.
-		return o.runGoalLoop(ctx, taskMessage, opts, bb, availableTools, opts.SessionPlansDir)
+		return o.runGoalLoop(ctx, taskMessage, sessionID, opts, bb, availableTools, opts.SessionPlansDir)
 	}
 
 	// Goal-mode-only tools must not reach a non-goal Conductor run: strip them from
@@ -2557,8 +2563,10 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	// 3. Route and activate skills. routeOrContinue skips the router on a
 	// restored task (blind to the existing plan — it would misclassify the
-	// continuation); the raw message goes in (see resolveTaskMessage).
-	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
+	// continuation) and on a continuation-style message ("ok", "continue",
+	// … — the session's previous routing verdict is reused); the raw message
+	// goes in (see resolveTaskMessage).
+	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, sessionID, opts, bb, availableTools)
 	if err != nil {
 		// Routing failed before the commit point below: the anchor task keeps
 		// its terminal status, so the fresh-workflow fallback cannot orphan it.

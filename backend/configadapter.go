@@ -282,6 +282,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			},
 			HistoryMutation: core.BuilderHistoryMutation{
 				ToolResultEvictionStep: cfg.Executor.HistoryMutation.ToolResultEvictionStep,
+				CohortSize:             cfg.Executor.HistoryMutation.CohortSize,
 				EvictStepStatus:        cfg.Executor.HistoryMutation.EvictStepStatus,
 				DedupRepeatedReads:     cfg.Executor.HistoryMutation.DedupRepeatedReads,
 			},

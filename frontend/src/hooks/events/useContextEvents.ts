@@ -109,9 +109,12 @@ export interface SessionTokensStore {
  * (isSessionTokensData) does not require fill_percent/used_tokens/max_tokens,
  * so coercing an absent value to 0 would overwrite a previously-valid fill and
  * make ContextFillStatus show a false "0%". The same holds for the throughput
- * pair (median_output_tok_s/tok_s_samples) — an older payload that predates
- * the metric must not clobber the last known median with a zero. Omitting the
- * keys lets the store's merge semantics preserve the last known values.
+ * pair (median_output_tok_s/tok_s_samples) and the latency/cache observability
+ * fields (median/mean/max_call_ms, call_count, cached_input_tokens_total,
+ * cache_write_tokens_total, cache_hit_percent) — an older payload that
+ * predates a metric must not clobber the last known value with a zero.
+ * Omitting the keys lets the store's merge semantics preserve the last known
+ * values.
  */
 export function handleSessionTokens(store: SessionTokensStore, sessionId: string, data: SessionTokensData): void {
   store.setSessionTokens(sessionId, {
@@ -124,6 +127,13 @@ export function handleSessionTokens(store: SessionTokensStore, sessionId: string
     ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
     ...(typeof data.median_output_tok_s === 'number' ? { median_output_tok_s: data.median_output_tok_s } : {}),
     ...(typeof data.tok_s_samples === 'number' ? { tok_s_samples: data.tok_s_samples } : {}),
+    ...(typeof data.median_call_ms === 'number' ? { median_call_ms: data.median_call_ms } : {}),
+    ...(typeof data.mean_call_ms === 'number' ? { mean_call_ms: data.mean_call_ms } : {}),
+    ...(typeof data.max_call_ms === 'number' ? { max_call_ms: data.max_call_ms } : {}),
+    ...(typeof data.call_count === 'number' ? { call_count: data.call_count } : {}),
+    ...(typeof data.cached_input_tokens_total === 'number' ? { cached_input_tokens_total: data.cached_input_tokens_total } : {}),
+    ...(typeof data.cache_write_tokens_total === 'number' ? { cache_write_tokens_total: data.cache_write_tokens_total } : {}),
+    ...(typeof data.cache_hit_percent === 'number' ? { cache_hit_percent: data.cache_hit_percent } : {}),
   })
 }
 

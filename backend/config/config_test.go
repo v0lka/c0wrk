@@ -335,6 +335,35 @@ func TestApplyDefaults_MaxParallelSubagents(t *testing.T) {
 	}
 }
 
+// TestApplyDefaults_HistoryMutationCohortSize pins the cohort quantum
+// (executor.historyMutation.cohortSize): unset and meaningless negatives
+// normalize to the default 5, while an explicit 1 (the documented legacy
+// per-step opt-out) and any explicit K >= 2 pass through verbatim.
+func TestApplyDefaults_HistoryMutationCohortSize(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+		want  int
+	}{
+		{"unset zero", 0, 5},
+		{"negative one", -1, 5},
+		{"negative large", -100, 5},
+		{"explicit legacy one", 1, 1},
+		{"explicit five", 5, 5},
+		{"explicit twelve", 12, 12},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Executor.HistoryMutation.CohortSize = tc.value
+			ApplyDefaults(cfg)
+			if got := cfg.Executor.HistoryMutation.CohortSize; got != tc.want {
+				t.Fatalf("ApplyDefaults with cohortSize=%d = %d, want %d", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestApplyDefaults_ToolCallTimeoutExemptToolsNotMaterialized pins the
 // anti-freeze contract on Timeouts.ToolCallTimeoutExemptTools: an absent knob
 // must stay nil after ApplyDefaults. The whole config struct is what gets

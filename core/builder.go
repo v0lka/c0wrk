@@ -556,8 +556,10 @@ func (b *OrchestratorBuilder) Build(
 	}
 	trackingCaller := llm.NewTrackingCaller(routerCaller, usageTracker)
 
-	// Session token events: the preferred seam reports the median per-call output-token
-	// rate from a sliding window; older emitters keep the plain-totals path
+	// Session token events: the preferred seam reports the median per-call
+	// output-token rate and call duration from sliding windows plus the
+	// session-cumulative prompt-cache totals (cache hits/writes, hit rate);
+	// older emitters keep the plain-totals path
 	// (specs/domains/llm-providers.md). The model is composed into the full
 	// provider/model selector (compositeSessionModel) so the frontend's badge
 	// comparison can tell providers apart (ADR-123 §7).
@@ -565,8 +567,8 @@ func (b *OrchestratorBuilder) Build(
 	case SessionTokenThroughputEmitter:
 		throughput := newSessionThroughputWindow()
 		usageTracker.AddTimedObserver(func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
-			median, samples := throughput.record(usage.OutputTokens, duration)
-			te.EmitSessionTokensWithThroughput(totalIn, totalOut, compositeSessionModel(llmRouter, model), family, median, samples)
+			stats := throughput.observe(usage, duration)
+			te.EmitSessionTokensWithStats(totalIn, totalOut, compositeSessionModel(llmRouter, model), family, stats)
 		})
 	case SessionTokenEmitter:
 		usageTracker.AddObserver(func(_ llm.TokenUsage, totalIn, totalOut int, model, family string) {
@@ -2557,6 +2559,7 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 		})
 		cw.SetHistoryMutation(sdkmemory.HistoryMutation{
 			ToolResultEvictionStep: cfg.Executor.HistoryMutation.ToolResultEvictionStep,
+			CohortSize:             cfg.Executor.HistoryMutation.CohortSize,
 			EvictStepStatus:        cfg.Executor.HistoryMutation.EvictStepStatus,
 			DedupRepeatedReads:     cfg.Executor.HistoryMutation.DedupRepeatedReads,
 			Logger:                 b.logger,

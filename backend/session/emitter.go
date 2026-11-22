@@ -41,7 +41,11 @@ type tokenState struct {
 	// lastEffectiveMax caches the executor's internal "effective max" so
 	// ContextCompaction rescales its percentages to the display basis.
 	lastEffectiveMax int
-	tokenPersist     func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
+	// lastStats caches the latest per-call observability aggregates
+	// (latency + prompt-cache) from the throughput seam; mirrored into
+	// agent_metrics and read back for the live token snapshot.
+	lastStats    core.SessionTokenCallStats
+	tokenPersist func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
 }
 
 // toolCallIDGen holds a shared monotonic counter for generating unique tool_call_id values
@@ -858,6 +862,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	lastFill := e.tokens.lastFillPercent
 	lastUsed := e.tokens.lastUsedTokens
 	lastMax := e.tokens.lastMaxTokens
+	lastStats := e.tokens.lastStats
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -868,17 +873,28 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	// Emit session-level token totals so frontend can update even for subagents
 	// that don't trigger context_fill. Emitted before assistant_done so the
 	// frontend has updated totals when it processes the completion event.
+	// The cached observability aggregates ride along so this re-broadcast
+	// matches the payload the throughput seam emits for the same totals.
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "session_tokens",
 		Data: SessionTokensEventData{
-			SessionInputTokens:  totalIn,
-			SessionOutputTokens: totalOut,
-			Model:               lastModel,
-			Family:              lastFamily,
-			FillPercent:         lastFill,
-			UsedTokens:          lastUsed,
-			MaxTokens:           lastMax,
+			SessionInputTokens:     totalIn,
+			SessionOutputTokens:    totalOut,
+			Model:                  lastModel,
+			Family:                 lastFamily,
+			FillPercent:            lastFill,
+			UsedTokens:             lastUsed,
+			MaxTokens:              lastMax,
+			MedianOutputTokS:       lastStats.MedianOutputTokPerSec,
+			TokSSamples:            lastStats.TokSSamples,
+			MedianCallMillis:       lastStats.MedianCallMillis,
+			MeanCallMillis:         lastStats.MeanCallMillis,
+			MaxCallMillis:          lastStats.MaxCallMillis,
+			CallCount:              lastStats.CallCount,
+			CachedInputTokensTotal: lastStats.CachedInputTokensTotal,
+			CacheWriteTokensTotal:  lastStats.CacheWriteTokensTotal,
+			CacheHitPercent:        lastStats.CacheHitPercent,
 		},
 	})
 
@@ -910,24 +926,29 @@ func (e *EventEmitter) SetLastModel(model, family string) {
 
 // EmitSessionTokens emits "session_tokens" with the given totals (UsageTracker
 // observer); fill/used/max come from the shared cache, updated only by the
-// session-root emitter in ContextFill.
+// session-root emitter in ContextFill. Latency/cache aggregates are absent —
+// this is the pre-throughput fallback seam.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
-	e.emitSessionTokens(totalIn, totalOut, model, family, 0, 0)
+	e.emitSessionTokens(totalIn, totalOut, model, family, core.SessionTokenCallStats{})
 }
 
-// EmitSessionTokensWithThroughput additionally carries the median output-token
-// throughput and its sample count — the preferred seam of the UsageTracker's
-// timed observer in core/builder.go. Zeros mean the throughput window has not
-// reached its minimum samples; the fields are omitted (omitempty).
-func (e *EventEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
-	e.emitSessionTokens(totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+// EmitSessionTokensWithStats additionally carries the per-call observability
+// aggregates — the preferred seam of the UsageTracker's timed observer in
+// core/builder.go: median output-token throughput and call duration over the
+// sliding windows (zeros mean the windows have not reached their minimum
+// samples; omitted via omitempty), the cumulative call count and per-call
+// duration mean/max, and the session-cumulative prompt-cache totals plus hit
+// rate (omitted until a provider reports cache detail or a call is observed).
+func (e *EventEmitter) EmitSessionTokensWithStats(totalIn, totalOut int, model, family string, stats core.SessionTokenCallStats) {
+	e.emitSessionTokens(totalIn, totalOut, model, family, stats)
 }
 
 // emitSessionTokens is the shared body of both session-token emission seams:
 // it refreshes the cached totals (used by ContextFill enrichment and
-// TokenSnapshot), invokes the persistence callback, and emits the typed event.
-func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
-	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family, "medianOutputTokPerSec", medianOutputTokPerSec, "throughputSamples", throughputSamples)
+// TokenSnapshot), mirrors the aggregates into the agent_metrics state,
+// invokes the persistence callback, and emits the typed event.
+func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family string, stats core.SessionTokenCallStats) {
+	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family, "medianOutputTokPerSec", stats.MedianOutputTokPerSec, "throughputSamples", stats.TokSSamples, "callCount", stats.CallCount, "medianCallMillis", stats.MedianCallMillis, "cachedInputTokensTotal", stats.CachedInputTokensTotal, "cacheHitPercent", stats.CacheHitPercent)
 	e.tokens.mu.Lock()
 	// Update cached state for ContextFill enrichment
 	e.tokens.sessionInputTokens = totalIn
@@ -936,11 +957,17 @@ func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family st
 		e.tokens.lastModel = model
 		e.tokens.lastFamily = family
 	}
+	e.tokens.lastStats = stats
 	fillPercent := e.tokens.lastFillPercent
 	usedTokens := e.tokens.lastUsedTokens
 	maxTokens := e.tokens.lastMaxTokens
 	persist := e.tokens.tokenPersist
 	e.tokens.mu.Unlock()
+
+	// Mirror the cumulative aggregates into the agent_metrics state (shared
+	// across scoped copies; session-scoped like OutputTokens, not reset per
+	// run).
+	e.metrics.observeTokenStats(stats)
 
 	if persist != nil {
 		persist(totalIn, totalOut, model, family, fillPercent)
@@ -954,15 +981,22 @@ func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family st
 		SessionID: e.sessionID,
 		Type:      "session_tokens",
 		Data: SessionTokensEventData{
-			SessionInputTokens:  totalIn,
-			SessionOutputTokens: totalOut,
-			Model:               model,
-			Family:              family,
-			FillPercent:         fillPercent,
-			UsedTokens:          usedTokens,
-			MaxTokens:           maxTokens,
-			MedianOutputTokS:    medianOutputTokPerSec,
-			TokSSamples:         throughputSamples,
+			SessionInputTokens:     totalIn,
+			SessionOutputTokens:    totalOut,
+			Model:                  model,
+			Family:                 family,
+			FillPercent:            fillPercent,
+			UsedTokens:             usedTokens,
+			MaxTokens:              maxTokens,
+			MedianOutputTokS:       stats.MedianOutputTokPerSec,
+			TokSSamples:            stats.TokSSamples,
+			MedianCallMillis:       stats.MedianCallMillis,
+			MeanCallMillis:         stats.MeanCallMillis,
+			MaxCallMillis:          stats.MaxCallMillis,
+			CallCount:              stats.CallCount,
+			CachedInputTokensTotal: stats.CachedInputTokensTotal,
+			CacheWriteTokensTotal:  stats.CacheWriteTokensTotal,
+			CacheHitPercent:        stats.CacheHitPercent,
 		},
 	})
 	e.mu.Unlock()

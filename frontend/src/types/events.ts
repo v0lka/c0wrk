@@ -242,6 +242,27 @@ export interface SessionTokensData {
   /** Per-call sample count behind median_output_tok_s. Absent on payloads that
    *  predate the metric. */
   tok_s_samples?: number
+  /** Median per-call wall-clock duration (ms) over the recent per-call window
+   *  (omitted below three samples). Absent on payloads that predate the metric. */
+  median_call_ms?: number
+  /** Session-cumulative mean per-call wall-clock duration (ms). Absent until a
+   *  timed call has been observed. */
+  mean_call_ms?: number
+  /** Session-cumulative maximum per-call wall-clock duration (ms). Absent
+   *  until a timed call has been observed. */
+  max_call_ms?: number
+  /** Session-cumulative count of timed LLM calls observed. Absent until a
+   *  call has been observed. */
+  call_count?: number
+  /** Session-cumulative prompt-cache hit totals (input tokens served from the
+   *  provider's prompt cache). Absent until a provider reports cache detail. */
+  cached_input_tokens_total?: number
+  /** Session-cumulative prompt-cache write totals (Anthropic-family only).
+   *  Absent until a provider reports the counter. */
+  cache_write_tokens_total?: number
+  /** Session cache-hit rate: cached over observed per-call input tokens, in
+   *  percent. Absent until input usage has been observed. */
+  cache_hit_percent?: number
 }
 export interface AssistantChunkData { content: string; accumulated_content?: string; plan_step_id?: string }
 /** Final assistant response for one executor step. `plan_step_id` is set when
@@ -352,6 +373,16 @@ export interface AgentMetricsData {
   readonly output_tokens: number
   readonly invalid_tool_calls: number
   readonly model_profiles: AgentMetricsModelProfiles
+  /** Session-scoped token/latency/cache observability mirrored from the
+   *  session_tokens stream at emission time (llm_call_count and friends).
+   *  Optional: persisted rows saved before the fields existed lack them. */
+  readonly llm_call_count?: number
+  readonly cached_input_tokens_total?: number
+  readonly cache_write_tokens_total?: number
+  readonly cache_hit_percent?: number
+  readonly median_call_ms?: number
+  readonly mean_call_ms?: number
+  readonly max_call_ms?: number
 }
 export interface BlackboardUpdatedData { change_type: string }
 
@@ -1449,6 +1480,14 @@ export function isSessionTokensData(d: unknown): d is SessionTokensData {
   // older payloads simply omit them, mirroring the compaction flags above).
   if ('median_output_tok_s' in d && d.median_output_tok_s !== undefined && typeof d.median_output_tok_s !== 'number') return false
   if ('tok_s_samples' in d && d.tok_s_samples !== undefined && typeof d.tok_s_samples !== 'number') return false
+  // Latency + cache observability (additive — same omission contract).
+  if ('median_call_ms' in d && d.median_call_ms !== undefined && typeof d.median_call_ms !== 'number') return false
+  if ('mean_call_ms' in d && d.mean_call_ms !== undefined && typeof d.mean_call_ms !== 'number') return false
+  if ('max_call_ms' in d && d.max_call_ms !== undefined && typeof d.max_call_ms !== 'number') return false
+  if ('call_count' in d && d.call_count !== undefined && typeof d.call_count !== 'number') return false
+  if ('cached_input_tokens_total' in d && d.cached_input_tokens_total !== undefined && typeof d.cached_input_tokens_total !== 'number') return false
+  if ('cache_write_tokens_total' in d && d.cache_write_tokens_total !== undefined && typeof d.cache_write_tokens_total !== 'number') return false
+  if ('cache_hit_percent' in d && d.cache_hit_percent !== undefined && typeof d.cache_hit_percent !== 'number') return false
   return true
 }
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }

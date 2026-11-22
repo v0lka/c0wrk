@@ -278,11 +278,20 @@ type Manager struct {
 	// the UI owns the countdown
 	// (specs/decisions/065-auto-resend-retryable-errors.md).
 	autoRetryResolver func(provider string) int
-	// networkAutoRetryResolver resolves the GLOBAL network-class interval in
+	// networkAutoRetryResolver resolves the GLOBAL network-class switch in
 	// seconds (0 = kill-switch; ADR-128) — the class covers every provider,
 	// so unlike autoRetryResolver there is no per-provider argument. Same
-	// live-only contract: the resolver reads the app's atomic snapshot.
+	// live-only contract: the resolver reads the app's atomic snapshot. Since
+	// ADR-134 the positive value only arms the class — the interval comes
+	// from the code-owned growing schedule.
 	networkAutoRetryResolver func() int
+	// autoRetryRearms counts the stamped auto re-sends per task-failure
+	// episode (keyed sessionID\0taskID; ADR-134): the network class's growing
+	// schedule reads it as n. Live-only in-memory state — an app restart
+	// restarts every ladder — and cleared when the episode ends (a
+	// non-"resumed" banner resolution, or the session's task completing
+	// successfully). Guarded by mu alongside the resolvers.
+	autoRetryRearms map[string]int
 }
 
 // SetLogger sets the logger for the manager.

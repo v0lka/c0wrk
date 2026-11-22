@@ -248,6 +248,49 @@ describe('handleSessionTokens', () => {
     expect(store.recorded.sessionTokens[0]).not.toHaveProperty('used_tokens')
     expect(store.recorded.sessionTokens[0]).not.toHaveProperty('max_tokens')
   })
+
+  it('forwards the latency and cache observability fields when the payload carries them', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({
+      median_call_ms: 812.5,
+      mean_call_ms: 900,
+      max_call_ms: 1500,
+      call_count: 9,
+      cached_input_tokens_total: 4200,
+      cache_write_tokens_total: 600,
+      cache_hit_percent: 87.5,
+    }))
+    expect(store.recorded.sessionTokens[0]).toMatchObject({
+      median_call_ms: 812.5,
+      mean_call_ms: 900,
+      max_call_ms: 1500,
+      call_count: 9,
+      cached_input_tokens_total: 4200,
+      cache_write_tokens_total: 600,
+      cache_hit_percent: 87.5,
+    })
+  })
+
+  it('omits the latency/cache fields on legacy payloads (no clobbering with zeros)', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({
+      median_call_ms: undefined,
+      mean_call_ms: undefined,
+      max_call_ms: undefined,
+      call_count: undefined,
+      cached_input_tokens_total: undefined,
+      cache_write_tokens_total: undefined,
+      cache_hit_percent: undefined,
+    }))
+    const forwarded = store.recorded.sessionTokens[0]
+    expect(forwarded).not.toHaveProperty('median_call_ms')
+    expect(forwarded).not.toHaveProperty('mean_call_ms')
+    expect(forwarded).not.toHaveProperty('max_call_ms')
+    expect(forwarded).not.toHaveProperty('call_count')
+    expect(forwarded).not.toHaveProperty('cached_input_tokens_total')
+    expect(forwarded).not.toHaveProperty('cache_write_tokens_total')
+    expect(forwarded).not.toHaveProperty('cache_hit_percent')
+  })
 })
 
 describe('handleCompactionStarted / handleCompactionFinished', () => {

@@ -105,11 +105,14 @@ type Application struct {
 	hitlHandler agent.HITLHandler
 
 	// autoRetryIntervals is the published auto-retry snapshot (ADR-065 +
-	// ADR-128): every provider's auto_retry_seconds (the rate-limit class,
-	// keyed by logical provider name) plus the global network-class interval.
-	// Immutable once stored; the pointer swap is the only synchronization.
-	// See specs/decisions/065-auto-resend-retryable-errors.md and
-	// specs/decisions/128-auto-resend-network-errors.md.
+	// ADR-128, ADR-134): every provider's auto_retry_seconds (the
+	// rate-limit class, keyed by logical provider name) plus the global
+	// network-class switch value — any positive value arms the code-owned
+	// growing schedule, 0 is the kill-switch. Immutable once stored; the
+	// pointer swap is the only synchronization.
+	// See specs/decisions/065-auto-resend-retryable-errors.md,
+	// specs/decisions/128-auto-resend-network-errors.md and
+	// specs/decisions/134-network-retry-schedule.md.
 	autoRetryIntervals atomic.Pointer[autoRetrySnapshot]
 
 	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-081),
@@ -419,9 +422,10 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	manager.SetAutoRetryResolver(func(provider string) int {
 		return app.autoRetryIntervalSnapshot()[provider]
 	})
-	// The network class (ADR-128) is one global interval covering every
-	// provider — the fixed ones included — so it rides the same snapshot
-	// without a per-provider argument.
+	// The network class (ADR-134, amending ADR-128) is one global switch
+	// value covering every provider — the fixed ones included — so it rides
+	// the same snapshot without a per-provider argument; the schedule it
+	// arms lives in the session layer.
 	manager.SetNetworkAutoRetryResolver(func() int {
 		return app.networkAutoRetryIntervalSnapshot()
 	})
@@ -706,12 +710,14 @@ func (a *Application) LastToolCallID(sessionID string) (id, tool string) {
 }
 
 // autoRetrySnapshot is the immutable auto-retry snapshot published under the
-// autoRetryIntervals pointer (ADR-065 + ADR-128). Both fields answer 0 for
-// "off": providerIntervals for a provider without auto_retry_seconds (the
-// fixed providers always), networkInterval for the network kill-switch.
+// autoRetryIntervals pointer (ADR-065 + ADR-128, ADR-134). Both fields
+// answer 0 for "off": providerIntervals for a provider without
+// auto_retry_seconds (the fixed providers always), networkInterval for the
+// network kill-switch — any positive value arms the schedule (the value no
+// longer sets the wait).
 type autoRetrySnapshot struct {
 	providerIntervals map[string]int // rate-limit class: provider → auto_retry_seconds
-	networkInterval   int            // network class: global llm.network_auto_retry_seconds
+	networkInterval   int            // network class: llm.network_auto_retry_seconds switch value
 }
 
 // buildAutoRetrySnapshot derives the auto-retry snapshot from a config; the
@@ -760,7 +766,7 @@ func (a *Application) autoRetryIntervalSnapshot() map[string]int {
 }
 
 // networkAutoRetryIntervalSnapshot returns the published global network-class
-// interval (0 before the first publish — the kill-switch posture).
+// switch value (0 before the first publish — the kill-switch posture).
 func (a *Application) networkAutoRetryIntervalSnapshot() int {
 	if p := a.autoRetryIntervals.Load(); p != nil {
 		return p.networkInterval

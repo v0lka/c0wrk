@@ -311,8 +311,11 @@ type ContextFillEventData struct {
 
 // SessionTokensEventData is the typed Data payload for "session_tokens".
 // UsedTokens/MaxTokens mirror the session-root context-window fill cached by
-// ContextFill (drives the status bar's "N of M" tooltip); the throughput
-// fields stay omitted until the sliding window reaches its minimum samples.
+// ContextFill (drives the status bar's "N of M" tooltip); the throughput,
+// latency and cache fields stay omitted until their windows/receipts exist
+// (the throughput and duration medians need the window's minimum samples;
+// the cumulative cache counters are absent until a provider reports cache
+// detail or a call is observed).
 type SessionTokensEventData struct {
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
@@ -323,6 +326,22 @@ type SessionTokensEventData struct {
 	MaxTokens           int     `json:"max_tokens"`
 	MedianOutputTokS    float64 `json:"median_output_tok_s,omitempty"`
 	TokSSamples         int     `json:"tok_s_samples,omitempty"`
+	// Per-call latency aggregates over the session's tracked LLM calls
+	// (wall-clock of each call, milliseconds): median over the sliding
+	// window (omitted below the minimum sample count), cumulative mean/max
+	// and the cumulative count of observed calls.
+	MedianCallMillis float64 `json:"median_call_ms,omitempty"`
+	MeanCallMillis   float64 `json:"mean_call_ms,omitempty"`
+	MaxCallMillis    float64 `json:"max_call_ms,omitempty"`
+	CallCount        int     `json:"call_count,omitempty"`
+	// Session-cumulative prompt-cache accounting (llm.TokenUsage detail
+	// fields): cached input totals (provider cache hits), cache-write totals
+	// (Anthropic-family only) and the session hit rate — cached over observed
+	// per-call input tokens, in percent. Zero/omitted until providers report
+	// the detail.
+	CachedInputTokensTotal int     `json:"cached_input_tokens_total,omitempty"`
+	CacheWriteTokensTotal  int     `json:"cache_write_tokens_total,omitempty"`
+	CacheHitPercent        float64 `json:"cache_hit_percent,omitempty"`
 }
 
 // ContextCompactionEventData is the typed Data payload for "context_compaction" events.
@@ -384,8 +403,24 @@ type AgentMetricsData struct {
 	// Steps counts executor steps (conductor plus sharing subagents).
 	Steps int `json:"steps"`
 	// OutputTokens is the session-wide accumulated output usage.
-	OutputTokens  int                   `json:"output_tokens"`
-	ModelProfiles ModelProfilesMetaInfo `json:"model_profiles"`
+	OutputTokens int `json:"output_tokens"`
+	// Session-wide token/latency/cache observability at emission time: the
+	// latest cumulative aggregates of the session_tokens stream (like
+	// OutputTokens these are session-scoped values, NOT per-run deltas — the
+	// quality counters above reset per run, these do not). LLMCallCount
+	// counts the timed LLM calls observed; CachedInputTokensTotal /
+	// CacheWriteTokensTotal accumulate the providers' prompt-cache detail
+	// (llm.TokenUsage); CacheHitPercent is cached over observed per-call
+	// input tokens, in percent; MedianCallMillis/MeanCallMillis/
+	// MaxCallMillis are per-call wall-clock aggregates in milliseconds.
+	LLMCallCount           int                   `json:"llm_call_count"`
+	CachedInputTokensTotal int                   `json:"cached_input_tokens_total"`
+	CacheWriteTokensTotal  int                   `json:"cache_write_tokens_total"`
+	CacheHitPercent        float64               `json:"cache_hit_percent"`
+	MedianCallMillis       float64               `json:"median_call_ms"`
+	MeanCallMillis         float64               `json:"mean_call_ms"`
+	MaxCallMillis          float64               `json:"max_call_ms"`
+	ModelProfiles          ModelProfilesMetaInfo `json:"model_profiles"`
 }
 
 // AgentMetricsCounters breaks nudges/aborts down by executor loop detector:

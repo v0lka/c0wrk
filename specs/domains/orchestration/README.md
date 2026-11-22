@@ -190,6 +190,14 @@ HandleMessage(ctx, message, sessionID, opts)
 │     │   has BOTH an existing plan AND a routing decision → reuse the
 │     │   routing decision, reactivate skills, skip the router LLM call.
 │     │   The plan gate prevents a plan-less continuation from mis-routing.
+│     ├─ Heuristic continuation fast-path: if the message is
+│     │   continuation-style ("ok", "continue", "продолжай" … — exact closed
+│     │   bilingual EN/RU phrase set, no question/tool/quoting markers;
+│     │   core/continuation_fastpath.go) AND the
+│     │   session's cached verdict is valid for the current session + model
+│     │   → reuse it, reactivate skills, skip the router LLM call. Never
+│     │   under opts.Goal; a session/model switch or a routing failure
+│     │   invalidates the cache; the next substantive message re-routes.
 │     └─ Default: router.Route(ctx, routingMessage, tools, history, skills)
 │         → When opts.UserSkills is non-empty, routingMessage is augmented
 │           with skill descriptions via buildSkillAugmentedRoutingMessage.
@@ -264,7 +272,7 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 
 ## Invariants
 
-- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored plan AND routing decision take the continuation fast-path and skip the router.
+- Every FIRST user message passes through Route; continuations (opts.TaskID != "") with a restored plan AND routing decision take the restored-task fast-path, and continuation-style messages ("ok", "continue", …) with a verdict cached for the current session + model take the heuristic fast-path — both skip the router.
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}.
 - Complexity is always in range [1, 5].
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.

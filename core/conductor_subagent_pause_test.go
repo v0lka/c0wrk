@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -136,6 +138,62 @@ func TestConfigureExecutor_WiresPauseChecker(t *testing.T) {
 	_, err := executor.Run(context.Background(), nil, &mockContextManager{})
 	if !errors.Is(err, agent.ErrPaused) {
 		t.Fatalf("expected ErrPaused from a pausing subagent executor, got %v", err)
+	}
+}
+
+// TestRunRegularBlocking_PauseAbandonedSubagentSettlesPaused pins the
+// end-to-end pause contract for a delegate wave dismissed by the host's
+// pause: the Conductor's tool-call watchdog abandons the blocking delegate
+// tool on pause, cancelling its derived context, and that cancellation flows
+// into the running subagent executor mid-LLM-call. With the universal pause
+// signal tripped, the executor must checkpoint as ErrPaused (the abandonment
+// manifestation), so the launcher settles the delegation as a cooperative
+// pause — registry CompletePaused + durable ledger `paused` (resume CONTINUES
+// the checkpointed trajectory) — never failed/interrupted with a bare
+// "context canceled".
+func TestRunRegularBlocking_PauseAbandonedSubagentSettlesPaused(t *testing.T) {
+	ctx, cancel := context.WithCancel(limitTestCtx())
+	defer cancel()
+
+	var calls atomic.Int32
+	caller := &mockLLMCaller{callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+		if calls.Add(1) == 1 {
+			cancel() // the pause abandonment dismisses the delegate wave's context
+			return nil, context.Canceled
+		}
+		return executorFinishResponse("should never run"), nil
+	}}
+	bb := newRetryLedgerBB("task-pause-abandoned", "d0")
+	seedRetryUnit(t, bb, "d0")
+	rec := &launchRecorder{}
+	// The retry-test harness plus the universal pause checker: in production
+	// it reads the live pause signal, which from the subagent's perspective is
+	// indistinguishable from "tripped since the abandonment canceled this
+	// inherited context" — the exact dynamic under test.
+	l := newRetryTestLauncher(bb, caller, rec)
+	l.deps.pauseChecker = func(context.Context) bool { return ctx.Err() != nil }
+
+	registry := tools.NewDelegationRegistry()
+	if err := registry.Register("d0", "s", nil, "blocking"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	results := l.runRegularBlocking(ctx, []tools.DelegationTask{{ID: "d0", Summary: "s", Task: "t"}}, registry)
+
+	r := results[0]
+	if r.Status != tools.DelegationStatusPaused {
+		t.Fatalf("result status = %v (err=%v), want paused — a pause-abandoned subagent is a checkpoint, not a failure", r.Status, r.Error)
+	}
+	if !isPaused(r.Error) {
+		t.Errorf("result error = %v, want the pause sentinel, never a bare context.Canceled", r.Error)
+	}
+	if d := registry.Get("d0"); d == nil || d.Status != tools.DelegationStatusPaused {
+		t.Errorf("registry entry = %+v, want a paused delegation", d)
+	}
+	if st, ok := retryLedgerStatus(t, bb, "d0"); !ok || st != units.UnitStatusPaused {
+		t.Errorf("ledger status = %q (found=%v), want paused — resume must continue this unit, not relaunch it fresh", st, ok)
+	}
+	if n := rec.launchCount("d0"); n != 1 {
+		t.Errorf("SubAgentLaunch count = %d, want exactly 1 (a pause is never retried)", n)
 	}
 }
 

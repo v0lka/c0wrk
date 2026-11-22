@@ -581,6 +581,31 @@ export interface TokenInfo {
   /** Per-call sample count behind median_output_tok_s (tok_s_samples) —
    *  the metric is only displayed at >= 3 samples. Absent on older payloads. */
   tok_s_samples?: number
+  /** Median per-call wall-clock duration (ms) over the recent per-call window,
+   *  from session_tokens events (median_call_ms). Absent on older payloads and
+   *  below the backend's minimum sample count. */
+  median_call_ms?: number
+  /** Session-cumulative mean per-call wall-clock duration (ms), from
+   *  session_tokens events (mean_call_ms). Absent on older payloads. */
+  mean_call_ms?: number
+  /** Session-cumulative maximum per-call wall-clock duration (ms), from
+   *  session_tokens events (max_call_ms). Absent on older payloads. */
+  max_call_ms?: number
+  /** Session-cumulative count of timed LLM calls observed, from session_tokens
+   *  events (call_count). Absent on older payloads. */
+  call_count?: number
+  /** Session-cumulative prompt-cache hit totals (input tokens), from
+   *  session_tokens events (cached_input_tokens_total). Absent on older
+   *  payloads and until a provider reports cache detail. */
+  cached_input_tokens_total?: number
+  /** Session-cumulative prompt-cache write totals, from session_tokens events
+   *  (cache_write_tokens_total; Anthropic-family only). Absent on older
+   *  payloads. */
+  cache_write_tokens_total?: number
+  /** Session cache-hit rate in percent (cached over observed per-call input
+   *  tokens), from session_tokens events (cache_hit_percent). Absent on older
+   *  payloads. */
+  cache_hit_percent?: number
 }
 
 export interface TodoItem {

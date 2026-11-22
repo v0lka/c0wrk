@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/c0wrk/core"
 )
 
-// TestEventEmitterEmitSessionTokensWithThroughput pins the throughput-augmented
-// session-token seam: the typed payload carries the median tok/s and sample
-// count alongside the existing totals/fill fields, the persistence callback
-// still receives the plain totals (the sessions-table schema is unchanged),
-// and the cached totals (TokenSnapshot) stay in sync.
-func TestEventEmitterEmitSessionTokensWithThroughput(t *testing.T) {
+// TestEventEmitterEmitSessionTokensWithStats pins the observability-augmented
+// session-token seam: the typed payload carries the median tok/s, the latency
+// aggregates and the cache totals alongside the existing totals/fill fields,
+// the persistence callback still receives the plain totals (the sessions-table
+// schema is unchanged), the cached totals (TokenSnapshot) stay in sync, and
+// the aggregates are mirrored into the next agent_metrics payload.
+func TestEventEmitterEmitSessionTokensWithStats(t *testing.T) {
 	var received Event
 	emit := func(e Event) { received = e }
 
@@ -25,10 +28,21 @@ func TestEventEmitterEmitSessionTokensWithThroughput(t *testing.T) {
 	})
 
 	// Populate the session-root fill cache to verify forwarding still works
-	// on the throughput path.
+	// on the stats path.
 	emitter.ContextFill(75.5, 75500, 100000, "ok", "")
 
-	emitter.EmitSessionTokensWithThroughput(1200, 300, "test-model", "test-family", 42.5, 7)
+	stats := core.SessionTokenCallStats{
+		MedianOutputTokPerSec:  42.5,
+		TokSSamples:            7,
+		MedianCallMillis:       910.5,
+		MeanCallMillis:         980.25,
+		MaxCallMillis:          1200,
+		CallCount:              9,
+		CachedInputTokensTotal: 5400,
+		CacheWriteTokensTotal:  300,
+		CacheHitPercent:        62.5,
+	}
+	emitter.EmitSessionTokensWithStats(1200, 300, "test-model", "test-family", stats)
 
 	if received.Type != "session_tokens" {
 		t.Fatalf("expected type 'session_tokens', got %q", received.Type)
@@ -49,6 +63,15 @@ func TestEventEmitterEmitSessionTokensWithThroughput(t *testing.T) {
 	if data.TokSSamples != 7 {
 		t.Errorf("TokSSamples = %d, want 7", data.TokSSamples)
 	}
+	if data.MedianCallMillis != 910.5 || data.MeanCallMillis != 980.25 || data.MaxCallMillis != 1200 {
+		t.Errorf("latency aggregates = %v/%v/%v, want 910.5/980.25/1200", data.MedianCallMillis, data.MeanCallMillis, data.MaxCallMillis)
+	}
+	if data.CallCount != 9 {
+		t.Errorf("CallCount = %d, want 9", data.CallCount)
+	}
+	if data.CachedInputTokensTotal != 5400 || data.CacheWriteTokensTotal != 300 || data.CacheHitPercent != 62.5 {
+		t.Errorf("cache aggregates = %d/%d/%v, want 5400/300/62.5", data.CachedInputTokensTotal, data.CacheWriteTokensTotal, data.CacheHitPercent)
+	}
 	if data.FillPercent != 75.5 || data.UsedTokens != 75500 || data.MaxTokens != 100000 {
 		t.Errorf("cached fill forwarding broken: %+v", data)
 	}
@@ -61,19 +84,49 @@ func TestEventEmitterEmitSessionTokensWithThroughput(t *testing.T) {
 	if snap.OutputTokens != 300 || snap.InputTokens != 1200 {
 		t.Errorf("cached totals = %d/%d, want 1200/300", snap.InputTokens, snap.OutputTokens)
 	}
+
+	// The aggregates are mirrored into the next agent_metrics payload
+	// (session-scoped values, not per-run deltas).
+	got := emitter.EmitAgentMetrics("full")
+	if got.LLMCallCount != 9 || got.CachedInputTokensTotal != 5400 || got.CacheWriteTokensTotal != 300 {
+		t.Errorf("agent_metrics cache mirror = %d/%d/%d, want 9/5400/300", got.LLMCallCount, got.CachedInputTokensTotal, got.CacheWriteTokensTotal)
+	}
+	if got.CacheHitPercent != 62.5 {
+		t.Errorf("agent_metrics cache_hit_percent = %v, want 62.5", got.CacheHitPercent)
+	}
+	if got.MedianCallMillis != 910.5 || got.MeanCallMillis != 980.25 || got.MaxCallMillis != 1200 {
+		t.Errorf("agent_metrics latency mirror = %v/%v/%v, want 910.5/980.25/1200", got.MedianCallMillis, got.MeanCallMillis, got.MaxCallMillis)
+	}
 }
 
 // TestSessionTokensEventData_OmitEmptyWireShape verifies the wire contract:
-// until the throughput window warms up (median 0, samples 0), the new fields
+// until the windows warm up and providers report cache detail, the new fields
 // are absent from the JSON payload — legacy consumers never see them.
 func TestSessionTokensEventData_OmitEmptyWireShape(t *testing.T) {
-	warm := SessionTokensEventData{SessionInputTokens: 10, MedianOutputTokS: 12.5, TokSSamples: 3}
+	warm := SessionTokensEventData{
+		SessionInputTokens:     10,
+		MedianOutputTokS:       12.5,
+		TokSSamples:            3,
+		MedianCallMillis:       812.5,
+		MeanCallMillis:         900,
+		MaxCallMillis:          1500,
+		CallCount:              5,
+		CachedInputTokensTotal: 4200,
+		CacheWriteTokensTotal:  600,
+		CacheHitPercent:        87.5,
+	}
 	b, err := json.Marshal(warm)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(b), `"median_output_tok_s":12.5`) || !strings.Contains(string(b), `"tok_s_samples":3`) {
-		t.Errorf("warm payload missing throughput fields: %s", b)
+	for _, key := range []string{
+		`"median_output_tok_s":12.5`, `"tok_s_samples":3`,
+		`"median_call_ms":812.5`, `"mean_call_ms":900`, `"max_call_ms":1500`, `"call_count":5`,
+		`"cached_input_tokens_total":4200`, `"cache_write_tokens_total":600`, `"cache_hit_percent":87.5`,
+	} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("warm payload missing %s: %s", key, b)
+		}
 	}
 
 	cold := SessionTokensEventData{SessionInputTokens: 10}
@@ -81,8 +134,14 @@ func TestSessionTokensEventData_OmitEmptyWireShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(b), "median_output_tok_s") || strings.Contains(string(b), "tok_s_samples") {
-		t.Errorf("cold payload must omit throughput fields: %s", b)
+	for _, key := range []string{
+		"median_output_tok_s", "tok_s_samples",
+		"median_call_ms", "mean_call_ms", "max_call_ms", "call_count",
+		"cached_input_tokens_total", "cache_write_tokens_total", "cache_hit_percent",
+	} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("cold payload must omit %s: %s", key, b)
+		}
 	}
 }
 
@@ -111,6 +170,12 @@ func TestSessionTokensEventData_LegacyJSONLoads(t *testing.T) {
 	}
 	if data.MedianOutputTokS != 0 || data.TokSSamples != 0 {
 		t.Errorf("throughput fields must stay zero for legacy payloads, got %v/%d", data.MedianOutputTokS, data.TokSSamples)
+	}
+	if data.MedianCallMillis != 0 || data.MeanCallMillis != 0 || data.MaxCallMillis != 0 || data.CallCount != 0 {
+		t.Errorf("latency fields must stay zero for legacy payloads, got %v/%v/%v/%d", data.MedianCallMillis, data.MeanCallMillis, data.MaxCallMillis, data.CallCount)
+	}
+	if data.CachedInputTokensTotal != 0 || data.CacheWriteTokensTotal != 0 || data.CacheHitPercent != 0 {
+		t.Errorf("cache fields must stay zero for legacy payloads, got %d/%d/%v", data.CachedInputTokensTotal, data.CacheWriteTokensTotal, data.CacheHitPercent)
 	}
 }
 
@@ -155,12 +220,15 @@ func TestLegacySessionTokensRow_LoadsWithoutError(t *testing.T) {
 	if data.MedianOutputTokS != 0 || data.TokSSamples != 0 {
 		t.Errorf("throughput fields must stay zero, got %v/%d", data.MedianOutputTokS, data.TokSSamples)
 	}
+	if data.CallCount != 0 || data.CachedInputTokensTotal != 0 || data.MedianCallMillis != 0 {
+		t.Errorf("latency/cache fields must stay zero for legacy payloads, got %d/%d/%v", data.CallCount, data.CachedInputTokensTotal, data.MedianCallMillis)
+	}
 }
 
-// TestEventPersister_SkipsSessionTokensWithThroughput pins that the enriched
+// TestEventPersister_SkipsSessionTokensWithStats pins that the enriched
 // session_tokens event remains transient: the persister must not write message
 // rows for it, regardless of the payload's new fields.
-func TestEventPersister_SkipsSessionTokensWithThroughput(t *testing.T) {
+func TestEventPersister_SkipsSessionTokensWithStats(t *testing.T) {
 	store := &captureStore{}
 	p := NewEventPersister(store)
 
@@ -171,6 +239,8 @@ func TestEventPersister_SkipsSessionTokensWithThroughput(t *testing.T) {
 			SessionInputTokens: 100, SessionOutputTokens: 50,
 			Model: "m", Family: "f",
 			MedianOutputTokS: 42.5, TokSSamples: 9,
+			MedianCallMillis: 812.5, MeanCallMillis: 900, MaxCallMillis: 1500, CallCount: 9,
+			CachedInputTokensTotal: 4200, CacheWriteTokensTotal: 600, CacheHitPercent: 87.5,
 		},
 	})
 	// Close drains the single-writer queue, so any wrongly-enqueued write
