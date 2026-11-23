@@ -21,6 +21,7 @@ import { GitPanelFooter } from './GitPanelFooter'
 import { useGitPanelStore, selectLastOperation } from '@/stores/gitPanelStore'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { withVirtualTimers } from '@/test/virtualTime'
 
 let container: HTMLDivElement
 let root: Root
@@ -52,15 +53,6 @@ function render(): void {
 async function flush(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve()
-  })
-}
-
-/** Flush the macrotask queue: Radix installs its document-level
- *  pointerdown/outside-interaction listener via setTimeout(0) after the
- *  content mounts (see ui/popover.test.tsx). */
-async function settle(): Promise<void> {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 10))
   })
 }
 
@@ -186,11 +178,13 @@ describe('GitPanelFooter — log popover dismissal', () => {
   it('closes on an outside click', async () => {
     seed()
     render()
-    act(() => {
+    // The click rides the virtual-time window: Radix's outside-interaction
+    // listener attaches from a setTimeout(0) and fires deterministically
+    // during the advance (see src/test/virtualTime.ts).
+    await withVirtualTimers(() => {
       logButton().click()
-    })
+    }, 10)
     expect(panel()).not.toBeNull()
-    await settle()
 
     // Radix's DismissableLayer dismisses on `pointerdown` outside the panel.
     act(() => {
@@ -202,12 +196,11 @@ describe('GitPanelFooter — log popover dismissal', () => {
   it('stays open on a click inside the panel', async () => {
     seed()
     render()
-    act(() => {
+    await withVirtualTimers(() => {
       logButton().click()
-    })
+    }, 10)
     const p = panel()
     expect(p).not.toBeNull()
-    await settle()
 
     act(() => {
       p!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))

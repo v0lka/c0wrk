@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { BudgetCombobox } from './BudgetCombobox'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { withVirtualTimers } from '@/test/virtualTime'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
@@ -65,13 +66,15 @@ function customInput(): HTMLInputElement {
 
 /** Open (or re-click) the popover via the trigger. Radix installs its
  *  document-level outside-interaction listener via setTimeout(0) after the
- *  content mounts, so flush the macrotask queue before interacting with the
- *  open menu. The trigger's click is what toggles, in either direction. */
+ *  content mounts: dispatch inside the virtual-time window so the listener
+ *  attaches deterministically before the open menu is interacted with
+ *  (timing-guard compliant; see src/test/virtualTime.ts). The trigger's
+ *  click is what toggles, in either direction. */
 async function openMenu(): Promise<void> {
-  await act(async () => {
-    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
-  })
+  const t = trigger()
+  await withVirtualTimers(() => {
+    t.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }, 10)
 }
 
 /** React 19 controlled input: native prototype setter + input event, so the

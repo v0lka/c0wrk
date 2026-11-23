@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { Popover, PopoverContent, PopoverTrigger } from './popover'
+import { withVirtualTimers } from '@/test/virtualTime'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
@@ -134,13 +135,13 @@ describe('Popover — trigger interaction', () => {
     })
     expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
 
-    // The async act flushes the macrotask queue: Radix installs its
-    // document-level outside-interaction listener via setTimeout(0) after
-    // the content mounts.
-    await act(async () => {
+    // Radix installs its document-level outside-interaction listener via
+    // setTimeout(0) after the content mounts: dispatch inside the
+    // virtual-time window so it attaches deterministically, with no real
+    // time spent (see src/test/virtualTime.ts).
+    await withVirtualTimers(() => {
       trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
-    })
+    }, 10)
     expect(
       document.body.querySelector('[data-slot="popover-content"]'),
     ).not.toBeNull()
@@ -148,10 +149,11 @@ describe('Popover — trigger interaction', () => {
       trigger().getAttribute('data-state'),
     ).toBe('open')
 
-    await act(async () => {
+    // The toggle-close click is dispatched inside the window as well: the
+    // outside-interaction dismissal fires during the advance.
+    await withVirtualTimers(() => {
       trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
-    })
+    }, 10)
     expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
     expect(trigger().getAttribute('data-state')).toBe('closed')
   })

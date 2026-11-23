@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { GitOperationPopover } from './GitOperationPopover'
 import { GitOperationButton } from './GitOperationButton'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
+import { withVirtualTimers } from '@/test/virtualTime'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
@@ -95,13 +96,6 @@ function pre(): HTMLElement {
   return el!
 }
 
-/** Flush Radix's macrotask-queued listeners (outside-interaction, Presence). */
-async function settle(): Promise<void> {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 10))
-  })
-}
-
 describe('GitOperationPopover — portal placement (clipped-ancestor-proof)', () => {
   it('mounts the panel through the Radix portal outside the React tree', () => {
     render(record(), true)
@@ -175,17 +169,18 @@ describe('GitOperationPopover — trigger interaction', () => {
     render(record(), false)
     expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
 
-    await act(async () => {
+    // Dispatch inside the virtual-time window: Radix's outside-interaction
+    // listener attaches from a setTimeout(0) after the content mounts and
+    // fires deterministically during the advance (see src/test/virtualTime.ts).
+    await withVirtualTimers(() => {
       trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await settle()
-    })
+    }, 10)
     expect(document.body.querySelector('[data-slot="popover-content"]')).not.toBeNull()
     expect(trigger().getAttribute('data-state')).toBe('open')
 
-    await act(async () => {
+    await withVirtualTimers(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-      await settle()
-    })
+    }, 10)
     expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
     // Radix-managed focus: back on the trigger after the dismiss.
     expect(document.activeElement).toBe(trigger())
