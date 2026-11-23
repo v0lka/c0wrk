@@ -21,15 +21,15 @@ llm:
   # the intended provider unambiguously.
   default_model: "anthropic/claude-sonnet-4-20250514"
 
-  # Automatic resend on connection-level failures (ADR-128): when a task dies
-  # of a network-class provider error — DNS failure, refused/unreachable
-  # endpoint, reset connection, stalled/timed-out connection (no HTTP response
-  # at all) — the session waits this many seconds, then re-sends the task
-  # automatically instead of asking how to proceed. One GLOBAL knob covering
-  # EVERY provider, the fixed ones (anthropic/chatgpt/kimi/embedded)
-  # included. Longer than, and separate from, the per-provider
-  # auto_retry_seconds knob below (rate-limit class): refused sockets heal on
-  # minutes-scale with no server-signposted window. 0 = off (never
+  # Automatic resend on connection-level failures (ADR-128, schedule ADR-134):
+  # when a task dies of a network-class provider error — DNS failure,
+  # refused/unreachable endpoint, reset connection, stalled/timed-out
+  # connection (no HTTP response at all) — the session re-sends the task
+  # automatically instead of asking how to proceed, waiting the code-owned
+  # growing schedule 15s -> 30s -> 60s, capped at 90s, on the task's
+  # successive re-sends. One GLOBAL switch covering EVERY provider, the fixed
+  # ones (anthropic/chatgpt/kimi/embedded) included; any positive value arms
+  # the schedule (the value itself no longer sets the wait), 0 = off (never
   # auto-resend on network errors); omitted = this default of 90. Same
   # inclusive upper bound of 3600 as auto_retry_seconds. Not a router-level
   # retry knob: the timer lives in the c0wrk session layer. Budget deaths
@@ -241,6 +241,12 @@ llm:
   #     # writers of this key — your hand-edit and the embedded LLM's `/props`
   #     # context readback — are bounded by the same constant.
   #     context_window: 128000
+  #     # Subscription note: for ChatGPT-oauth (Codex) models this override is
+  #     # how you pin the window the SUBSCRIPTION actually serves (legacy
+  #     # 272000 baseline / current flagship 500000) — the built-in registry
+  #     # values describe the public OpenAI API instead, and the lazy runtime
+  #     # probe deliberately skips oauth entries. See
+  #     # docs/chatgpt-context-caps.md for when and how to set it.
   #     # Maximum tokens the model may emit in a single response.
   #     output_limit: 8192
   #     # Fixed per-model request budget in seconds (ADR-071). A positive
@@ -931,6 +937,17 @@ executor:
   # compaction (which triggers at fill % thresholds).
   historyMutation:
     toolResultEvictionStep: 10 # Evict tool results to cache refs after N steps (0 = disabled)
+    # Eviction/pruning boundaries advance in K-step cohorts: between cohort
+    # boundaries consecutive requests keep the conversation prefix byte-stable
+    # (only new steps are appended), so provider prompt caches stop being
+    # invalidated every turn. At each boundary a batch of K tool results
+    # crosses the threshold together (each still recoverable via
+    # tool_result_read). Higher K = warmer cache but older context retained
+    # longer; 1 = the legacy per-step advance (context trimmed eagerly, cache
+    # cold every turn). Same-build mechanisms (evictStepStatus,
+    # dedupRepeatedReads) are never delayed by the cohort. Applies to sessions
+    # started after the change; a running session keeps its startup snapshot.
+    cohortSize: 5
     evictStepStatus: false # Evict update_checklist results immediately (pure bookkeeping)
     dedupRepeatedReads: false # Replace duplicate file reads with cache reference
 
@@ -2183,8 +2200,9 @@ orchestration:
 # Terminal — embedded PTY terminal (the in-app terminal panel).
 # ---------------------------------------------------------------------------
 # The terminal panel runs your login shell inside the app (xterm.js over a
-# PTY). The shell always receives TERM=xterm-256color, COLORTERM=truecolor
-# and TERM_PROGRAM=c0wrk (+ TERM_PROGRAM_VERSION). TERM_PROGRAM identifies
+# PTY). The shell receives TERM=xterm-256color and COLORTERM=truecolor
+# unless the inherited environment already sets them, and always
+# TERM_PROGRAM=c0wrk (+ TERM_PROGRAM_VERSION). TERM_PROGRAM identifies
 # the embedded terminal so your shell rc files can tell it apart from your
 # real terminal — the same convention VSCode (TERM_PROGRAM=vscode), WezTerm
 # and ghostty use.
@@ -2257,8 +2275,9 @@ orchestration:
 #   # takes over. Default: 8000.
 #   observation_truncate: 8000
 #   # Per-turn observation budget in TOKENS — the ReAct-scale cap (the
-#   # executor's tool-result budget is 30K tokens against a comparable
-#   # window share). Engages when the loop resolves a model context window:
+#   # executor's per-result ceiling is executor.tool_result_budget's
+#   # hard_cap_tokens, 4096 by default). Engages when the loop resolves a
+#   # model context window:
 #   # the effective cap is min(observation_budget_tokens,
 #   # observation_fill_fraction × window) × 4 characters. Default: 8192.
 #   observation_budget_tokens: 8192
@@ -2524,10 +2543,10 @@ notifications:
 # ---------------------------------------------------------------------------
 # Compression for the append-only session artifacts the backend writes while
 # an agent works: the per-session step dumps (dumps/*.jsonl) and the session
-# log (logs/session_<sessionID>.log) (ADR-116). These files resend the growing
+# log (logs/session_<sessionID>.log) (ADR-121). These files resend the growing
 # conversation on every request, so their cross-record redundancy is
 # enormous — and only a large-window codec reaches it. Measured on live
-# session artifacts (ADR-116 investigation; a 332 MiB step dump, each record
+# session artifacts (ADR-121 investigation; a 332 MiB step dump, each record
 # resending the whole context so far):
 #
 #     gzip       ratio x3.0–x3.5   — the 32 KiB LZ77 window cannot dedup
@@ -2550,7 +2569,7 @@ notifications:
 #   xz is deliberately NOT offered: the pure-Go xz writer has no streaming
 #   Flush, so a live tail of a compressed artifact would lag a whole block
 #   behind the writer and the crash semantics worsen (the concatenated-
-#   stream rotation workaround was rejected as too much wrapping; ADR-116).
+#   stream rotation workaround was rejected as too much wrapping; ADR-121).
 #   An unrecognized value fails soft at config load — warned and reset to
 #   the default — and Save refuses to persist one.
 #

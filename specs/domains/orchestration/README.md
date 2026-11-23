@@ -69,7 +69,7 @@ type OrchestratorConfig struct {
     KeepFirst                   int     // context pruning: protected head messages
     KeepLast                    int     // context pruning: protected tail messages
     MaxDependencyContextChars   int     // chars from dependency outputs injected into delegation task
-    MaxParallelSubagents        int     // cap on concurrent subagents, shared by delegate and plan waves (default: 4; <= 0 = unlimited)
+    MaxParallelSubagents        int     // cap on concurrent subagents, shared by delegate and plan waves (0 = default 4; a negative value leaves the launcher limiter unlimited, though config load resolves <= 0 to 4)
     PreWarningPercent           int     // context-fill notification threshold
     Model                       string
     ReasoningEffort             string
@@ -171,6 +171,9 @@ HandleMessage(ctx, message, sessionID, opts)
 │     route→Conductor flow below. Goal mode runs on BOTH a fresh task
 │     (opts.TaskID == "") and a continuation (opts.TaskID != ""); on a
 │     continuation the prior task's blackboard is restored first.
+│     While Model Profiles essential-tools narrowing is active the branch
+│     is REFUSED outright with ErrGoalBlockedByModelProfiles (the narrowing
+│     would strip the goal-loop tooling) — see [../model-profiles.md](../model-profiles.md).
 │     The goal loop derives a {condition, verify} goal with user sign-off,
 │     then iterates the Conductor turn-by-turn until the agent declares the
 │     goal met (with evidence), the budget is exhausted, the agent goes idle
@@ -187,6 +190,14 @@ HandleMessage(ctx, message, sessionID, opts)
 │     │   has BOTH an existing plan AND a routing decision → reuse the
 │     │   routing decision, reactivate skills, skip the router LLM call.
 │     │   The plan gate prevents a plan-less continuation from mis-routing.
+│     ├─ Heuristic continuation fast-path: if the message is
+│     │   continuation-style ("ok", "continue", "продолжай" … — exact closed
+│     │   bilingual EN/RU phrase set, no question/tool/quoting markers;
+│     │   core/continuation_fastpath.go) AND the
+│     │   session's cached verdict is valid for the current session + model
+│     │   → reuse it, reactivate skills, skip the router LLM call. Never
+│     │   under opts.Goal; a session/model switch or a routing failure
+│     │   invalidates the cache; the next substantive message re-routes.
 │     └─ Default: router.Route(ctx, routingMessage, tools, history, skills)
 │         → When opts.UserSkills is non-empty, routingMessage is augmented
 │           with skill descriptions via buildSkillAugmentedRoutingMessage.
@@ -261,13 +272,13 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 
 ## Invariants
 
-- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored plan AND routing decision take the continuation fast-path and skip the router.
+- Every FIRST user message passes through Route; continuations (opts.TaskID != "") with a restored plan AND routing decision take the restored-task fast-path, and continuation-style messages ("ok", "continue", …) with a verdict cached for the current session + model take the heuristic fast-path — both skip the router.
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}.
 - Complexity is always in range [1, 5].
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
 - **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Goal mode runs on BOTH a fresh task (`opts.TaskID == ""`) and a continuation (`opts.TaskID != ""`); on a continuation the prior task's blackboard is restored and the agent derives a fresh goal against the inherited facts/history. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseSession` releases it by stopping the in-flight conductor at the next step boundary (the task is persisted as paused; the goal stays `active`). See [../goal-mode.md](../goal-mode.md).
 - **E2S mode owns its loop and never mixes with the Conductor.** When `opts.E2S`, `runE2SLoop` runs on raw sp4rk primitives — no `Executor`, no Conductor, no router — with the `e2s_step` meta-tool as the model's only protocol surface. `opts.E2S` + `opts.Goal` together are rejected with `ErrE2SGoalConflict` (the E2S branch is checked first, so a conflict can never be silently swallowed by the goal branch). Plan-workflow, delegation and goal-only tools are stripped from the E2S catalog (`e2sStrippedToolNames` + `tools.StripGoalModeTools`); step-limit exhaustion maps to `ExecutionStatusPartial` (a resumable checkpoint, not a failure). See [../e2s.md](../e2s.md).
-- The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available (they are `system`-group tools — bypass policy; ADR-024).
+- The Conductor has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available in the desktop wiring (they are `system`-group tools — bypass policy; ADR-024). `ask_user` is registered only when `core/tools.BuiltinToolsConfig.AskUserFunc` is non-nil; every other tool in that set is unconditional.
 - `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, set by the sp4rk Conductor) returns an error while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once every pending delegation completes or is cancelled via `cancel_delegation` — there is no implicit join, nothing waits.
 - `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled | paused. Callers consult it instead of parsing Output.
 - MCP selections are durable, monotonic task-owned server names; both HandleMessage and Resume prepare names and one current mode snapshot before execution (Resume before its plan/delegate wave), sharing the gate with E2S, subagents, verifier and registry dispatch. Persistence failures preserve the task for retry, without fresh fallback. See [../tool-system/mcp-gateway.md](../tool-system/mcp-gateway.md#mention-gating-manual-mode).

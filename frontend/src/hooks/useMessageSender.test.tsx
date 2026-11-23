@@ -198,7 +198,7 @@ describe('useMessageSender optimistic metadata', () => {
   it('suppresses the optimistic goal stamp when the leading plain /goal was partitioned as a mention', async () => {
     useSessionStore.setState({ activeSessionId: 's1' })
     await act(async () => {
-      // Shadowing configuration (ADR-106 D5): a real catalog entry named
+      // Shadowing configuration (ADR-110 D5): a real catalog entry named
       // goal owns the plain spelling — the controller threads it and the
       // backend mention strip consumes the token, so no goal arms and no
       // stamp persists. The optimistic mirror must agree (no badge a reload

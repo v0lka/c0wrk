@@ -35,6 +35,7 @@ specs/
 │   │   ├── events.md
 │   │   ├── fonts.md
 │   │   ├── git-changes-list.md
+│   │   ├── git-history.md
 │   │   ├── git-operation-console.md
 │   │   ├── loading-states.md
 │   │   ├── rendering.md
@@ -61,6 +62,7 @@ specs/
 │   ├── capabilities.md
 │   ├── cli.md
 │   ├── commands.md
+│   ├── configuration.md
 │   ├── crash-logging.md
 │   ├── e2s.md
 │   ├── embedded-llm.md
@@ -69,6 +71,7 @@ specs/
 │   ├── goal-mode.md
 │   ├── llm-providers.md
 │   ├── model-profiles.md
+│   ├── networking.md
 │   ├── papers.md
 │   ├── prompt-suggestions.md
 │   ├── research.md
@@ -81,6 +84,7 @@ specs/
 │   ├── testing.md
 │   ├── theming.md
 │   ├── tool-manager.md
+│   ├── updates.md
 │   ├── verify-on-edit.md
 │   ├── web-access.md
 │   ├── webview-gpu-policy.md
@@ -98,7 +102,7 @@ specs/
     ├── 001-single-module.md
     ├── 002-sp4rk-isolation.md
     ├── ...
-    └── 118-kimi-subscription-model-catalog.md
+    └── 133-ask-user-option-descriptions.md
 ```
 
 ## Naming Conventions
@@ -253,6 +257,12 @@ What NOT to do, with brief explanation of why.
 ## Status
 
 Accepted | Superseded by [NNN](./NNN-slug.md) | Superseded (no successor ADR — the decision was reversed by code drift and recorded in place)
+
+These are the base states. Living practice combines the base `Accepted` state
+with the amendment machinery on one line — `Accepted — amended by
+[NNN](./NNN-slug.md)`, `Accepted — superseded in part by [NNN](./NNN-slug.md)`
+and equivalent compound spellings are valid forms of the same base states; the
+successor link must resolve either way.
 
 ## Context
 

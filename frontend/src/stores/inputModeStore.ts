@@ -14,7 +14,7 @@ interface InputModeState {
   pendingTerminalDir: string | null
   /** Per-message model override. null = use global default_model. Persisted. */
   selectedModel: string | null
-  /** Per-message reasoning override. null = use family default (= max). Persisted. */
+  /** Per-message reasoning override. null = send nothing; the provider's server-side default applies. Persisted. */
   selectedReasoning: string | null
   /**
    * Goal-mode toggle for the next sent message. When true, the backend enables
@@ -54,7 +54,7 @@ interface InputModeActions {
   clearPendingTerminalDir: () => void
   /** Set the per-message model override. null = use global default. */
   setSelectedModel: (model: string | null) => void
-  /** Set the per-message reasoning override. null = use family default. */
+  /** Set the per-message reasoning override. null = send nothing; the provider's server-side default applies. */
   setSelectedReasoning: (value: string | null) => void
   /** Toggle goal mode for the next sent message. Enabling it disables E2S. */
   setGoalEnabled: (enabled: boolean) => void

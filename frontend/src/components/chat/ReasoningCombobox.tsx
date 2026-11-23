@@ -14,7 +14,10 @@ import { findModelInfo } from '@/lib/modelId'
  * ReasoningCombobox renders a compact dropdown in the chat toolbar for selecting
  * a per-message reasoning effort. It reads AllModels from GetConfig to find the
  * native reasoning options for the currently selected model's family.
- * "Default" means the family default (= maximum reasoning) is used.
+ * "Default" means no reasoning level is sent: the request omits the reasoning
+ * parameter entirely and the provider's server-side default applies (which is
+ * NOT necessarily the family's maximum option — the client does not translate
+ * the empty selection into a wire value).
  * The selection is persisted in inputModeStore and survives restarts.
  * The reset effect below therefore only wipes the stored value on POSITIVE
  * evidence (the effective model resolved to a known entry whose family cannot
@@ -68,10 +71,9 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
   // If family doesn't support reasoning, render nothing.
   if (!reasoning) return null
 
-  const familyDefault = reasoning.default
   const options = reasoning.options
 
-  const displayLabel = selectedReasoning ?? `Auto (${familyDefault})`
+  const displayLabel = selectedReasoning ?? 'Default (provider)'
 
   return (
     <DropdownMenu>
@@ -96,11 +98,11 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
             'gap-2 px-3 py-1.5 text-xs',
             !selectedReasoning && 'bg-primary/10 font-medium',
           )}
-          title={`Use the model family default (${familyDefault})`}
+          title="No reasoning level is sent — the provider's server-side default applies"
           onSelect={() => setSelectedReasoning(null)}
         >
           <span className="flex-1 text-left">
-            Default ({familyDefault})
+            Default (provider)
           </span>
           {!selectedReasoning && (
             <span className="text-xs text-primary">active</span>

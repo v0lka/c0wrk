@@ -21,7 +21,7 @@ const GOAL_COMMAND_RE = /^\/goal(?:[ \t\n\r\f]+|$|:(\d+)(?:[ \t\n\r\f]+|$))/
 const PLAIN_LEADING_GOAL_RE = /^\/goal(?:[ \t\n\r\f]+|$)/
 
 /** The built-in goal command's token — the one plain slash-name that is a
- *  command, never a catalog name (ADR-106). The send path's mention
+ *  command, never a catalog name (ADR-110). The send path's mention
  *  partition exempts it from the permissive skill passthrough. */
 export const GOAL_COMMAND_NAME = 'goal'
 
@@ -51,7 +51,7 @@ export function detectGoalCommand(text: string): GoalCommandMatch {
 }
 
 /** True when the message's LEADING plain "/goal" token was partitioned as a
- *  mention — "goal" rides one of the threaded mention arrays, the ADR-106
+ *  mention — "goal" rides one of the threaded mention arrays, the ADR-110
  *  shadowing configuration: the backend's catalog-gated mention strip then
  *  consumes the token (it is in the caller-provided list), no goal arms,
  *  and the optimistic goal stamp must stay off. The budgeted "/goal:N"

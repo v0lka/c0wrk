@@ -40,7 +40,7 @@ describe('detectGoalCommand', () => {
   }
 })
 
-// The optimistic mirror's shadowing suppression (ADR-106): when the leading
+// The optimistic mirror's shadowing suppression (ADR-110): when the leading
 // plain /goal token was partitioned as a mention ("goal" rides a threaded
 // array), the backend strip consumes it, no goal arms, and the optimistic
 // stamp must stay off. The budgeted /goal:N form is never a mention token,

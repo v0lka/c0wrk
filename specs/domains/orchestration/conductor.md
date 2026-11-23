@@ -188,7 +188,7 @@ re-routed run still gets the classifier-matched skills.
 
 ### Step Limit and Circuit Breakers
 
-The Conductor's ReAct iteration limit is derived from routing complexity, not configured: `complexity × stepsPerComplexity` (constant 30 in `core/conductor.go`), giving a budget of 30 (complexity 1) to 150 (complexity 5). The complexity is read from the routing context (`ComplexityFromContext`). The Conductor is subject to the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
+The Conductor's ReAct iteration limit is derived from routing complexity, not configured: `complexity × stepsPerComplexity` (constant 30 in `core/conductor.go`), giving a budget of 30 (complexity 1) to 150 (complexity 5). The complexity is read from the routing context (`ComplexityFromContext`). The Conductor is subject to the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, schema-validation rejection, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same four options (AllowOnce, AllowMore, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
 
 ### Wrap-Up Nudge
 

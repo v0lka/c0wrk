@@ -71,3 +71,15 @@ Three facts invalidated that shape:
 removed by [ADR-129](./129-exact-skill-name-matching.md); skill names now match
 exactly, and the `SkillNameMatches` predicate named in `core/sdd/detect.go` no
 longer exists.
+
+2026-11-21 — successor state for the built-in catalog document this record
+names; the decision above is unchanged.
+
+- The embedded `sdd` document named in Decision 2 and in Alternatives
+  (`core/sdd/frameworks/sdd.yaml`, id `sdd` — the catalog entry for c0wrk's
+  own tree) was renamed to `core/sdd/frameworks/vibespec.yaml`
+  (id `vibespec`, label `VibeSpec`) with the ADR-129 skill-name change: the
+  document declares the six upstream `vibespec-*` skills and matches them
+  exactly. The embedded catalog is now `vibespec`, `openspec`, `spec-kit` in
+  that priority order (pinned by `core/sdd/builtin_test.go`); no `sdd`
+  framework document exists.

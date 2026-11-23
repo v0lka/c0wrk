@@ -1065,6 +1065,48 @@ describe('groupMessages — pause checkpoints', () => {
     expect((sub as { duration?: number }).duration).toBe(3000)
   })
 
+  it('a resumed re-emitted subagent_launch continues the paused block instead of opening a duplicate', () => {
+    // Pause → resume with a history reload in between: the backend persists a
+    // SECOND subagent_launch row for the same delegation id (SaveMessage is
+    // append-always), so the replayed history carries the launch twice. The
+    // replay must continue the SAME (old) block — flip it back to running —
+    // and never strand the original block paused forever beside a duplicate.
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'child-1', type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'delegate-1', args: '{}', completed: true } }),
+      makeUI({ id: 'pause-1', type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      // Resume wave: re-emitted launch for the SAME step id (a fresh row,
+      // distinct message id — the reload case; the live case upserts one row).
+      makeUI({ id: 'relaunch-2', type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'child-2', type: 'tool_call', metadata: { tool: 'grep', plan_step_id: 'delegate-1', args: '{}', completed: true } }),
+      makeUI({ id: 'done-2', type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: true, duration: 3000 } }),
+    ])
+
+    const subs = result.items.filter((it) => it.kind === 'subagent')
+    expect(subs).toHaveLength(1)
+    const sub = subs[0] as { status: string; duration?: number; children: Array<{ kind: string }> }
+    expect(sub.status).toBe('completed')
+    expect(sub.duration).toBe(3000)
+    // Both pre-pause and post-resume children nest under the ONE block.
+    expect(sub.children.filter((c) => c.kind === 'tool')).toHaveLength(2)
+  })
+
+  it('a resumed re-launch of a crash-interrupted (still running) block continues it too', () => {
+    // Abrupt interruption: the block was left RUNNING by the replay (launch
+    // persisted, no terminal event) and the relaunched unit re-emits the
+    // launch — a recoverable checkpoint, not a retry: same block, no duplicate.
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'relaunch-2', type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'child-2', type: 'tool_call', metadata: { tool: 'grep', plan_step_id: 'delegate-1', args: '{}', completed: true } }),
+      makeUI({ id: 'done-2', type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: true, duration: 3000 } }),
+    ])
+
+    const subs = result.items.filter((it) => it.kind === 'subagent')
+    expect(subs).toHaveLength(1)
+    expect((subs[0] as { status: string }).status).toBe('completed')
+  })
+
   it('attaches the failure reason to a failed subagent_complete block', () => {
     const result = groupMessages([
       makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
@@ -1120,7 +1162,9 @@ describe('groupMessages — pause checkpoints', () => {
   it('does not nest a block under ITSELF when a resume re-launch carries its own id (guard parent !== item)', () => {
     // A resume re-emits subagent_launch for a still-open delegation; the
     // event's plan_step_id IS the delegation's own step id. Nesting the fresh
-    // block under itself would drop it from the tree entirely.
+    // block under itself would drop it from the tree entirely — and the
+    // re-entry branch continues the SAME paused block instead of opening a
+    // duplicate, so there is exactly one block, back to running.
     const result = groupMessages([
       makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
       makeUI({ type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
@@ -1131,18 +1175,14 @@ describe('groupMessages — pause checkpoints', () => {
     ])
 
     const subs = result.items.filter((it) => it.kind === 'subagent')
-    // No self-nesting: both blocks stay at ROOT level (a same-id re-launch
-    // collapses into one row at the store level; distinct ids make two root
-    // blocks — either way nothing is nested under itself and dropped).
-    expect(subs).toHaveLength(2)
-    for (const s of subs) {
-      const children = (s as { children: DisplayItem[] }).children
-      expect(children.some((it) => it.kind === 'subagent')).toBe(false)
-    }
-    // The thought still nests under the now-running (latest) block.
-    const latest = subs[subs.length - 1] as { children: DisplayItem[]; status: string }
-    expect(latest.status).toBe('running')
-    expect(latest.children.some((it) => it.kind === 'thought')).toBe(true)
+    // Re-entry: the re-emitted launch continues the paused block — one block,
+    // flipped back to running, never a duplicate root block.
+    expect(subs).toHaveLength(1)
+    const sub = subs[0] as { status: string; children: DisplayItem[] }
+    expect(sub.status).toBe('running')
+    expect(sub.children.some((it) => it.kind === 'subagent')).toBe(false)
+    // The thought nests under the (single) resumed block.
+    expect(sub.children.some((it) => it.kind === 'thought')).toBe(true)
   })
 
   it('resumes a paused subagent in the SAME block on the first post-pause child', () => {

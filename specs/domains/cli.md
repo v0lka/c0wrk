@@ -69,13 +69,15 @@ scan args ─┬─ action flag (-h/-v/--self-update) → accept(A): FIRST one w
            ├─ companion (--pid/--stage/--target) → consume next arg (last wins),
            │        value-syntax error NOW (missing: "--stage requires a value";
            │        empty: "--stage requires a non-empty value";
-           │        bad pid: "invalid --pid %q"); remember first companion
+           │        bad pid: `invalid --pid "<value>": not a positive integer`); remember first companion
            │        for later
            └─ anything else → error "unknown argument: <arg>"
    │
    ▼
 post-scan, only when Action == ActionSelfUpdate:
-   missing pid/stage/target → "--self-update requires --pid|--stage|--target"
+   each missing companion → its own error, checked in the order pid, stage, target:
+   "--self-update requires --pid" / "--self-update requires --stage" /
+   "--self-update requires --target"
 after that scan, for every other action:
    a companion seen without --self-update → error "unknown argument: <first companion>"
 ```
@@ -105,6 +107,7 @@ None — the grammar is compiled in; there is no config.yaml surface.
 
 - [094-cli-argument-handling.md](../decisions/094-cli-argument-handling.md) - the ADR behind this grammar (single parser, strictness, ordering)
 - [023-auto-update.md](../decisions/023-auto-update.md) - the self-update re-exec dance this parser serves; its "main.go detects `--self-update` before the Wails lifecycle starts" wording stays accurate
+- [updates.md](updates.md) - the self-update runtime (staging, apply, startup reap) the `--self-update` dispatch enters
 - [075-single-instance-lock.md](../decisions/075-single-instance-lock.md) - the app-level lock the ordering contract must precede
 - [crash-logging.md](crash-logging.md) - the crash capture whose fd 1/2 redirect motivates diagnostics-first ordering
 - [webview-gpu-policy.md](webview-gpu-policy.md) - the GPU-relaunch handover wait sitting between CLI dispatch and the lock

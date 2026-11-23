@@ -602,7 +602,7 @@ describe('isEmbeddedLLMInstallProgressData', () => {
     const valid = { component: 'model', stage: 'downloading', bytes_done: 1024, bytes_total: 7206168928 }
 
     it('accepts every documented component/stage pair', () => {
-        for (const component of ['runtime', 'cudart', 'model', 'mmproj']) {
+        for (const component of ['runtime', 'cudart', 'model', 'mmproj', 'python', 'wheels', 'pack']) {
             for (const stage of ['downloading', 'verifying', 'extracting', 'signing', 'done']) {
                 expect(isEmbeddedLLMInstallProgressData({ ...valid, component, stage })).toBe(true)
             }
@@ -715,6 +715,31 @@ describe('isSessionTokensData', () => {
     it('rejects a non-number sample count', () => {
         expect(isSessionTokensData({ ...legacy, tok_s_samples: '5' })).toBe(false)
         expect(isSessionTokensData({ ...legacy, tok_s_samples: null })).toBe(false)
+    })
+
+    it('accepts a payload carrying the latency and cache observability fields', () => {
+        expect(isSessionTokensData({
+            ...legacy,
+            median_call_ms: 812.5,
+            mean_call_ms: 900,
+            max_call_ms: 1500,
+            call_count: 9,
+            cached_input_tokens_total: 4200,
+            cache_write_tokens_total: 600,
+            cache_hit_percent: 87.5,
+        })).toBe(true)
+    })
+
+    it('accepts the latency/cache fields present but undefined (treated as absent)', () => {
+        expect(isSessionTokensData({ ...legacy, median_call_ms: undefined, cache_hit_percent: undefined })).toBe(true)
+        expect(isSessionTokensData({ ...legacy, call_count: undefined })).toBe(true)
+    })
+
+    it('rejects non-number latency and cache values', () => {
+        expect(isSessionTokensData({ ...legacy, median_call_ms: '812.5' })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, call_count: '9' })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, cached_input_tokens_total: null })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, cache_hit_percent: true })).toBe(false)
     })
 
     it('still rejects payloads missing the required totals and non-objects', () => {

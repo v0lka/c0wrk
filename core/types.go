@@ -168,13 +168,15 @@ type SessionTokenEmitter interface {
 	EmitSessionTokens(totalIn, totalOut int, model, family string)
 }
 
-// SessionTokenThroughputEmitter is the timing-augmented extension of
-// SessionTokenEmitter: cumulative totals plus the median per-call
-// output-token throughput and its sample count. The builder prefers this
-// seam, falling back to SessionTokenEmitter. Warming semantics and payload:
+// SessionTokenThroughputEmitter is the observability-augmented extension of
+// SessionTokenEmitter: cumulative totals plus per-call latency and
+// prompt-cache aggregates (median tok/s throughput, call-duration
+// median/mean/max, cached-input totals and the session cache-hit rate) in one
+// SessionTokenCallStats value. The builder prefers this seam, falling back to
+// SessionTokenEmitter. Warming semantics and payload:
 // specs/contracts/event-catalog.md ("session_tokens").
 type SessionTokenThroughputEmitter interface {
-	EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int)
+	EmitSessionTokensWithStats(totalIn, totalOut int, model, family string, stats SessionTokenCallStats)
 }
 
 // noopEmitter is a no-op implementation of Emitter.
@@ -263,10 +265,10 @@ type HandleOptions struct {
 	// continuation. Loop contract: specs/domains/goal-mode.md.
 	Goal bool
 
-	// GoalBudgetOverride, when non-nil, tightens the goal's resource caps below
-	// the config defaults. Applied at goal activation (turn 1) AFTER config
-	// defaults: any field > 0 / non-zero overrides the default; zero-valued
-	// fields fall back to the config default. Only meaningful when Goal is true.
+	// GoalBudgetOverride, when non-nil, replaces the goal's resource caps for
+	// this task: a positive MaxTurns caps the loop's turns and MaxTurns == 0
+	// means unlimited. Applied at goal activation (turn 1). Only meaningful
+	// when Goal is true.
 	GoalBudgetOverride *goal.GoalBudget
 
 	// E2S selects the explicit-execution-state mode: HandleMessage dispatches

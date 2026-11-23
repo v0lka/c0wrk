@@ -50,9 +50,10 @@ type PromptSuggestion struct {
 	CreatedAt time.Time      `json:"created_at"` // zero until the store normalizes it per pass
 }
 
-// Compile-time generation limits. v1 has no config surface (ADR-088 D9):
-// these are the windows (D3/D4), the per-pass cap (D7), and the transcript
-// budgets that keep the generation input bounded.
+// Compile-time generation limits. The only config surface is the
+// `prompt_suggestions.enabled` master gate (ADR-088, amended): these are the
+// windows (D3/D4), the per-pass cap (D7), and the transcript budgets that keep
+// the generation input bounded.
 const (
 	// nextTaskWindowSessions is the next_task window: the last 10 sessions of
 	// the project (D3).

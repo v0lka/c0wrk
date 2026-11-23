@@ -60,7 +60,7 @@ locked-tree unlock). See [session-worktrees.md](../domains/session-worktrees.md)
 
 ## Config Adapter
 
-Single conversion point: `backend/configadapter.go`
+Single conversion point: `backend/configadapter.go`. The load/save pipeline and the per-section fail-soft versus fail-closed doctrine are specified in [../domains/configuration.md](../domains/configuration.md).
 
 ```
 config.Config (backend/config package)
@@ -93,13 +93,19 @@ type OrchestratorFactory func(
     emitter core.Emitter,
     logger *slog.Logger,
     workspacePath string,
+    sddCheckoutPath string,
     bbFactory core.BlackboardFactory,
     dumpWriter io.Writer,
     stepDumpTracker *orchestration.StepDumpTracker,
 ) (*core.Orchestrator, error)
 ```
 
-The factory captures `*OrchestratorBuilder` and calls `Build()` per session. The `stepDumpTracker` is created by the session manager from the session's dump directory (`~/.c0wrk/projects/<pid>/<sid>/dumps/steps/`) when DEBUG-level logging is enabled. If nil, per-step dumps are a no-op.
+The factory captures `*OrchestratorBuilder` and calls `Build()` per session.
+`sddCheckoutPath` is the project CHECKOUT whose checkout-local SDD operator DSL
+the builder's `SetSDDCatalog` seam reads for this session's skill discovery; it
+stays the checkout for every session of the project (repository data) and an
+empty value falls back to `workspacePath`, the CHAT shape that has no
+checkout-local DSL. The `stepDumpTracker` is created by the session manager from the session's dump directory (`~/.c0wrk/projects/<pid>/<sid>/dumps/steps/`) when DEBUG-level logging is enabled. If nil, per-step dumps are a no-op.
 
 `Build()` wires `OrchestratorConfig.MCPServerModesResolver` to the builder's
 current MCP policy snapshot. `NewOrchestratorBuilder` initializes that snapshot

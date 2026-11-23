@@ -80,3 +80,14 @@ The accepted program is **A + B + C + F**: the cheap-to-medium wins that close t
 - **D as a standalone change (fork chromem per-file metadata)** — unnecessary once F landed: commit-time metadata narrowing plus the sidecar's `fileHashInfo` rows deliver the same dedup without touching chromem.
 - **Hard RSS cap (rlimits / cgroups)** — rejected: a desktop app killing itself mid-index is strictly worse than a soft GC target that trades CPU for RSS.
 - **Lowering GOGC instead of `SetMemoryLimit`** — rejected: GOGC is relative to the live heap (no absolute envelope), and on a large live set it thrashes the GC without bounding RSS.
+
+## Historical Note
+
+2026-11-21 — successor state for the paths this record names; the decision
+above is unchanged.
+
+- `desktop/memlimit.go` and `desktop/memlimit_ram_*.go` moved to the
+  dependency-free `core/memlimit/` package (`memlimit.go`,
+  `memlimit_ram_darwin.go`, `memlimit_ram_linux.go`, `memlimit_ram_windows.go`,
+  `memlimit_ram_other.go`), whose exported entry point is `memlimit.Setup`.
+  The knob named above (`runtime.memory_soft_limit_mb`) is unchanged.

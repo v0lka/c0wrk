@@ -133,6 +133,8 @@ Event naming:
 
 ## Configuration Flow
 
+The load pipeline (migrations → defaults → per-section normalization → fail-closed validation), the fail-soft/fail-closed doctrine and the atomic save discipline are specified in [configuration.md](../domains/configuration.md); this section traces how the resolved config reaches the builder.
+
 ```
 ~/.c0wrk/config.yaml (user-edited)
          │
@@ -152,7 +154,7 @@ backend/configadapter.go: ToBuilderConfig(cfg, modelProfilesCatalog, logger...)
   → Single conversion point (all config mapping here)
          │
          ▼
-core/builder.go: NewOrchestratorBuilder(builderCfg)
+core/builder.go: NewOrchestratorBuilder(builderCfg, askUserFunc, planApprovalFunc, logger)
   ├─ Synchronous: proxy client, tool registry, built-in tools, security policies
   ├─ Async initDone goroutine: LLM router, model registry, tool judge
   └─ Async mcpDone goroutine: MCP gateway (separately gated, intentionally decoupled from initDone — graceful degradation)
@@ -172,16 +174,17 @@ desktop/startup.go: vectorLauncher.Launch() — a background goroutine started
   after emitBackendReady, and re-run by the UpdateIndexingSettings enabled hook;
   the launcher itself lives in backend/vector_launcher.go
   → backend/vector_launcher.go: vectorIndexLauncher.Launch /
-    ApplyEnabledChange(epoch, ready)
+    ApplyEnabledChange(enabled bool)
      ├─ vector_index.enabled false → the ONNX runtime is never loaded and every
-     │   routing path fails fast with the disabled error
+     │   routing path fails fast with the disabled error (the RPC parks the
+     │   per-root registry itself right after the hook returns)
      ├─ Load the ONNX embedder + tokenizer from disk (~500-2000ms); missing
      │   model files or a load failure → emit vector_index:status
      │   {available: false, reason}
      └─ Wire the per-root registry (ADR-081) through
         Lifecycle().SetVectorRootsFactory(factory, ready, closeEmbedder) —
-        epoch-guarded, so a superseded or disabled launch wires nothing and
-        closes its own embedder
+        epoch-guarded in wireIfCurrent, so a superseded or disabled launch
+        wires nothing and closes its own embedder
   → backend/vector_roots.go then builds one vectorindex.Manager per root on
     demand through that factory and streams vector_index:status
     (indexing → ready) for the focused root only
@@ -306,7 +309,11 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   ├─ 3b. Per-server MCP activation gate — a tool whose MCP source server sits in the
   │      task's gated set (manual mode without a mention, or disabled) fails closed
   │      here, before the system-group bypass (ADR-084)
-  ├─ 4. Tool's group == system? → execute immediately, bypass policy/judge (disabled check above still applies)
+  ├─ 3c. Delegated-subagent catalog gate (registry "Gate 2c") — a call arriving from a
+  │      labeled subagent or goal-verifier context whose tool name falls outside the
+  │      advertised descriptor catalog fails closed, ahead of the system-group bypass
+  ├─ 4. Tool's group == system? → execute immediately, bypass policy/judge (the disabled,
+  │      MCP-activation and catalog gates above still apply)
   ├─ 5. Register PostExecuteHook (deferred, runs on every non-early return path)
   ├─ 6. PreExecuteHook? → call (may block for indexing gate)
   ├─ 7. Group policy == deny? → return error result (hard block, names the group)

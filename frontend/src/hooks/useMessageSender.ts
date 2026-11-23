@@ -181,7 +181,7 @@ export function useMessageSender(): UseMessageSenderResult {
     // goal mode on the backend without the toggle, so the optimistic card
     // carries the goal stamp too (detectGoalCommand mirrors the backend
     // grammar; a prefix exposed by stripping a /-mention is stamped by the
-    // backend's persisted metadata and shows on reload). The ADR-106
+    // backend's persisted metadata and shows on reload). The ADR-110
     // shadowing configuration suppresses the mirror: when the leading plain
     // /goal token was partitioned as a mention ("goal" rides one of the
     // threaded arrays), the backend's mention strip consumes it and no goal

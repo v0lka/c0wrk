@@ -6,7 +6,9 @@ The changes file list of the Git panel's Changes tab: it splits every `git statu
 
 ## Key Files
 
-- `frontend/src/components/GitPanel/ChangesList.tsx` — the list shell: store selectors, the display-root resolution (`focus` path, else workspace path, threaded down), the 3-section split (`classifyEntries`), section defaults, loading/empty states
+- `frontend/src/components/GitPanel/ChangesList.tsx` — the list shell: store selectors, the display-root resolution (`focus` path, else workspace path, threaded down), the 3-section split (`classifyEntries`), section defaults, loading/empty states; renders `ChangesToolbar` and `ChangesSummaryBar` above the sections
+- `frontend/src/components/GitPanel/ChangesToolbar.tsx` — the Changes-tab toolbar: flat/tree view-mode toggle, bulk stage-all/unstage-all, merge/rebase abort, stash buttons and the Review entry (every mutation it fires is an operation-console kind — see [git-operation-console.md](git-operation-console.md))
+- `frontend/src/components/GitPanel/ChangesSummaryBar.tsx` — the change-kind summary strip: modified / deleted / new counters (per unique path, `countChangeKinds`) plus a decorative proportional mix bar; renders nothing when there are no entries
 - `frontend/src/components/GitPanel/ChangesList/Section.tsx` — one collapsible section; routes to the flat or tree renderer by `viewMode`
 - `frontend/src/components/GitPanel/ChangesList/FlatSection.tsx` — flat rendering with optional sub-group headers (`SortGroupControls` grouping)
 - `frontend/src/components/GitPanel/ChangesList/TreeSection.tsx` / `TreeRow.tsx` — directory-tree rendering; `TreeRow` renders file nodes via `GitFileEntry` with `pathDisplay="name-only"`
@@ -16,6 +18,10 @@ The changes file list of the Git panel's Changes tab: it splits every `git statu
 - `frontend/src/lib/gitSortGroup.ts` — `sortEntries`/`groupEntries`/`compareEntries` (D8 sort & group)
 
 ## Behavior
+
+### Toolbar and change-kind summary
+
+Above the sections the shell renders `ChangesToolbar` (view-mode toggle, bulk stage/unstage, merge-rebase abort, stash actions, Review entry — all mutations funnel into the operation console) and `ChangesSummaryBar`: three colored counters (modified / deleted / new, dot + count + label) plus a decorative proportional mix bar whose segments share the counters' colors, self-hiding when the total is zero (the list's "No changes" empty state carries that case). Counts are per unique path (`countChangeKinds`), so an `MM` entry counts once rather than once per porcelain axis — the same total the tab strip's Changes badge shows.
 
 ### Display root (Git-panel focus)
 

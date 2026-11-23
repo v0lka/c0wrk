@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// session_artifacts.go — the `session_artifacts` config section (ADR-116):
+// session_artifacts.go — the `session_artifacts` config section (ADR-121):
 // compression of the append-only session artifacts (the per-session step
 // dumps and logs/session_<sessionID>.log). One algorithm knob — none | gzip | zstd; xz
 // is deliberately excluded because the pure-Go xz writer has no streaming
@@ -9,7 +9,7 @@
 // 25). Load-time validity is FAIL-SOFT (warned + reset in place, mirroring
 // normalizeWebAccess, so the persisted shape is always valid); the save path
 // FAIL-CLOSED (validateSessionArtifactsForSave) so an in-memory mutation can
-// never persist an unusable section. See ADR-116.
+// never persist an unusable section. See ADR-121.
 
 package config
 
@@ -18,7 +18,7 @@ import (
 )
 
 // Session artifact compression algorithms — the closed enum behind
-// `session_artifacts.compression.algorithm` (ADR-116).
+// `session_artifacts.compression.algorithm` (ADR-121).
 const (
 	// SessionCompressionNone writes records verbatim (byte-identical to
 	// pre-compression builds).
@@ -34,7 +34,7 @@ const (
 	SessionCompressionZstd = "zstd"
 )
 
-// Session artifact compression defaults and bounds (ADR-116).
+// Session artifact compression defaults and bounds (ADR-121).
 const (
 	// DefaultSessionCompressionAlgorithm — zstd, the measured best ratio.
 	DefaultSessionCompressionAlgorithm = SessionCompressionZstd
@@ -55,7 +55,7 @@ const (
 // algorithm. Empty is deliberately NOT valid — it is the "unset, resolve to
 // the default" signal (silently seeded by ApplyDefaults; unrecognized
 // non-empty values are the load path's warning branch). The closed-enum
-// contract shared by every consumer: ADR-116.
+// contract shared by every consumer: ADR-121.
 func ValidSessionCompressionAlgorithm(raw string) bool {
 	switch raw {
 	case SessionCompressionNone, SessionCompressionGzip, SessionCompressionZstd:
@@ -65,7 +65,7 @@ func ValidSessionCompressionAlgorithm(raw string) bool {
 }
 
 // SessionArtifactsConfig is the top-level `session_artifacts:` section
-// (ADR-116): operator knobs for the session artifact store. WHICH artifacts
+// (ADR-121): operator knobs for the session artifact store. WHICH artifacts
 // are compressed is not operator-configurable — the scope is fixed by the
 // artifact writers.
 type SessionArtifactsConfig struct {
@@ -83,7 +83,7 @@ type SessionArtifactsConfig struct {
 type SessionCompressionConfig struct {
 	// Algorithm: none | gzip | zstd. Default zstd. xz is deliberately
 	// excluded — the pure-Go xz writer has no streaming Flush, so a live
-	// tail of the artifact would lag behind the writer (ADR-116). An
+	// tail of the artifact would lag behind the writer (ADR-121). An
 	// unrecognized value fails soft at load and is refused at save.
 	Algorithm string `yaml:"algorithm"`
 	// ZstdWindowLog is log2 of the zstd compression window: 2^N bytes of
@@ -114,7 +114,7 @@ func ValidateSessionZstdWindowLog(windowLog int) error {
 func (c SessionCompressionConfig) validate() error {
 	if c.Algorithm != "" && !ValidSessionCompressionAlgorithm(c.Algorithm) {
 		return fmt.Errorf(
-			"session_artifacts: compression.algorithm %q is not valid; must be one of: %s, %s or %s (xz excluded — no streaming Flush, ADR-116)",
+			"session_artifacts: compression.algorithm %q is not valid; must be one of: %s, %s or %s (xz excluded — no streaming Flush, ADR-121)",
 			c.Algorithm, SessionCompressionNone, SessionCompressionGzip, SessionCompressionZstd)
 	}
 	if c.ZstdWindowLog != 0 {

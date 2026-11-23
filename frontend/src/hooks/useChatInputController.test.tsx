@@ -698,7 +698,7 @@ describe('handleSend /-ref partitioning', () => {
     expect(sendMock).toHaveBeenCalledWith('use /mystery-ref now', ['mystery-ref'], [], [], 'sess-a')
   })
 
-  // Cross-boundary regression (ADR-106): the plain goal token absent from
+  // Cross-boundary regression (ADR-110): the plain goal token absent from
   // every catalog is the built-in /goal command, never a permissive skill
   // passthrough. Threading ["goal"] here would have the backend's
   // stripMentionRefs eat the leading command prefix before
@@ -731,7 +731,7 @@ describe('handleSend /-ref partitioning', () => {
       await controllerRef.current!.handleSend()
     })
     // /explore threads and is backend-stripped; the exposed /goal prefix
-    // then arms goal mode post-preprocessing (ADR-106 D1). goal must NOT
+    // then arms goal mode post-preprocessing (ADR-110 D1). goal must NOT
     // ride the threading or the strip would eat the exposed prefix too.
     expect(sendMock).toHaveBeenCalledWith('/explore /goal ship it', ['explore'], [], [], 'sess-a')
   })
@@ -743,7 +743,7 @@ describe('handleSend /-ref partitioning', () => {
     await act(async () => {
       await controllerRef.current!.handleSend()
     })
-    // ADR-106 D5: the catalog entry wins the plain spelling — the mention
+    // ADR-110 D5: the catalog entry wins the plain spelling — the mention
     // threads and the backend strip resolves it to the entry, disarming the
     // command (recovery: rename, the toggle, or /goal:N).
     expect(sendMock).toHaveBeenCalledWith('/goal ship it', ['goal'], [], [], 'sess-a')

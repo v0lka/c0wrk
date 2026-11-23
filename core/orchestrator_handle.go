@@ -149,14 +149,23 @@ func (o *Orchestrator) wireAttachmentNameResolver(bb orchestration.Blackboard) {
 	}
 }
 
-// routeOrContinue wraps routeAndActivateSkills with a continuation fast-path:
-// on a restored task with a persisted routing decision the router is skipped
-// entirely — it only sees the flat conversation history and is blind to the
-// restored state, so "continue step 10" would be misclassified. The restored
-// decision is reused and skills reactivated from it.
+// routeOrContinue wraps routeAndActivateSkills with two continuation
+// fast-paths that skip the router LLM call:
+//
+//   - Task-continuation fast-path: on a restored task with a persisted routing
+//     decision the router is skipped entirely — it only sees the flat
+//     conversation history and is blind to the restored state, so "continue
+//     step 10" would be misclassified. The restored decision is reused and
+//     skills reactivated from it.
+//   - Heuristic continuation fast-path: a short continuation-style message
+//     ("continue", "ok", "yes", …) reuses the routing verdict the session last
+//     ran with (continuation_fastpath.go). Goal mode never takes it (the goal
+//     loop owns its routing); E2S never reaches routing at all. The cache is
+//     invalidated on session switch, model switch, and by every substantive
+//     message, so a stale-verdict misroute window is at most one message.
 func (o *Orchestrator) routeOrContinue(
 	ctx context.Context,
-	message string,
+	message, sessionID string,
 	opts HandleOptions,
 	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
@@ -175,6 +184,7 @@ func (o *Orchestrator) routeOrContinue(
 					o.emitter.ServiceWithMeta("Continuation (routing skipped — existing routing decision found)", map[string]any{"phase": "orchestration"})
 					o.emitter.Routing("conductor", restored.Domain, strconv.Itoa(restored.Complexity))
 					o.logInfo("routing_decision", "domain", restored.Domain, "complexity", restored.Complexity)
+					o.noteRoutingVerdict(sessionID, restored)
 					ctx = o.reactivateSkills(ctx, restored, opts.UserSkills)
 					activeSkills := o.collectActiveSkillDescriptors(ctx, restored, opts.UserSkills)
 					ctx = WithDomain(ctx, restored.Domain)
@@ -187,7 +197,38 @@ func (o *Orchestrator) routeOrContinue(
 			}
 		}
 	}
-	return o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
+
+	// Heuristic continuation fast-path: exact-match continuation-style message
+	// + a verdict cached for THIS session under the CURRENT model. The
+	// restored-task fast-path above already handled plan-carrying
+	// continuations; this one covers the plain conversational follow-ups
+	// ("ok", "continue", …) on both fresh and restored tasks. Goal mode is
+	// excluded (runGoalLoop owns its routing); the skill wiring mirrors the
+	// restored fast-path so the reused decision activates skills identically.
+	if !opts.Goal {
+		if cached, ok := o.cachedRoutingVerdict(sessionID); ok && isContinuationStyleMessage(message) {
+			o.logDebug("orchestrator: continuation fast-path (heuristic — routing skipped)", "sessionID", sessionID)
+			o.emitter.ServiceWithMeta("Continuation (routing skipped — reused previous routing decision)", map[string]any{"phase": "orchestration"})
+			o.emitter.Routing("conductor", cached.Domain, strconv.Itoa(cached.Complexity))
+			o.logInfo("routing_decision", "domain", cached.Domain, "complexity", cached.Complexity)
+			ctx = o.reactivateSkills(ctx, cached, opts.UserSkills)
+			activeSkills := o.collectActiveSkillDescriptors(ctx, cached, opts.UserSkills)
+			ctx = WithDomain(ctx, cached.Domain)
+			ctx = WithComplexity(ctx, cached.Complexity)
+			if len(opts.UserSkills) > 0 {
+				ctx = WithUserSkills(ctx, opts.UserSkills)
+			}
+			return ctx, cached, activeSkills, nil, nil
+		}
+	}
+
+	ctx, routing, descriptors, result, err := o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
+	if err == nil {
+		// The session last ran with this verdict — a follow-up
+		// continuation-style message may reuse it without re-routing.
+		o.noteRoutingVerdict(sessionID, routing)
+	}
+	return ctx, routing, descriptors, result, err
 }
 
 // enrichAgentContext attaches the discovered subagent catalog, explicit
@@ -262,7 +303,9 @@ func (o *Orchestrator) collectActiveSkillDescriptors(ctx context.Context, routin
 
 // routeAndActivateSkills performs routing and activates matched skills;
 // clarification is not handled here — the Conductor decides via ask_user
-// (ADR-012).
+// (ADR-012). Every real router run first invalidates the heuristic
+// continuation fast-path's cached verdict: a substantive message re-routes,
+// and a routing failure must not leave the pre-failure verdict consultable.
 func (o *Orchestrator) routeAndActivateSkills(
 	ctx context.Context,
 	message string,
@@ -270,6 +313,7 @@ func (o *Orchestrator) routeAndActivateSkills(
 	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 ) (context.Context, *router.RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
+	o.invalidateRoutingVerdict()
 	o.logDebug("orchestrator: starting routing")
 	// Activity-only notice: phase "routing" keeps it out of the chat rows —
 	// the phase meta is the chat-visibility discriminator

@@ -530,7 +530,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
   const line = ctx.state.doc.lineAt(ctx.pos)
   const textBefore = line.text.slice(0, ctx.pos - line.from)
 
-  // Scan backward for the '@' trigger. Unlike the / and # sources, the scan
+  // Scan backward for the '@' trigger. Unlike the `/` source, the scan
   // does NOT stop at whitespace: a quoted ref (@'my file) has spaces inside
   // the query. Instead the last boundary-valid '@' is found first and the
   // query shape decides whether a completion is active at all — an unquoted

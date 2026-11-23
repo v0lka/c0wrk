@@ -101,6 +101,20 @@ type VectorIndexStatus struct {
     // Store is the ADR-104 §5 content-addressed store disk ledger, cached by
     // the switch-riding hygiene pass; omitted until a pass snapshots a store.
     Store *vectorindex.StoreLedger
+
+    // Honest non-ready states: an "unavailable" status always carries a cause,
+    // classified so the UI can pick the remedy without parsing the message
+    // ("repairable" | "transient" | "fatal" | "unknown" | the breaker's
+    // "suspended" | the registry's "no_target"/"shutting_down" | the
+    // non-failure windows "loading"/"restarting").
+    LastError string
+    ErrorKind string
+
+    // Stalled pass facts (the stall watchdog's snapshot, § Pass Liveness):
+    // stalled=true renders the muted loading-class overlay, never "unavailable".
+    Stalled      bool
+    StallStage   string
+    StallSeconds int
 }
 
 // SearchOptions — hybrid search request
@@ -117,10 +131,9 @@ type SearchOptions struct {
 
 ### File Tree
 
-- Loaded lazily on frontend request (not preloaded)
-- Depth-limited to avoid scanning huge directories
-- Excludes files/dirs matching `.gitignore` or `.aiignore` rules (root and nested, resolved by an `ignore.Resolver` over the workspace) plus any hidden entry (leading-dot name); no hardcoded directory/extension list remains. See [ADR-016](../decisions/016-aiignore.md).
-- Returns `FileNode` list: name, path, isDir, hidden, gitStatus, gitIgnored (flat list, no children). The `gitIgnored` flag is set for paths excluded by `.gitignore` **or** `.aiignore`, not strictly git-ignored paths.
+- Loaded lazily on frontend request (not preloaded): the panel lists ONE directory per `ListDirectory(path, false)` call and expands on demand. The `recursive=true` form walks the whole subtree with `.git` directories pruned and no depth cap; it serves file search and the chat `@`-completion, never the tree's initial load.
+- Ignore rules and hidden names are FLAGS on the returned entries, not filters: `.gitignore`/`.aiignore` matches carry `gitIgnored` (one batched `check-ignore` over the listed entries plus the `ignore.Resolver`'s `.aiignore` verdict) and leading-dot names carry `hidden`; the panel renders both muted. Exclusion by those rules belongs to the vector-index walk and the agent's search tools, not to the listing. No hardcoded directory/extension list remains. See [ADR-016](../decisions/016-aiignore.md).
+- Returns `FileNode` list: name, path, isDir, icon, iconColor, hidden, gitIgnored (flat list, no children; directories before files, each group alphabetical). Git status is NOT a node field — the frontend joins the tree against the per-path `GetGitStatusLite` map (§ Git Integration). The `gitIgnored` flag is set for paths excluded by `.gitignore` **or** `.aiignore`, not strictly git-ignored paths.
 
 ### Per-Root Ignore Resolver Cache
 
@@ -334,12 +347,14 @@ The embedding inference backend is selectable per configuration: `auto` (default
 
 | Method                              | Description                                         |
 | ----------------------------------- | --------------------------------------------------- |
-| `ListDirectory(dirPath, recursive)` | Lazy directory tree with git status (workspace-contained) |
+| `ListDirectory(dirPath, recursive)` | Lazy directory tree with `gitIgnored`/`hidden` flags (workspace-contained; `recursive=true` walks the subtree for search and `@`-completion) |
 | `ReadFile(path)`                    | Read file content (no backend-side binary detection; frontend `isBinaryContent` checks null bytes in first 8KB). Not workspace-contained — accepts any absolute path so the viewer can display out-of-workspace files the agent cites (e.g. SDK sources); a trailing `#L<n>`/`#L<n>-L<m>` line anchor is stripped before resolution |
 | `ReadFileAsDataURL(path)`           | Read a file and return it as a base64 `data:` URL (RFC 2397), for embedding local images in the file-viewer markdown renderer (the webview cannot load `file://` or project-root-relative URLs). **Workspace-contained** — the only read-path RPC that retains containment, because image embedding runs during markdown auto-render without an explicit user action. MIME type from `mime.TypeByExtension`; 8 MiB size guard |
 | `ReadImageAsDataURL(path)`          | The image viewer's image-tab counterpart to `ReadFileAsDataURL`, with the **opposite** containment contract: resolves via `resolveReadablePath` and is **not** workspace-contained, so the viewer can render an image the agent surfaced anywhere on disk (mirrors `ReadFile`). Safe because it runs only on an explicit user action (opening an image tab), never during automatic rendering. Image MIME from a deterministic `imageMimeByExt` map (png/jpg/jpeg/gif/webp/bmp/ico/svg/avif) with a `mime.TypeByExtension` fallback; 8 MiB size guard |
+| `StatPath(path)`                    | Lightweight existence probe: resolves like `ReadFile` (`resolveReadablePath`, **not** workspace-contained, line anchor stripped) but reads no payload — returns `{exists, is_dir}`. The chat-link resolver needs a distinction a `ReadFile`-based probe cannot express: "missing" advances to the next candidate, while "exists but unreadable" (too large, a directory, permission) must WIN so the viewer shows the actionable error; a dangling symlink is `exists=false`, any other stat failure is an error |
 | `GetFileDiff(path)`                 | Unified git diff for file. Not workspace-contained, but returns `("", nil)` for files outside the active project root or a non-git path (no baseline to diff against). The diff runs in the repository that owns the file (`ResolveWorkTreeRoot`): a managed-worktree file diffs against its own tree's baseline, not the checkout's |
 | `GetGitStatus(dirPath)`             | Whole-repository per-file git status summary computed over the Git-panel focus root (focused worktree, else the project checkout); `dirPath` used only for containment validation (project root, plus the focus root for an external-tree focus) |
+| `UnwatchDirectory(dirPath)`         | Deliberate no-op kept for binding compatibility: the watcher is backend-managed and re-scoped by `WatchDirectory` and the project/session switch, so the panel's unmount-cleanup call must not tear watching down (an RPC-triggered unwatch would kill it until remount) |
 
 Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4rk/tools/builtins/glob.go`), not as a direct Workspace API method.
 
@@ -409,7 +424,7 @@ Opening a project whose directory does not behave like local storage — a netwo
 - **The indexing policy is live-applied by `UpdateIndexingSettings`** (`backend/frontend_api_config.go`; the master switch's rationale — absent-not-broken, the teardown ordering, the restartable launcher — is [ADR-103](../decisions/103-vector-index-master-switch.md)): validate (the same `config.ValidateVectorIndexExcludePatterns` rule set the loader enforces) → persist → apply. `enabled=false` first runs the desktop hook (an epochal invalidation of any in-flight background ONNX init, so its late factory wiring cannot resurrect the registry), then strips the `semantic_search` tool and the RAG closures from the builder (`SetVectorSearchEnabled` — the closures are stashed, and because every per-session registry clone shares the embedded sp4rk registry, live sessions lose the tool too), parks the per-root registry (`VectorRoots.Disable`: managers shut down, embedder released, factory dropped; every routing path — the tool, RAG hints, user-facing search — fails fast with `errVectorDisabled`, and `FactoryReady` reports false so project switches defer their vector setup for the re-enable drain), and emits a `state: "disabled"` snapshot. `enabled=true` re-registers the tool from the stash and relaunches the desktop background ONNX init (a fresh embedder + factory + ready channel under a new epoch; its success path drains the deferred project setup). A boot with indexing off registers the closures then flips the builder off (populating the stash for a later enable) and skips the ONNX load entirely. A policy-only save while enabled (exclude patterns, submodules, ignore-file respect) releases the live managers and rebuilds the focus root — the desktop manager factory snapshots the LIVE config under `configMu` on every build, so the rebuilt manager carries the new policy and its next incremental pass evicts newly excluded files; a save resolving to the same policy releases nothing
 - All ONNX Runtime touches under a GPU provider execute on the single locked thread (sp4rk `ortRunner`, `runtime.LockOSThread`): environment init, session-options build, session creation, fast-path and batch inference, and teardown — a per-OS-thread cuBLAS context (~1 GiB VRAM each) makes any unguarded ORT touch from another thread exhaust VRAM
 - Every externally fetched build-time artifact (ONNX Runtime library, the OpenVINO EP wheel and its extracted plugin library, embedding model, tokenizer) is SHA256-verified fail-closed against Makefile-pinned digests before installation, and the verification covers installed, cached, and downloaded copies alike; the OpenVINO flavor and the CUDA flavor are mutually exclusive in both directions — each fetch target refuses to lay its stack over the other's install
-- Write-path and structural RPCs (`WriteFile`, `ListDirectory`, and the tree-mutation quartet `CreateFile`/`CreateDirectory`/`RenameEntry`/`DeleteEntry`) reject paths outside the workspace (directory-traversal containment; the quartet additionally refuses the admitted root itself and pins renames to a single admitted root); read-path RPCs (`ReadFile`, `GetFileIcon`, `GetFileDiff`) accept any absolute path so the viewer can display any file the agent cites — this is a display affordance that does not relax the agent's `read_file` tool containment. `ReadFileAsDataURL` is the exception among read RPCs: it retains workspace containment because image embedding runs during markdown auto-render (no explicit user action) and must not let a document read arbitrary files into the webview DOM. `RevealInFileManager` accepts only the session workspace root (worktree included) or the session temp dir (see [Tree mutations and reveal](#tree-mutations-and-reveal-issue-60))
+- Write-path and structural RPCs (`WriteFile`, `ListDirectory`, and the tree-mutation quartet `CreateFile`/`CreateDirectory`/`RenameEntry`/`DeleteEntry`) reject paths outside the workspace (directory-traversal containment; the quartet additionally refuses the admitted root itself and pins renames to a single admitted root); read-path RPCs (`ReadFile`, `ReadImageAsDataURL`, `StatPath`, `GetFileIcon`, `GetFileDiff`) accept any absolute path so the viewer can display any file the agent cites — this is a display affordance that does not relax the agent's `read_file` tool containment. `ReadFileAsDataURL` is the exception among read RPCs: it retains workspace containment because image embedding runs during markdown auto-render (no explicit user action) and must not let a document read arbitrary files into the webview DOM. `RevealInFileManager` accepts only the session workspace root (worktree included) or the session temp dir (see [Tree mutations and reveal](#tree-mutations-and-reveal-issue-60))
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
 - Missing `git` binary blocks the CODE-mode project switch: detected lazily via `exec.LookPath` in `SwitchProject`, it emits a dismissable `runtime_error` toast (`error_code: git_not_found`) and rejects the switch; CHAT / No-Project mode never invokes git and never requires it
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
@@ -434,7 +449,7 @@ Opening a project whose directory does not behave like local storage — a netwo
 | ---------------- | --------------------- | ---------------------------------- |
 | Managed worktree base | `git.worktrees_root` (default empty ⇒ `<agentDir>/projects`) | YAML-only absolute clean literal path; new trees use `<base>/<project-id>/worktrees/<name>`. Existing paths, vector storage and caches stay unchanged; no migration. |
 | Workspace path   | Active project config | Root directory for file operations |
-| Ignore patterns | `.gitignore` / `.aiignore` | Ignore files controlling which files/dirs are excluded from tree and index (hidden dirs always excluded); the two channels are individually toggleable via `vector_index.respect_gitignore` / `respect_aiignore` (pointer bools, default true) |
+| Ignore patterns | `.gitignore` / `.aiignore` | Ignore files controlling which files/dirs are excluded from the vector index (the tree LISTS them and dims them via the `gitIgnored` flag; hidden entries are flagged `hidden` and never indexed); the two channels are individually toggleable via `vector_index.respect_gitignore` / `respect_aiignore` (pointer bools, default true) |
 | Indexing enabled | `vector_index.enabled` (pointer bool, default true) | Master gate, live-applied by `UpdateIndexingSettings` ([ADR-103](../decisions/103-vector-index-master-switch.md); see the lifecycle bullet above): false strips the `semantic_search` tool + RAG closures, parks the per-root registry (`errVectorDisabled` everywhere, embedder released) and skips the ONNX load at boot; true relaunches the background ONNX init and re-registers the tool |
 | Exclude patterns | `vector_index.exclude_patterns` (default none; max 256 entries × 512 bytes; doublestar syntax — `*`, `**`, `?`, `[...]`, `{a,b}` — no `!` negation, no empty entries) | Subtractive workspace-relative globs layered on top of the honoured ignore files; validated identically at config load (single helper `config.ValidateVectorIndexExcludePatterns`) and at the settings save; a live change releases the live managers and rebuilds the focus root, whose next incremental pass evicts newly covered files |
 | Submodule indexing | `vector_index.index_submodules` (pointer bool, default false) | Whether nested-repo directories (checked-out submodules — `.git` is a gitdir-pointer file) under the workspace root are walked and indexed; off by default, explicit opt-in |
@@ -466,13 +481,13 @@ Opening a project whose directory does not behave like local storage — a netwo
 
 ## Extension Points
 
-- **Custom ignore patterns**: add entries to the project's `.gitignore` (or `.aiignore` for AI-specific ignores) to exclude files/directories from tree and index. `.aiignore` is the recommended channel for files git tracks but the agent/indexer should not waste context on. Recommended `.aiignore` recipe:
+- **Custom ignore patterns**: add entries to the project's `.gitignore` (or `.aiignore` for AI-specific ignores) to keep files/directories out of the vector index and the agent's search tools; the file tree still lists them and dims them through the `gitIgnored` flag. `.aiignore` is the recommended channel for files git tracks but the agent/indexer should not waste context on. Recommended `.aiignore` recipe:
   ```
   go.sum
   package-lock.json
   *.lock
   ```
-  Hidden directories (entries starting with `.`) are always excluded regardless of ignore files. See [ADR-016](../decisions/016-aiignore.md) for the full rationale and the ripgrep nested-`.aiignore` limitation.
+  Hidden entries (names starting with `.`) are flagged `hidden` and never indexed regardless of ignore files. See [ADR-016](../decisions/016-aiignore.md) for the full rationale and the ripgrep nested-`.aiignore` limitation.
 - **Alternative embedding model**: replace ONNX Runtime with a different model by implementing the embedding interface
 - **Vector store backend**: replace chromem-go with an alternative vector database by implementing the service interface
 - **Git monitor hooks**: add custom callbacks on branch change detected by `GitMonitor`

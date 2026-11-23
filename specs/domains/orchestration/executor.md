@@ -42,7 +42,7 @@ c0wrk registers consumer-specific meta-tools (`delegate`, `cancel_delegation`, `
 
 Unknown tokens fail closed (profile parser `ParseError`, delegate-task validation error, or resolver error — the delegation never launches with a silently widened/narrowed toolset).
 
-Mode-disabled tools are filtered out at selection time (`stripDisabled`): in No-Project/CHAT mode that is `semantic_search` alone — `ripgrep` and `glob` stay available. MCP tools gated off for the task are dropped from the same list (`stripGatedMCPTools`, applied over `stripDisabled`'s output). Every branch then ends in `stripSubagentTools`, which removes the Conductor-only tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`) plus the goal-loop actor tools (`propose_goal`, `declare_goal_status`, `declare_verification`); `runRedelegBlocking` re-adds `delegate`/`cancel_delegation` with their real registry schemas only when `allow_redelegate` is true (depth-capped).
+Mode-disabled tools are filtered out at selection time (`stripDisabled`): in No-Project/CHAT mode that is `semantic_search` alone — `ripgrep` and `glob` stay available. MCP tools gated off for the task are dropped from the same list (`stripGatedMCPTools`, applied over `stripDisabled`'s output). Every branch then ends in `stripSubagentTools`, which removes the Conductor-only tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `declare_step_complete`, `reflect` — the `conductorOnlyToolNames` set) plus the goal-loop actor tools (`propose_goal`, `declare_goal_status`, `declare_verification`); `runRedelegBlocking` re-adds `delegate`/`cancel_delegation` with their real registry schemas only when `allow_redelegate` is true (depth-capped).
 
 ### Tool-Call Ceiling, Result Cache and Truncation Wiring
 
@@ -70,8 +70,8 @@ When the active model profile's `loop_hardening` variant is on (master `model_pr
 
 The following are sp4rk engine primitives, documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md) — do not duplicate here:
 
-- ReAct loop iteration, step limit, `HITLHandler.OnStepLimit` (AllowOnce/AllowAlways/Deny)
-- Circuit breakers (repeat, truncation, parse-error, fruitless, same-tool)
+- ReAct loop iteration, step limit, `HITLHandler.OnStepLimit` (AllowOnce/AllowMore/AllowAlways/Deny)
+- Circuit breakers (repeat, truncation, parse-error, schema-validation rejection, fruitless, same-tool)
 - Mutation gate (coder steps, `mutationRequired`) and checklist gate (missing/unchecked sub-gates)
 - Implicit-finish detection and `DetectToolCallSyntaxInContent` failure-mode handling
 - `ToolResultCache` (short-hash keying, file-backed entries, coherence checks, TTL) and two-stage truncation

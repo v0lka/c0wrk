@@ -14,7 +14,7 @@ c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration 
 - `core/orchestrator_mcp_prepare.go` — synchronous durable intent preparation before send/resume execution
 - `core/orchestrator_mcp.go` — session-kind context resolution, per-context mode projection, and the gated set
 - `core/tools/mcp_gate.go` — `WithGatedMCPServers` / `GatedMCPServersFromContext`: the gated-complement carrier consulted by dispatch Gate 2b
-- `core/orchestrator_capabilities.go` — per-entry capability snapshot attachment shared by all three capability kinds
+- `core/orchestrator_capabilities.go` — the skill/agent half of the same per-entry capability-snapshot machinery (`attachCapabilitySnapshots`, the mention filters); the MCP projection the gate consumes lives in `core/orchestrator_mcp.go`
 - `backend/session/persistence_mcp.go` — transactional monotonic name union and ordered load; adapter and fork preserve task ownership
 - `core/tools/registry.go` — exposes the wrapped sp4rk `ToolRegistry` (via `r.ToolRegistry`) on which the sp4rk gateway registers MCP tools (see below)
 

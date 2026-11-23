@@ -526,7 +526,7 @@ func SessionDumpPath(agentDir, projectID, sessionID string) string {
 // openers probe the candidate paths in SessionArtifactAlgorithmsInProbeOrder
 // order, sniff the first existing file's magic, and continue with that codec;
 // only when no candidate exists is the file created under the configured
-// algorithm's extension (ADR-116).
+// algorithm's extension (ADR-121).
 
 // SessionArtifactExtension returns the filename extension that the
 // session_artifacts.compression algorithm appends to a session artifact's

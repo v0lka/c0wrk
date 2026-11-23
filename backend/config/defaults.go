@@ -241,6 +241,14 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.HistoryMutation.ToolResultEvictionStep == 0 {
 		cfg.Executor.HistoryMutation.ToolResultEvictionStep = 10
 	}
+	if cfg.Executor.HistoryMutation.CohortSize <= 0 {
+		// K-step quantum for eviction/pruning boundaries: between boundaries
+		// consecutive requests share a byte-stable prefix, so provider prompt
+		// caches stop being invalidated every turn. 1 = legacy per-step
+		// advance (sp4rk treats every value <= 1 that way); negatives are
+		// meaningless and normalize to the default.
+		cfg.Executor.HistoryMutation.CohortSize = 5
+	}
 	// EvictStepStatus and DedupRepeatedReads default to false (zero-value).
 	// Users opt in via config.yaml.
 
@@ -719,7 +727,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.WebAccess.Bind = DefaultWebAccessBind
 	}
 
-	// session_artifacts defaults (ADR-116): the unset section IS zstd/25 —
+	// session_artifacts defaults (ADR-121): the unset section IS zstd/25 —
 	// materialized here so the persisted shape names the algorithm/window
 	// explicitly (mirrors the ChatGPT auth-mode seeding). A strictly
 	// INVALID explicit value is not handled here: normalizeSessionArtifacts
