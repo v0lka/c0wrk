@@ -63,17 +63,11 @@ function customInput(): HTMLInputElement {
   return menu()!.querySelector<HTMLInputElement>('input[aria-label="Custom turn count"]')!
 }
 
-/** Open the popover via the trigger. Radix installs its document-level
- *  outside-interaction listener via setTimeout(0) after the content mounts,
- *  so flush the macrotask queue before interacting with the open menu. */
+/** Open (or re-click) the popover via the trigger. Radix installs its
+ *  document-level outside-interaction listener via setTimeout(0) after the
+ *  content mounts, so flush the macrotask queue before interacting with the
+ *  open menu. The trigger's click is what toggles, in either direction. */
 async function openMenu(): Promise<void> {
-  await act(async () => {
-    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
-  })
-}
-
-async function clickTrigger(): Promise<void> {
   await act(async () => {
     trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await new Promise((r) => setTimeout(r, 10))
@@ -114,7 +108,7 @@ describe('BudgetCombobox portal', () => {
     await openMenu()
     expect(trigger().getAttribute('aria-expanded')).toBe('true')
 
-    await clickTrigger()
+    await openMenu()
     expect(trigger().getAttribute('aria-expanded')).toBe('false')
     expect(menu()).toBeNull()
   })
@@ -251,7 +245,7 @@ describe('BudgetCombobox disabled', () => {
     })
     expect(trigger().disabled).toBe(true)
 
-    await clickTrigger()
+    await openMenu()
 
     expect(menu()).toBeNull()
   })

@@ -23,15 +23,6 @@ export interface GitOperationButtonProps {
   /** True while a remote git operation is in flight — spins the glyph. The
    *  button stays clickable so the previous result's log can be opened. */
   busy: boolean
-  /** Whether this button's log popover is open (drives `aria-expanded`). */
-  open: boolean
-  /** Manual toggle handler. Unset when the button is rendered as a Radix
-   *  PopoverTrigger (`asChild`): the Slot-composed onClick toggles then. */
-  onToggle?: () => void
-  /** Ref to the trigger, so the owner can restore focus when the panel closes. */
-  buttonRef?: Ref<HTMLButtonElement>
-  /** Id of the log panel this trigger controls (`aria-controls`). */
-  controlsId?: string
   /** Forwarded when the button serves as a Radix Slot child (`asChild`):
    *  Radix needs the DOM node for anchoring and focus restoration. */
   ref?: Ref<HTMLButtonElement>
@@ -44,22 +35,21 @@ export interface GitOperationButtonProps {
  * an operation so the *previous* result's log remains readable; opening it is
  * the owner's job (see the footer's `handleLogOpenChange`).
  *
- * Slot-compatible: forwarded props (`ref` + the rest spread) let it serve as
- * a `PopoverTrigger asChild` child — Radix's composed aria/onClick/data-state
- * arrive through the spread and win over the manual ones.
+ * Slot-compatible: forwarded `ref` + the trailing props spread let it serve
+ * as a `PopoverTrigger asChild` child. The whole trigger contract —
+ * aria-haspopup/aria-expanded/aria-controls, the toggling onClick and the
+ * data-state attribute — is Radix's, composed through the spread: the button
+ * declares no click handler or expanded-state props of its own, so a composed
+ * onClick can never double-fire a manual toggle.
  */
-export function GitOperationButton({ record, busy, open, onToggle, buttonRef, controlsId, ref, ...rest }: GitOperationButtonProps) {
+export function GitOperationButton({ record, busy, ref, ...rest }: GitOperationButtonProps) {
   return (
     <Button
-      ref={ref ?? buttonRef}
+      ref={ref}
       type="button"
       variant="ghost"
       size="xs"
-      onClick={onToggle}
       aria-label="Git operation log"
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      aria-controls={controlsId}
       title="Git operation log"
       className={cn('gap-0.5 px-1', operationTone(record, busy))}
       {...rest}

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { GitOperationPopover } from './GitOperationPopover'
+import { GitOperationButton } from './GitOperationButton'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
@@ -49,14 +50,16 @@ function record(overrides: Partial<GitOperationRecord> = {}): GitOperationRecord
   }
 }
 
-/** Rerender with the given record/open state. The trigger is a plain button —
- *  Slot-compatible, which is all `PopoverTrigger asChild` requires. */
+/** Rerender with the given record/open state. The trigger is the real
+ *  `GitOperationButton` — the footer's exact trigger — so the aria/interaction
+ *  assertions below exercise the production `PopoverTrigger asChild` Slot
+ *  composition, not a stand-in button. */
 function render(rec: GitOperationRecord | undefined, open = openState): void {
   lastRecord = rec
   act(() => {
     root.render(
       <GitOperationPopover record={rec} open={open} onOpenChange={setOpen}>
-        <button type="button">trigger</button>
+        <GitOperationButton record={rec} busy={false} />
       </GitOperationPopover>,
     )
   })

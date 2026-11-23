@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { GitOperationButton } from './GitOperationButton'
@@ -39,18 +39,9 @@ function record(overrides: Partial<GitOperationRecord> = {}): GitOperationRecord
 function render(props: {
   record?: GitOperationRecord | undefined
   busy?: boolean
-  open?: boolean
-  onToggle?: () => void
 }): void {
   act(() => {
-    root.render(
-      <GitOperationButton
-        record={props.record}
-        busy={props.busy ?? false}
-        open={props.open ?? false}
-        onToggle={props.onToggle ?? (() => {})}
-      />,
-    )
+    root.render(<GitOperationButton record={props.record} busy={props.busy ?? false} />)
   })
 }
 
@@ -97,24 +88,17 @@ describe('GitOperationButton — outcome tint', () => {
   })
 })
 
-describe('GitOperationButton — interaction', () => {
-  it('invokes onToggle on click', () => {
-    const onToggle = vi.fn()
-    render({ record: record(), onToggle })
-    act(() => {
-      button().click()
-    })
-    expect(onToggle).toHaveBeenCalledTimes(1)
-  })
-
-  it('reflects open state through aria-expanded', () => {
-    render({ record: record(), open: true })
-    expect(button().getAttribute('aria-expanded')).toBe('true')
-    act(() => {
-      root.render(
-        <GitOperationButton record={record()} busy={false} open={false} onToggle={() => {}} />,
-      )
-    })
-    expect(button().getAttribute('aria-expanded')).toBe('false')
+describe('GitOperationButton — design contract', () => {
+  it('owns no trigger state: no expanded/controls/haspopup aria of its own', () => {
+    render({ record: record() })
+    // The trigger contract — aria-haspopup/aria-expanded/aria-controls and the
+    // toggling onClick — belongs to the surrounding Radix Popover, composed
+    // through the trailing props spread when rendered as `PopoverTrigger
+    // asChild` (pinned against the real composition in
+    // GitOperationPopover.test.tsx). Standalone the button fakes none of it,
+    // so a Radix-composed onClick can never double-fire a manual toggle.
+    expect(button().getAttribute('aria-expanded')).toBeNull()
+    expect(button().getAttribute('aria-controls')).toBeNull()
+    expect(button().getAttribute('aria-haspopup')).toBeNull()
   })
 })

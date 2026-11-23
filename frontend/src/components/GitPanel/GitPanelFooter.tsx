@@ -194,7 +194,7 @@ export function GitPanelFooter() {
             open={isLogOpen}
             onOpenChange={handleLogOpenChange}
           >
-            <GitOperationButton record={lastOperation} busy={busy} open={isLogOpen} />
+            <GitOperationButton record={lastOperation} busy={busy} />
           </GitOperationPopover>
         </div>
       </div>
