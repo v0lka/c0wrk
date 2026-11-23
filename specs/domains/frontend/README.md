@@ -10,7 +10,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 - `frontend/src/stores/` — Zustand state management (42 stores; catalog in [stores.md](stores.md))
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
-- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions, the UI-scale geometry helpers `layoutSpace` + `cursorMenuPosition`, and the `@floating-ui/dom` zoom compensation `floatingUiZoom`)
+- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions, the UI-scale geometry helper `cursorMenuPosition`, and the `@floating-ui/dom` zoom compensation `floatingUiZoom`)
 - `frontend/src/components/` — UI component tree
 - `frontend/src/types/` — TypeScript type definitions
 - `frontend/src/index.css` — design tokens (Tailwind v4 @theme), the `height: 100%` base-sizing chain, and the zoom-corrected `--ui-vh` primitive

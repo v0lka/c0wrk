@@ -55,6 +55,15 @@ async function flush(): Promise<void> {
   })
 }
 
+/** Flush the macrotask queue: Radix installs its document-level
+ *  pointerdown/outside-interaction listener via setTimeout(0) after the
+ *  content mounts (see ui/popover.test.tsx). */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 10))
+  })
+}
+
 function logButton(): HTMLButtonElement {
   const el = container.querySelector<HTMLButtonElement>('button[aria-label="Git operation log"]')
   expect(el).not.toBeNull()
@@ -174,21 +183,23 @@ describe('GitPanelFooter — log popover dismissal', () => {
     expect(panel()).toBeNull()
   })
 
-  it('closes on an outside click', () => {
+  it('closes on an outside click', async () => {
     seed()
     render()
     act(() => {
       logButton().click()
     })
     expect(panel()).not.toBeNull()
+    await settle()
 
+    // Radix's DismissableLayer dismisses on `pointerdown` outside the panel.
     act(() => {
-      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(panel()).toBeNull()
   })
 
-  it('stays open on a click inside the panel', () => {
+  it('stays open on a click inside the panel', async () => {
     seed()
     render()
     act(() => {
@@ -196,9 +207,10 @@ describe('GitPanelFooter — log popover dismissal', () => {
     })
     const p = panel()
     expect(p).not.toBeNull()
+    await settle()
 
     act(() => {
-      p!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      p!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(panel()).not.toBeNull()
   })

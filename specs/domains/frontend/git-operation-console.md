@@ -8,10 +8,10 @@ The single surface for the outcome of every *funneled* user-triggered git mutati
 
 - `frontend/src/lib/gitOperation.ts` — `runGitOperation`, the single wrapper every call site funnels through; also `GitOperationOutcome`, `gitOperationErrorMessage`, `RunGitOperationArgs`
 - `frontend/src/stores/gitPanelStore.ts` — `operationByProject`, `GitOperationRecord`, `GitOperationKind`, `EMPTY_GIT_OPERATION`, `recordGitOperation`/`acknowledgeOperation`/`dropProjectOperation`, `selectLastOperation`
-- `frontend/src/components/GitPanel/GitPanelFooter.tsx` — hosts the button + popover, owns open state and the outside-click/Escape dismissal, and acknowledges on open (`toggleLog`)
+- `frontend/src/components/GitPanel/GitPanelFooter.tsx` — hosts the button + popover, owns the mirrored open state and acknowledges on open (`handleLogOpenChange`); dismissal (trigger toggle, Escape, outside click) is Radix's, reported through `onOpenChange`
 - `frontend/src/components/GitPanel/GitOperationButton.tsx` — the footer affordance (tint + busy spinner + `aria-expanded`)
-- `frontend/src/components/GitPanel/GitOperationPopover.tsx` — the portaled log panel (status header + `<pre>` of captured output), positioned from the trigger's rect
-- `frontend/src/lib/dropdownPosition.ts` / `frontend/src/lib/layoutSpace.ts` — the zoom-safe trigger-anchored placement helpers the popover reuses (`computeDropdownPosition`, `toLayoutTriggerRect`, `getLayoutViewport`)
+- `frontend/src/components/GitPanel/GitOperationPopover.tsx` — the log panel (status header + `<pre>` of captured output) as a managed Radix Popover
+- `frontend/src/components/ui/popover.tsx` — the Radix popover primitives the panel is built on: mandatory `Portal` to `document.body`, geometry owned by Radix/floating-ui with the global zoom compensation (see [ui-scale.md](ui-scale.md))
 - Event source: `frontend/src/hooks/useGitStatusEvents.ts` — consumes `git:status_changed` so a console-recorded mutation auto-refreshes the store
 - Guards: `frontend/src/lib/gitOperation.test.ts`, `frontend/src/stores/gitPanelStore.test.ts`, `frontend/src/components/GitPanel/GitPanelFooter.test.tsx`, `frontend/src/components/GitPanel/GitOperationButton.test.tsx`, `frontend/src/components/GitPanel/GitOperationPopover.test.tsx`
 
@@ -33,7 +33,7 @@ call site ──runGitOperation({projectId, kind, label, fn, extractOutput?, rec
                                                                                               ▼
 GitPanelFooter ──selectLastOperation(state, activeProjectId)──▶ GitOperationButton ──toggle──▶ GitOperationPopover
        ▲                                                                                             (label + output/error)
-       └── toggleLog: opening ⇒ acknowledgeOperation(activeProjectId) ⇒ glyph tints neutral
+       └── handleLogOpenChange: opening ⇒ acknowledgeOperation(activeProjectId) ⇒ glyph tints neutral
 ```
 
 ### Button
@@ -52,7 +52,7 @@ It carries `aria-label="Git operation log"`, `aria-haspopup="dialog"`, `aria-exp
 
 ### Popover
 
-`GitOperationPopover` is purely presentational — the footer owns open state and dismissal. It renders a dialog (`role="dialog"`, `aria-modal="false"`, `aria-label="Git operation log"`, a stable `id` the trigger points at via `aria-controls`) and moves focus into itself once positioned, with a status header (a `FileTerminal` / `CheckCircle2` / `XCircle` icon plus the operation `label`, falling back to `kind`, and `No git operations yet` when there is no record) above a scrollable, pre-wrapped `<pre>`:
+`GitOperationPopover` is purely presentational — the footer owns the mirrored open state; toggling, dismissal and focus are Radix's. It renders a managed Radix Popover (`components/ui/popover`): the portaled content is a dialog (`role="dialog"`, `aria-label="Git operation log"`, a Radix-assigned `id` the trigger points at via `aria-controls`, with `aria-haspopup="dialog"` + `aria-expanded` on the trigger), Radix moves focus into the panel on open and back to the trigger on close, and dismissal (trigger toggle, Escape, outside click) is reported through `onOpenChange` — with a status header (a `FileTerminal` / `CheckCircle2` / `XCircle` icon plus the operation `label`, falling back to `kind`, and `No git operations yet` when there is no record) above a scrollable, pre-wrapped `<pre>`:
 
 ```
 header: [icon] <label>                      ← label.trim() || kind; tinted success/destructive/muted
@@ -61,7 +61,7 @@ body:   captured output                     ← output.trim() || error || 'No ou
 
 The body prefers the captured `output`; when the operation produced none (a failed spawn records an empty `output` and the message in `error`), it falls back to `error`, then to `No output`.
 
-The panel is **portaled to `document.body`** and `position: fixed`, measured and placed from the trigger button's `getBoundingClientRect()` (see [Zoom-safe sizing](#zoom-safe-sizing)). This is what keeps it outside the Git panel's `overflow-hidden` ancestor: an in-place panel wider than the resizable sidebar (180–500px) overflowed that clipped ancestor, and the panel's `focus()` then scrolled the container — shifting the entire Git panel sideways. Escaping to a body portal removes both the clipping and the scroll.
+The panel is **portaled to `document.body`** (see [Zoom-safe sizing](#zoom-safe-sizing)). This is what keeps it outside the Git panel's `overflow-hidden` ancestor: an in-place panel wider than the resizable sidebar (180–500px) overflowed that clipped ancestor, and focusing it scrolled the container — shifting the entire Git panel sideways. Escaping to a body portal removes both the clipping and the scroll.
 
 ### Per-project scope
 
@@ -76,7 +76,7 @@ The active project's record is read via `selectLastOperation(state, activeProjec
 
 ### Acknowledge semantics
 
-Opening the log is the acknowledgement. `GitPanelFooter.toggleLog` calls `acknowledgeOperation(activeProjectId)` as it opens the popover (except while a remote op is in flight — the log stays readable mid-operation, and the pending result re-arms the tint when it lands), flipping `acknowledged: true`, so the glyph drops to neutral and an open log reads as "seen" rather than "unread result". Closing and reopening does not re-acknowledge; `acknowledgeOperation` is a reference-stable no-op when the project has no record or the flag is already set (it never fabricates an entry just to flip a flag). A newly recorded operation resets `acknowledged` to false, re-arming the tint.
+Opening the log is the acknowledgement. `GitPanelFooter.handleLogOpenChange` calls `acknowledgeOperation(activeProjectId)` as it opens the popover (except while a remote op is in flight — the log stays readable mid-operation, and the pending result re-arms the tint when it lands), flipping `acknowledged: true`, so the glyph drops to neutral and an open log reads as "seen" rather than "unread result". Closing and reopening does not re-acknowledge; `acknowledgeOperation` is a reference-stable no-op when the project has no record or the flag is already set (it never fabricates an entry just to flip a flag). A newly recorded operation resets `acknowledged` to false, re-arming the tint.
 
 ### Which operations feed the console
 
@@ -116,9 +116,9 @@ The console owns operation *results* only. These non-result surfaces deliberatel
 
 ### Zoom-safe sizing
 
-The popover is trigger-anchored, not pointer-tracked, and is rendered through a React portal to `document.body` with `position: fixed` — so the Git panel's `overflow-hidden` ancestor can neither clip it nor scroll under it. Placement mirrors `BudgetCombobox`: the trigger's `getBoundingClientRect()` (VISUAL px) is converted to LAYOUT px with `toLayoutTriggerRect`, the window extent comes from `getLayoutViewport()` (also layout px), and `computeDropdownPosition` returns the fixed rect — opening **upward** (the footer sits at the bottom of the panel, so there is no room below it) and **left-aligned to the trigger**, i.e. up and to the right, then clamped horizontally so the panel always stays inside the window at any UI scale. No pointer coordinate lands in `style.left/top` (`position.left`/`position.top` come from `lib/dropdownPosition`, already layout px), so the zoom cannot displace it.
+The popover is trigger-anchored, not pointer-tracked, and is a managed Radix Popover (`components/ui/popover`) whose content is portaled to `document.body` — so the Git panel's `overflow-hidden` ancestor can neither clip it nor scroll under it. Placement mirrors `BudgetCombobox` and belongs entirely to Radix/floating-ui: `side="top" align="start" sideOffset={6} collisionPadding={8}` — opening **upward** (the footer sits at the bottom of the panel, so there is no room below it) and **left-aligned to the trigger**, with Radix's collision detection flipping when the room above is short and clamping to the viewport. No component geometry math remains anywhere (no measured rect, no side-pinning classes, no computed px in `style.left/top`), so no VISUAL-px quantity can displace the panel, and the CSS-zoom correction happens globally in the floating-ui platform patch (`installFloatingUiZoomCompensation`).
 
-Its height is capped in absolute layout px — `min(MAX_PANEL_HEIGHT, room above the trigger, window height)` — measured from the panel's own `offsetHeight` and applied inline as `maxHeight`, so the panel never grows past the window or past the trigger. The body is `min-h-0 flex-1 overflow-auto custom-scrollbar` so the cap scrolls rather than overflowing. See [ui-scale.md](ui-scale.md) for the coordinate model.
+Sizing is token/class-only: a `w-96` resting width, `max-w-(--radix-popover-content-available-width)` for narrow windows, and a `min(...)` height cap of the Radix available height and the old 360 px ceiling (`max-h-[min(var(--radix-popover-content-available-height),22.5rem)]`), so the panel never grows past the window or past the trigger. The body is `min-h-0 flex-1 overflow-auto custom-scrollbar` so the cap scrolls rather than overflowing. See [ui-scale.md](ui-scale.md) for the coordinate model.
 
 ## Error Handling
 
@@ -138,7 +138,7 @@ Its height is capped in absolute layout px — `min(MAX_PANEL_HEIGHT, room above
 - Opening the log acknowledges the active project's record; the glyph is neutral while `busy`, when there is no record, or once `acknowledged`.
 - A record is dropped only by project deletion (`dropProjectOperation`), never by a panel remount or project switch.
 - `selectLastOperation` returns the stored record by reference (or `undefined`) — it allocates nothing, so it is safe as a Zustand selector.
-- The popover is portaled to `document.body` and `position: fixed`, placed from the trigger's rect converted to layout px (`toLayoutTriggerRect` + `getLayoutViewport` + `computeDropdownPosition`) and height-capped in layout px — never clipped or scrolled by the panel's `overflow-hidden` ancestor, and correct under the app-wide UI scale.
+- The popover is portaled to `document.body` and placed by Radix/floating-ui (`side="top"`, `align="start"`, collision-aware) with token/class-only sizing — never clipped or scrolled by the panel's `overflow-hidden` ancestor, carrying no manual positioning, and correct under the app-wide UI scale via the global floating-ui zoom compensation.
 
 ## Related Specs
 

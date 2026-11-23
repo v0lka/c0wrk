@@ -259,7 +259,7 @@ export function Combobox({
                 // tooltip is simply clipped by the window and the tail becomes
                 // unreadable. Cap and scroll it like every other long-content
                 // tooltip (StepTooltip/StepResultTooltip); the cap uses the
-                // zoom-corrected `--ui-vh` primitive (see lib/layoutSpace.ts).
+                // zoom-corrected `--ui-vh` primitive (defined in index.css).
                 className="max-w-sm max-h-[min(calc(var(--ui-vh)*0.7),calc(var(--radix-tooltip-content-available-height)-16px))] overflow-y-auto custom-scrollbar text-left text-wrap"
               >
                 {opt.tooltip}

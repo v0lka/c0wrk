@@ -2,8 +2,7 @@
  * Placement of a pointer-anchored floating panel (context menu, cursor menu).
  *
  * Two problems are solved here, both caused by the app-wide UI scale being
- * applied as CSS `zoom` on `<html>` (see `layoutSpace.ts` for the measured
- * coordinate model):
+ * applied as CSS `zoom` on `<html>`:
  *
  * 1. **Unit mismatch.** `MouseEvent.clientX/clientY` reports VISUAL px
  *    (layout px × zoom), while `style.left/top` on a `position: fixed`
@@ -21,11 +20,50 @@
  *    {@link computeCursorMenuPlacement} measures it against the visible window
  *    and opens it to the left of / above the cursor when that is the side with
  *    room, then clamps as a last resort so the panel stays fully visible.
+ *
+ * Measured coordinate model (headless Chromium, `html { zoom: Z }`, window
+ * 756 × 469) — established for the manual trigger-anchored placement layer
+ * this file originally accompanied (since replaced by the Radix primitives of
+ * `components/ui/popover` / `components/ui/dropdown-menu`); the visual→layout
+ * conversion the pointer-anchored path still needs lives here:
+ *
+ * | quantity                                              | space      |
+ * | ----------------------------------------------------- | ---------- |
+ * | `MouseEvent.clientX/clientY`                          | VISUAL px  |
+ * | `Element.getBoundingClientRect()`                     | VISUAL px  |
+ * | `window.innerWidth/innerHeight`                       | VISUAL px  |
+ * | `document.documentElement.clientWidth/clientHeight`   | VISUAL px  |
+ * | `style.left/top` on a `position: fixed` element       | LAYOUT px  |
+ * | `Element.offsetWidth/offsetHeight`                    | LAYOUT px  |
+ * | `transform: translate3d(Npx, …)`                      | LAYOUT px  |
+ * | `100vw`/`100vh` (resolve to the ICB = unzoomed size)  | LAYOUT px  |
+ * | `100%` on a fixed element (containing block = 1/Z box) | LAYOUT px |
+ *
+ * VISUAL px = LAYOUT px × Z. At Z = 1.5 a `left: 300px` element renders at
+ * visual x = 450, and a pointer at visual x = 300 reports `clientX = 300`.
+ * Consequently, any geometry measured in VISUAL px (a pointer position) must
+ * be divided by `Z` before it is written into `style.left/top` or compared
+ * against a measured `offsetWidth/offsetHeight`.
  */
 
 import { useLayoutEffect, useState, type RefObject } from 'react'
 import { getUiZoomFactor } from '@/stores/uiScaleStore'
-import { getLayoutViewport, type BoxSize } from './layoutSpace'
+
+/** A width/height pair. */
+export interface BoxSize {
+  width: number
+  height: number
+}
+
+/**
+ * The visible window in LAYOUT px — what a `position: fixed` element's
+ * `left/top` and `offsetWidth/offsetHeight` are measured against. The zoom
+ * factor is read live through {@link getUiZoomFactor} at every call — never
+ * cached, so a scale change is picked up by the next recompute.
+ */
+export function getLayoutViewport(zoom: number = getUiZoomFactor()): BoxSize {
+  return { width: window.innerWidth / zoom, height: window.innerHeight / zoom }
+}
 
 /** Viewport-space pointer coordinates from `MouseEvent.clientX/clientY` — VISUAL px. */
 export interface CursorAnchor {
