@@ -22,10 +22,11 @@
 // pointer coordinate straight into a fixed panel's `left`/`top` therefore
 // displaces it from the cursor by `coordinate × (zoom − 1)`. Pointer-anchored
 // panels must route through `lib/cursorMenuPosition`, which converts to layout
-// px and fits the panel inside the visible window (its header documents the
-// measured coordinate model). Trigger-anchored popovers and menus position
-// through the Radix primitives (`components/ui/popover`,
-// `components/ui/dropdown-menu`) instead of manual placement math.
+// px and fits the panel inside the visible window (the VISUAL-vs-LAYOUT
+// coordinate model is specified in `specs/domains/frontend/ui-scale.md`).
+// Trigger-anchored popovers and menus position through the Radix primitives
+// (`components/ui/popover`, `components/ui/dropdown-menu`) instead of manual
+// placement math.
 
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'

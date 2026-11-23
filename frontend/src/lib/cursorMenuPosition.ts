@@ -21,29 +21,12 @@
  *    and opens it to the left of / above the cursor when that is the side with
  *    room, then clamps as a last resort so the panel stays fully visible.
  *
- * Measured coordinate model (headless Chromium, `html { zoom: Z }`, window
- * 756 × 469) — established for the manual trigger-anchored placement layer
- * this file originally accompanied (since replaced by the Radix primitives of
- * `components/ui/popover` / `components/ui/dropdown-menu`); the visual→layout
- * conversion the pointer-anchored path still needs lives here:
- *
- * | quantity                                              | space      |
- * | ----------------------------------------------------- | ---------- |
- * | `MouseEvent.clientX/clientY`                          | VISUAL px  |
- * | `Element.getBoundingClientRect()`                     | VISUAL px  |
- * | `window.innerWidth/innerHeight`                       | VISUAL px  |
- * | `document.documentElement.clientWidth/clientHeight`   | VISUAL px  |
- * | `style.left/top` on a `position: fixed` element       | LAYOUT px  |
- * | `Element.offsetWidth/offsetHeight`                    | LAYOUT px  |
- * | `transform: translate3d(Npx, …)`                      | LAYOUT px  |
- * | `100vw`/`100vh` (resolve to the ICB = unzoomed size)  | LAYOUT px  |
- * | `100%` on a fixed element (containing block = 1/Z box) | LAYOUT px |
- *
- * VISUAL px = LAYOUT px × Z. At Z = 1.5 a `left: 300px` element renders at
- * visual x = 450, and a pointer at visual x = 300 reports `clientX = 300`.
- * Consequently, any geometry measured in VISUAL px (a pointer position) must
- * be divided by `Z` before it is written into `style.left/top` or compared
- * against a measured `offsetWidth/offsetHeight`.
+ * Coordinate spaces (§ Coordinate model in `specs/domains/frontend/ui-scale.md`
+ * — the single source of truth): pointer coordinates, `getBoundingClientRect()`
+ * and `window.innerWidth/innerHeight` are VISUAL px (LAYOUT px × zoom Z), while
+ * `style.left/top`, `offsetWidth/offsetHeight` and transforms are LAYOUT px.
+ * Every VISUAL-px measurement is divided by the live `Z` here before it feeds
+ * `style.left/top` or a box-size comparison.
  */
 
 import { useLayoutEffect, useState, type RefObject } from 'react'
