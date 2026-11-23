@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeDAGLayout, drawnDeps, type DAGItem, type DAGLayout } from './dagLayout'
+import { BROKEN_GAP_PX, computeDAGLayout, drawnDeps, type DAGConnector, type DAGItem, type DAGLayout } from './dagLayout'
 
 describe('computeDAGLayout', () => {
   it('returns empty layout for empty input', () => {
@@ -266,7 +266,10 @@ describe('lane-continuation broken marking (BUG4)', () => {
     const layout = computeDAGLayout(reuseItems)
     expect(laneOf(layout, 'F')).toBe(1)
     const continuation = layout.connectors.find(c => c.type === 'vertical' && c.fromLane === 1 && c.fromRow === 1)
-    expect(continuation).toEqual({ fromLane: 1, toLane: 1, fromRow: 1, toRow: 5, type: 'vertical', broken: true })
+    // gapPx 72 = the midpoint of the bare stretch (53..91) between the merge
+    // tail C←B ink (ending one corner radius above its run, 53) and the fork
+    // drop F←D ink (starting one radius below its run, 91)
+    expect(continuation).toEqual({ fromLane: 1, toLane: 1, fromRow: 1, toRow: 5, type: 'vertical', broken: true, gapPx: 72 })
     expectCleanLayout(reuseItems, 'broken-reuse')
   })
 
@@ -297,6 +300,29 @@ describe('lane-continuation broken marking (BUG4)', () => {
       { fromLane: 0, toLane: 0, fromRow: 1, toRow: 3, type: 'vertical' },
     ])
     expectCleanLayout(items, 'diamond-solid')
+  })
+
+  it('places the broken gap in the largest bare stretch (review repro: merge tail cannot cover it)', () => {
+    // The review's contract-valid, in-order repro: X reclaims the freed lane 0,
+    // its broken continuation (rows 1→5) used to gap at the segment midpoint
+    // (84, px 81..87) — fully covered by the merge tail Q→C ink [36..101], so
+    // the false continuation read as one solid Q→X line.
+    const items: DAGItem[] = [
+      { id: 'R', dependsOn: [] },
+      { id: 'Q', dependsOn: ['R'] },
+      { id: 'A', dependsOn: ['R'] },
+      { id: 'B', dependsOn: ['A'] },
+      { id: 'C', dependsOn: ['Q', 'R'] },
+      { id: 'X', dependsOn: [] },
+    ]
+    const layout = computeDAGLayout(items)
+    expect(laneOf(layout, 'X')).toBe(0)
+    const continuation = layout.connectors.find(c => c.type === 'vertical' && c.broken === true)
+    // gapPx 116.5 = the midpoint of the bare stretch (101..132) below the
+    // merge tail Q→C ink (which ends one corner radius above its run at 101)
+    expect(continuation).toEqual({ fromLane: 0, toLane: 0, fromRow: 1, toRow: 5, type: 'vertical', broken: true, gapPx: 116.5 })
+    expect(continuationDefects(items, layout)).toEqual([])
+    expectCleanLayout(items, 'review-repro-covered-gap')
   })
 })
 
@@ -497,7 +523,42 @@ function expectCleanLayout(items: DAGItem[], label: string): void {
  * BUG4 invariant: a lane-continuation vertical carries `broken: true` exactly
  * when its two endpoint nodes have no dependency edge between them —
  * edge-backed continuations stay unmarked (solid, unchanged shape).
+ *
+ * Gap-visibility invariant (PR review): a broken continuation's visible gap
+ * (`gapPx`, ± BROKEN_GAP_PX/2) must sit in a stretch of its lane no other
+ * segment's ink covers — ink spanning the gap reconnects the stubs and the
+ * false continuation reads as solid. The px ink mirror below follows the
+ * buildEdgePath shapes: verticals span node-center to node-center; a corner's
+ * arc leaves the lane line, so a fork's vertical ink on the child lane starts
+ * one corner radius (7 = LANE_WIDTH / 2) below its run and a merge's ink on
+ * the parent lane ends one radius above it; a horizontal run crosses strictly
+ * intermediate lanes at its final y and would bridge a gap within half a gap
+ * width of that y.
  */
+const GAP_HALF_PX = BROKEN_GAP_PX / 2
+const ROW_Y_PX = (row: number): number => row * ROW_PX + ROW_PX / 2
+
+function inkOnLane(c: DAGConnector, lane: number): [number, number][] {
+  const spans: [number, number][] = []
+  const lo = Math.min(c.fromLane, c.toLane)
+  const hi = Math.max(c.fromLane, c.toLane)
+  if (c.type === 'vertical') {
+    if (c.fromLane !== lane) return spans
+    spans.push([ROW_Y_PX(Math.min(c.fromRow, c.toRow)), ROW_Y_PX(Math.max(c.fromRow, c.toRow))])
+  } else if (c.type === 'fork') {
+    const hy = ROW_Y_PX(c.fromRow) + (c.exitDy ?? 0)
+    if (c.toLane === lane) spans.push([hy + 7, ROW_Y_PX(c.toRow)])
+    if (c.fromLane === lane && (c.exitDy ?? 0) > 0) spans.push([ROW_Y_PX(c.fromRow), hy])
+    if (lane > lo && lane < hi) spans.push([hy - GAP_HALF_PX, hy + GAP_HALF_PX])
+  } else {
+    const hy = ROW_Y_PX(c.toRow) + (c.entryDy ?? 0)
+    if (c.fromLane === lane) spans.push([ROW_Y_PX(c.fromRow), hy - 7])
+    if (c.toLane === lane && (c.entryDy ?? 0) > 0) spans.push([ROW_Y_PX(c.toRow), hy])
+    if (lane > lo && lane < hi) spans.push([hy - GAP_HALF_PX, hy + GAP_HALF_PX])
+  }
+  return spans
+}
+
 function continuationDefects(items: DAGItem[], layout: DAGLayout): string[] {
   // Mirror the layout's edge set (drawnDeps): the invariant is about the
   // edges the layout draws, not the raw depends_on lists.
@@ -525,6 +586,30 @@ function continuationDefects(items: DAGItem[], layout: DAGLayout): string[] {
     }
     if (edgeBacked && c.broken === true) {
       defects.push(`edge-backed continuation ${upper}->${lower} wrongly marked broken`)
+    }
+    if (c.broken !== true) continue
+    const y1 = ROW_Y_PX(from)
+    const y2 = ROW_Y_PX(to)
+    if (c.gapPx === undefined || !Number.isFinite(c.gapPx)) {
+      defects.push(`broken continuation ${upper} (r${from}) -> ${lower} (r${to}) on lane ${c.fromLane} has no gap position`)
+      continue
+    }
+    if (c.gapPx < y1 || c.gapPx > y2) {
+      defects.push(`broken continuation ${upper} -> ${lower} on lane ${c.fromLane}: gap ${c.gapPx} outside the segment [${y1}..${y2}]`)
+      continue
+    }
+    const gapLo = c.gapPx - GAP_HALF_PX
+    const gapHi = c.gapPx + GAP_HALF_PX
+    for (const o of layout.connectors) {
+      if (o === c) continue
+      for (const [lo, hi] of inkOnLane(o, c.fromLane)) {
+        if (Math.min(hi, gapHi) > Math.max(lo, gapLo)) {
+          defects.push(
+            `gap [${gapLo}..${gapHi}] of broken lane-${c.fromLane} continuation ${upper} -> ${lower} `
+              + `covered by ${o.type} ${o.fromLane}->${o.toLane} (rows ${o.fromRow}->${o.toRow}) ink [${lo}..${hi}]`,
+          )
+        }
+      }
     }
   }
   return defects
@@ -624,9 +709,11 @@ describe('layout invariant battery', () => {
     const layout = computeDAGLayout(items)
     expect(laneOf(layout, 'F')).toBe(1)
     // C (row 2) and F (row 5) share lane 1 with no dependency edge between
-    // them — the lane continuation must be marked broken (BUG4).
+    // them — the lane continuation must be marked broken (BUG4). gapPx 85.5 =
+    // the midpoint of the bare stretch (77..94) between the merge corner C→D
+    // and the corner of the fork drop F←D (entryDy 0, exitDy 3).
     const continuation = layout.connectors.find(c => c.type === 'vertical' && c.fromLane === 1)
-    expect(continuation).toEqual({ fromLane: 1, toLane: 1, fromRow: 2, toRow: 5, type: 'vertical', broken: true })
+    expect(continuation).toEqual({ fromLane: 1, toLane: 1, fromRow: 2, toRow: 5, type: 'vertical', broken: true, gapPx: 85.5 })
     expectCleanLayout(items, 'T1')
   })
 
@@ -746,6 +833,44 @@ describe('layout invariant battery', () => {
     expect(edgeVertical).toBeDefined()
     edgeVertical!.broken = true
     expect(continuationDefects(wbItems, wbLayout).some(d => d.includes('wrongly marked broken'))).toBe(true)
+
+    // covered gap: the review repro hand-built — a broken lane-0 continuation
+    // (rows 1→5) gapped at the segment midpoint (84, px 81..87) sits under the
+    // merge tail Q→C ink [36..101]; the gap detector must fire on it
+    const cgItems: DAGItem[] = [
+      { id: 'R', dependsOn: [] },
+      { id: 'Q', dependsOn: ['R'] },
+      { id: 'A', dependsOn: ['R'] },
+      { id: 'B', dependsOn: ['A'] },
+      { id: 'C', dependsOn: ['Q', 'R'] },
+      { id: 'X', dependsOn: [] },
+    ]
+    const cgLayout: DAGLayout = {
+      nodes: [
+        { id: 'R', lane: 0 },
+        { id: 'Q', lane: 0 },
+        { id: 'A', lane: 1 },
+        { id: 'B', lane: 1 },
+        { id: 'C', lane: 2 },
+        { id: 'X', lane: 0 },
+      ],
+      connectors: [
+        { fromLane: 0, toLane: 0, fromRow: 0, toRow: 1, type: 'vertical' },
+        { fromLane: 0, toLane: 1, fromRow: 0, toRow: 2, type: 'fork', exitDy: 0 },
+        { fromLane: 1, toLane: 1, fromRow: 2, toRow: 3, type: 'vertical' },
+        { fromLane: 0, toLane: 2, fromRow: 1, toRow: 4, type: 'merge', entryDy: 0 },
+        { fromLane: 0, toLane: 2, fromRow: 0, toRow: 4, type: 'fork', exitDy: 3 },
+        { fromLane: 0, toLane: 0, fromRow: 1, toRow: 5, type: 'vertical', broken: true, gapPx: 84 },
+      ],
+      maxLane: 2,
+    }
+    const cgDefects = continuationDefects(cgItems, cgLayout)
+    expect(cgDefects.some(d => d.includes('covered by merge'))).toBe(true)
+    // ...and the layout-placed gap (116.5, the bare stretch below the merge
+    // tail) is clean on the same hand layout
+    const placedGap = { ...cgLayout.connectors[5]!, gapPx: 116.5 }
+    const cgPlaced: DAGLayout = { ...cgLayout, connectors: [...cgLayout.connectors.slice(0, 5), placedGap] }
+    expect(continuationDefects(cgItems, cgPlaced)).toEqual([])
   })
 
   for (const seed of SWEEP_SEEDS) {

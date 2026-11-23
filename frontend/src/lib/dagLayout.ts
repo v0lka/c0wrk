@@ -21,6 +21,10 @@ export interface DAGConnector {
   entryDy?: number
   /** Lane continuation whose endpoints have no dependency edge between them — a false continuation, drawn broken */
   broken?: boolean
+  /** Absolute px y of the visible gap center of a broken continuation: the midpoint of the largest
+   *  stretch of the lane no other segment's ink covers, so a merge tail or fork drop spanning the
+   *  segment midpoint cannot visually heal the false continuation. Absent ≡ segment midpoint (legacy). */
+  gapPx?: number
 }
 
 export interface DAGLayout {
@@ -36,6 +40,9 @@ export const ROW_HEIGHT_PX = 24
  *  stays inside its 24px row band with the 7px corner dip (CORNER_RADIUS in dagEdgePath.ts)
  *  clear of the next row's node circles; fans beyond the cap share the capped y. */
 const FAN_DY_MAX_PX = 9
+/** Visible gap between the two stubs of a broken (false) lane continuation. Owned here — not in
+ *  dagEdgePath.ts — because pass 4 places the gap and must clear other ink by half this width. */
+export const BROKEN_GAP_PX = 6
 
 /**
  * Dependencies the layout actually draws, per item: deduplicated, restricted
@@ -315,6 +322,77 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
         existingVerticals.add(key)
       }
     }
+  }
+
+  // Pass 4: Break-gap placement. The segment midpoint of a broken continuation
+  // can sit under another segment's ink on the same lane — a merge tail
+  // dangling past it to a lower row, or a fork drop onto the lower occupant —
+  // visually healing the false continuation into one solid line. Place the gap
+  // at the midpoint of the largest stretch of the lane no other segment's ink
+  // covers (all segments are final by now); a fully covered lane — unreachable
+  // under the invariants above — falls back to the legacy midpoint.
+  const rowY = (row: number): number => row * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2
+  const halfGap = BROKEN_GAP_PX / 2
+  // Corner radius: mirrors CORNER_RADIUS in dagEdgePath.ts (LANE_WIDTH / 2 = 7)
+  // — a rounded corner leaves the lane line, so the vertical ink on the lane
+  // itself stops one radius short of the horizontal run.
+  const cornerRadiusPx = 7
+  /** Ink intervals ON the lane line (buildEdgePath shapes, in px): a corner's
+   *  arc departs from the lane, so only its endpoints touch it; a horizontal
+   *  run crosses strictly intermediate lanes at its final y and would bridge
+   *  a gap within half a gap width of that y. */
+  const inkOnLane = (c: DAGConnector, lane: number): [number, number][] => {
+    const spans: [number, number][] = []
+    const lo = Math.min(c.fromLane, c.toLane)
+    const hi = Math.max(c.fromLane, c.toLane)
+    if (c.type === 'vertical') {
+      if (c.fromLane !== lane) return spans
+      spans.push([rowY(Math.min(c.fromRow, c.toRow)), rowY(Math.max(c.fromRow, c.toRow))])
+    } else if (c.type === 'fork') {
+      const hy = rowY(c.fromRow) + (c.exitDy ?? 0)
+      if (c.toLane === lane) spans.push([hy + cornerRadiusPx, rowY(c.toRow)])
+      if (c.fromLane === lane && (c.exitDy ?? 0) > 0) spans.push([rowY(c.fromRow), hy])
+      if (lane > lo && lane < hi) spans.push([hy - halfGap, hy + halfGap])
+    } else {
+      const hy = rowY(c.toRow) + (c.entryDy ?? 0)
+      if (c.fromLane === lane) spans.push([rowY(c.fromRow), hy - cornerRadiusPx])
+      if (c.toLane === lane && (c.entryDy ?? 0) > 0) spans.push([rowY(c.toRow), hy])
+      if (lane > lo && lane < hi) spans.push([hy - halfGap, hy + halfGap])
+    }
+    return spans
+  }
+  for (const c of connectors) {
+    if (!c.broken) continue
+    const y1 = rowY(Math.min(c.fromRow, c.toRow))
+    const y2 = rowY(Math.max(c.fromRow, c.toRow))
+    const covered = connectors
+      .filter(o => o !== c)
+      .flatMap(o => inkOnLane(o, c.fromLane))
+      .sort((a, b) => a[0] - b[0])
+    // Largest uncovered stretch of [y1, y2]; the fallback seed is the segment
+    // midpoint, kept unless a strictly wider bare stretch exists. Coverage
+    // from segments beyond the segment's rows (a run crossing the lane below
+    // the lower occupant) must not inflate a candidate past y2 — clamp.
+    let bestLo = (y1 + y2) / 2
+    let bestHi = bestLo
+    let bestWidth = 0
+    let cursor = y1
+    for (const [lo, hi] of covered) {
+      if (hi <= cursor) continue
+      const gapHi = Math.min(lo, y2)
+      if (gapHi > cursor && gapHi - cursor > bestWidth) {
+        bestWidth = gapHi - cursor
+        bestLo = cursor
+        bestHi = gapHi
+      }
+      if (lo > y2) break
+      cursor = Math.max(cursor, hi)
+    }
+    if (y2 - cursor > bestWidth) {
+      bestLo = cursor
+      bestHi = y2
+    }
+    c.gapPx = (bestLo + bestHi) / 2
   }
 
   const maxLane = nodes.reduce((max, n) => Math.max(max, n.lane), 0)

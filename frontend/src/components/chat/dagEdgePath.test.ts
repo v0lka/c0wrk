@@ -1,7 +1,8 @@
 // Unit tests for the DAG edge path builder. Golden strings encode the
 // renderer geometry: laneX(l) = l*14 + 6 + 7, rowY(r) = r*24 + 12, corner
-// radius 14/2 = 7, broken gap 6 (±3 around the segment midpoint). Changing
-// the module constants legitimately changes them — that update is the
+// radius 14/2 = 7, broken gap 6 (±3 around gapPx — the layout-placed gap
+// center, falling back to the segment midpoint when absent). Changing the
+// module constants legitimately changes them — that update is the
 // review point.
 
 import { describe, it, expect } from 'vitest'
@@ -18,7 +19,7 @@ describe('buildEdgePath', () => {
     expect(buildEdgePath(c, laneX, rowY)).toBe('M 27 12 L 27 84')
   })
 
-  it('broken vertical: two stubs with a 6px gap at the midpoint', () => {
+  it('broken vertical without gapPx: legacy midpoint gap', () => {
     const c: DAGConnector = { fromLane: 1, toLane: 1, fromRow: 0, toRow: 3, type: 'vertical', broken: true }
     const d = buildEdgePath(c, laneX, rowY)
     // y1=12, y2=84, midpoint 48, stubs end at 45 and resume at 51 (gap 6)
@@ -33,6 +34,21 @@ describe('buildEdgePath', () => {
     expect(endOf(subpaths[1]!)).toBe(84)
     expect(d).toContain(`M 27 ${rowY(0)}`)
     expect(d.endsWith(`L 27 ${rowY(3)}`)).toBe(true)
+  })
+
+  it('broken vertical honors gapPx placed by the layout', () => {
+    // gapPx 116.5 — the review repro's bare stretch below the merge tail ink
+    // (layout-placed; see the dagLayout battery). Stubs end at 113.5 and
+    // resume at 119.5 (gap 6), no longer at the covered midpoint 84.
+    const c: DAGConnector = { fromLane: 0, toLane: 0, fromRow: 1, toRow: 5, type: 'vertical', broken: true, gapPx: 116.5 }
+    const d = buildEdgePath(c, laneX, rowY)
+    expect(d).toBe('M 13 36 L 13 113.5 M 13 119.5 L 13 132')
+    const subpaths = d.split('M').filter(s => s.trim() !== '')
+    expect(subpaths).toHaveLength(2)
+    const endOf = (s: string) => Number(s.trim().split(' ').pop())
+    expect(endOf(subpaths[0]!)).toBe(113.5)
+    expect(Number(subpaths[1]!.trim().split(' ')[1])).toBe(119.5)
+    expect(endOf(subpaths[1]!)).toBe(132)
   })
 
   it('fork right, exitDy 0: legacy shape (run straight out of the node)', () => {

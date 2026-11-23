@@ -177,9 +177,10 @@ describe('DAGGraph render', () => {
     const paths = [...container.querySelectorAll('path')]
 
     // exactly one broken connector — B→F on lane 1 (rows 1→5): stubs split at
-    // the midpoint (y 84) with the 6px gap between 81 and 87
+    // gapPx 72, the layout-placed gap in the bare stretch (53..91) between
+    // the merge tail C←B ink and the fork drop F←D ink — 6px gap 69..75
     const brokenDs = paths.map(p => p.getAttribute('d')!).filter(d => d.split('M').length === 3)
-    expect(brokenDs).toEqual(['M 27 36 L 27 81 M 27 87 L 27 132'])
+    expect(brokenDs).toEqual(['M 27 36 L 27 69 M 27 75 L 27 132'])
 
     // edge-backed verticals stay solid single-subpath paths
     expect(paths.some(p => p.getAttribute('d') === 'M 13 12 L 13 60')).toBe(true) // A→C

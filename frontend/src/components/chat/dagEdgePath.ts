@@ -1,10 +1,8 @@
-import type { DAGConnector } from '@/lib/dagLayout'
+import { BROKEN_GAP_PX, type DAGConnector } from '@/lib/dagLayout'
 
 export const LANE_WIDTH = 14
 /** Fork/merge corner radius — derived from the lane pitch so turns scale with the graph. */
 const CORNER_RADIUS = LANE_WIDTH / 2
-/** Visible gap between the two stubs of a broken (false) lane continuation. */
-const BROKEN_GAP_PX = 6
 
 /**
  * Pure SVG path builder for one DAG connector — kept out of DAGGraph.tsx so
@@ -17,7 +15,9 @@ const BROKEN_GAP_PX = 6
  * Shapes:
  * - vertical: straight line down the lane; `broken` (a false lane
  *   continuation whose endpoints have no dependency edge) renders as two
- *   stubs separated by a visible gap at the segment midpoint.
+ *   stubs separated by a visible gap at `gapPx` — the gap center the layout
+ *   placed in the lane's largest bare stretch; absent `gapPx` falls back to
+ *   the segment midpoint (legacy).
  * - fork: drops from the parent node onto a horizontal run at the parent's
  *   row lowered by `exitDy` (stacked +3px per earlier overlapping run), then
  *   a rounded corner down into the child's lane.
@@ -37,7 +37,9 @@ export function buildEdgePath(
 
   if (c.type === 'vertical') {
     if (c.broken) {
-      const mid = (y1 + y2) / 2
+      // gapPx is placed by the layout (pass 4) in the largest stretch of the
+      // lane no other segment's ink covers; absent ≡ segment midpoint (legacy).
+      const mid = c.gapPx ?? (y1 + y2) / 2
       const half = BROKEN_GAP_PX / 2
       return `M ${x1} ${y1} L ${x1} ${mid - half} M ${x1} ${mid + half} L ${x1} ${y2}`
     }
