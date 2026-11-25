@@ -127,7 +127,7 @@ On first launch c0wrk creates its config automatically, then — once all runtim
 
 ## Contributing
 
-Interested in hacking on c0wrk? Architecture, build instructions, and the release process live in [CONTRIBUTING.md](CONTRIBUTING.md).
+Interested in hacking on c0wrk? Architecture, build instructions, and the release process live in [CONTRIBUTING.md](CONTRIBUTING.md). Building from source needs Go, Node.js and the Wails CLI installed first — start with [Build from source](CONTRIBUTING.md#build-from-source).
 
 ## License
 

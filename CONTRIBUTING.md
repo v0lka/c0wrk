@@ -216,7 +216,34 @@ git clone https://github.com/v0lka/c0wrk.git c0wrk
 cd c0wrk
 ```
 
-### 2) Prepare frontend dependencies
+### 2) Install the toolchain
+
+`make` does not install the build tools for you. Install Go 1.27.4 and Node.js 24 (see [Requirements](#requirements)), then the Wails CLI at the version pinned in `go.mod` and golangci-lint at the version CI uses (needed for `make lint`, one of the pre-PR checks):
+
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+```
+
+`go install` puts the binaries in `$(go env GOPATH)/bin` (usually `~/go/bin`), which is often not on `PATH`. Add it in your shell profile (`~/.bashrc`, `~/.zshrc`):
+
+```bash
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
+Then install the native libraries for your platform:
+
+- **Linux** — the WebKitGTK 4.1 / GTK 3 / X11 development packages listed in [Linux build dependencies](#linux-build-dependencies).
+- **macOS** — the Xcode Command Line Tools (`xcode-select --install`).
+- **Windows** — the MinGW-w64 gcc toolchain and WebView2 runtime listed in [Windows build](#windows-build).
+
+Check the setup:
+
+```bash
+wails doctor
+```
+
+### 3) Prepare frontend dependencies
 
 ```bash
 make frontend-deps
@@ -224,7 +251,7 @@ make frontend-deps
 
 > On Windows use `./build.ps1 frontend-deps` (see [Windows build](#windows-build)) — a default Windows install has no `make`.
 
-### 3) Create user config
+### 4) Create user config
 
 Copy the example config into place:
 
@@ -378,6 +405,7 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 - **Config not detected**: ensure the file is exactly at `~/.c0wrk/config.yaml`.
 - **App fails after build due to missing ONNX library**: run `make fetch-onnx`.
 - **Missing embedding model files**: run `make fetch-embedding-model`.
+- **`make: wails: No such file or directory`** (exit code 127) from `make dev-desktop` / `make build`, or **`make: golangci-lint: No such file or directory`** from `make lint`: the tool is not installed or not on `PATH`. Install it and add `$(go env GOPATH)/bin` to `PATH` — see [Install the toolchain](#2-install-the-toolchain).
 - **`make dev-frontend` shows only the splash screen**: expected — it runs Vite alone, with no Wails runtime behind it. Use `make dev-desktop` for the full desktop loop.
 - **`wails dev` prints `Package 'webkit2gtk-4.0' not found` and never opens a window**: pass the Linux build tag (`wails dev -tags webkit2_41`), or just use `make dev-desktop`, which applies it for you. The command deliberately keeps running after a failed build, so the missing window is the only symptom.
 - **Generated Wails bindings drift** (`frontend/wailsjs/go/desktop/App.*`): regenerate via `wails build` or `wails dev` (do not hand-edit generated files).
