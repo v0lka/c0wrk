@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { PathWithBreaks } from '@/lib/wrapPath'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import {
   Dialog,
@@ -581,11 +582,11 @@ export function GitHistoryContextMenu({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-sm">
               <RotateCcw className="size-4 text-destructive" />
-              Hard reset {branchLabel}?
+              Hard reset <PathWithBreaks path={branchLabel} />?
             </DialogTitle>
             <DialogDescription>
               This will reset{' '}
-              <span className="font-mono text-foreground">{branchLabel}</span>{' '}
+              <PathWithBreaks path={branchLabel} className="font-mono text-foreground" />{' '}
               to commit{' '}
               <span className="font-mono text-foreground">
                 {resetTargetSha.slice(0, 7)}

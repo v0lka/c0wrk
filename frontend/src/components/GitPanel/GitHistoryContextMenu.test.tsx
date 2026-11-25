@@ -173,6 +173,30 @@ function hoverSubTrigger(text: string) {
   })
 }
 
+/**
+ * Long-token assertions for PathWithBreaks (scoped — the context menu stays
+ * mounted alongside the dialogs): the token renders as ONE span whose
+ * textContent is char-identical to the source (a <wbr> is an element, not a
+ * character), with exactly one <wbr> per `/`/`\` separator, each sitting
+ * immediately after its separator, and no injected zero-width chars.
+ */
+function assertTokenBreaks(token: string, scope: ParentNode): void {
+  const text = scope.textContent ?? ''
+  expect(text).toContain(token)
+  expect(text).not.toContain('\u200b')
+  expect(text).not.toContain('\u200c')
+  expect(text).not.toContain('\u200d')
+  expect(text).not.toContain('\ufeff')
+  const span = Array.from(scope.querySelectorAll('span')).find((s) => s.textContent === token)
+  expect(span).not.toBeUndefined()
+  const wbrs = span!.querySelectorAll('wbr')
+  expect(wbrs.length).toBe((token.match(/[/\\]/g) ?? []).length)
+  for (const wbr of wbrs) {
+    const prev = (wbr.previousSibling?.textContent ?? '').slice(-1)
+    expect(prev === '/' || prev === '\\').toBe(true)
+  }
+}
+
 describe('GitHistoryContextMenu — View Commit', () => {
   it('opens a read-only commit review page via the file viewer', async () => {
     renderMenu({ refs: [] })
@@ -363,6 +387,19 @@ describe('GitHistoryContextMenu — Reset', () => {
   it('labels the Reset submenu with the current branch name', () => {
     renderMenu({ refs: [], currentBranch: 'feature' })
     expect(findItem('Reset feature to This Commit')).toBeTruthy()
+  })
+
+  it('wraps the branch token in the hard-reset dialog at separators without altering the text', () => {
+    const longBranch = 'release/2.x/very/long/branch-name'
+    renderMenu({ refs: [], currentBranch: longBranch })
+    hoverSubTrigger('Reset')
+    clickItem('Hard')
+    const dialog = document.body.querySelector('[role="dialog"]') as HTMLElement
+    expect(dialog).toBeTruthy()
+    assertTokenBreaks(longBranch, dialog)
+    // Char-identical context in both the title and the description.
+    expect(dialog.textContent).toContain(`Hard reset ${longBranch}?`)
+    expect(dialog.textContent).toContain(`This will reset ${longBranch} to commit`)
   })
 })
 

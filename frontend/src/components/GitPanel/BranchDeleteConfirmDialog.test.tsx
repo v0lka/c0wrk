@@ -30,6 +30,29 @@ function buttonByText(text: string): HTMLButtonElement | undefined {
   return allButtons().find((b) => b.textContent?.includes(text))
 }
 
+/**
+ * Long-token assertions for PathWithBreaks: the token renders as ONE span
+ * whose textContent is char-identical to the source (a <wbr> is an element,
+ * not a character), with exactly one <wbr> per `/`/`\` separator, each
+ * sitting immediately after its separator, and no injected zero-width chars.
+ */
+function assertTokenBreaks(token: string, scope: ParentNode = document.body): void {
+  const text = scope.textContent ?? ''
+  expect(text).toContain(token)
+  expect(text).not.toContain('\u200b')
+  expect(text).not.toContain('\u200c')
+  expect(text).not.toContain('\u200d')
+  expect(text).not.toContain('\ufeff')
+  const span = Array.from(scope.querySelectorAll('span')).find((s) => s.textContent === token)
+  expect(span).not.toBeUndefined()
+  const wbrs = span!.querySelectorAll('wbr')
+  expect(wbrs.length).toBe((token.match(/[/\\]/g) ?? []).length)
+  for (const wbr of wbrs) {
+    const prev = (wbr.previousSibling?.textContent ?? '').slice(-1)
+    expect(prev === '/' || prev === '\\').toBe(true)
+  }
+}
+
 beforeEach(() => {
   onConfirm = vi.fn<(mode: 'safe' | 'force') => void>()
   onCancel = vi.fn<() => void>()
@@ -96,5 +119,26 @@ describe('BranchDeleteConfirmDialog', () => {
       buttonByText('Delete')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(onConfirm).toHaveBeenCalledWith('safe')
+  })
+
+  it('wraps long branch tokens at separators without altering the text', () => {
+    const longName = 'feature/very/deeply/nested/long-branch-name'
+
+    // Local: <wbr> break points inside the quoted `pending.name` token.
+    renderDialog({ kind: 'local', name: longName })
+    assertTokenBreaks(longName)
+    expect(document.body.textContent).toContain(
+      `"${longName}" will be deleted locally. Safe delete (git branch -d)`,
+    )
+    act(() => {
+      root.unmount()
+    })
+
+    // Remote: the quoted `remote/name` token breaks after every separator.
+    renderDialog({ kind: 'remote', name: longName, remote: 'origin' })
+    assertTokenBreaks(`origin/${longName}`)
+    expect(document.body.textContent).toContain(
+      `"origin/${longName}" will be deleted from the remote.`,
+    )
   })
 })

@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { PathWithBreaks } from '@/lib/wrapPath'
 import { stripRootPrefix } from '@/lib/gitStatus'
 import type { StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
@@ -256,7 +257,10 @@ export function GitFileContextMenu({
             <DialogTitle>Discard changes?</DialogTitle>
             <DialogDescription>
               This will permanently discard all local changes to{' '}
-              <span className="font-mono text-foreground">{relativePath}</span>. This cannot be undone.
+              {/* <wbr> after every separator lets a long path wrap; the
+                  element (unlike U+200B) never reaches copied text. */}
+              <PathWithBreaks path={relativePath} className="font-mono text-foreground" />. This
+              cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

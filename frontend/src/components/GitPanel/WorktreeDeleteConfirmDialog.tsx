@@ -9,6 +9,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { PathWithBreaks } from '@/lib/wrapPath'
 import type { PendingWorktreeDelete } from '@/hooks/useWorktreeActions'
 
 interface WorktreeDeleteConfirmDialogProps {
@@ -67,9 +68,12 @@ export function WorktreeDeleteConfirmDialog({
           <DialogDescription>
             {pending ? (
               <>
-                <span className="font-medium">{pending.worktree.name}</span>
+                <PathWithBreaks path={pending.worktree.name} className="font-medium" />
                 {pending.worktree.branch && (
-                  <span className="ml-1.5 font-mono text-xs">{pending.worktree.branch}</span>
+                  <PathWithBreaks
+                    path={pending.worktree.branch}
+                    className="ml-1.5 font-mono text-xs"
+                  />
                 )}
                 <span className="mt-1 block break-all font-mono text-xs text-muted-foreground">
                   {pending.worktree.path}

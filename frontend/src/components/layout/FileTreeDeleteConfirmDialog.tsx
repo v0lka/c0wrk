@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import type { FileEntry } from '@/types/models'
+import { PathWithBreaks } from '@/lib/wrapPath'
 
 interface FileTreeDeleteConfirmDialogProps {
   /** The tree entry pending deletion; null keeps the dialog closed. */
@@ -50,7 +51,7 @@ export function FileTreeDeleteConfirmDialog({
             <div className="flex flex-col gap-1">
               <DialogTitle>Delete {target?.is_dir ? 'folder' : 'file'}?</DialogTitle>
               <DialogDescription>
-                {target?.name}
+                {target && <PathWithBreaks path={target.name} />}
                 {target?.is_dir ? ' and everything inside it' : ''} will be removed permanently.
                 This cannot be undone.
               </DialogDescription>
