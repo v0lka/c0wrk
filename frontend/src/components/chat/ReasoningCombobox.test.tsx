@@ -355,4 +355,23 @@ describe('ReasoningCombobox disabled (session-pinning lock)', () => {
     }, 10)
     expect(menu()).toBeNull()
   })
+
+  it('force-closes an open menu when disabled flips while it is open', async () => {
+    // The portaled menu mounts on <body>, outside the toolbar's
+    // pointer-events-none lock wrapper; the pre-Radix useDropdown pinned
+    // close-on-disabled-flip and Radix does not close an open panel when its
+    // trigger turns disabled. The menu is controlled precisely so this
+    // invariant survives the migration (session-pinning lock scenario).
+    renderCombobox()
+    await openMenu()
+    expect(menu()).not.toBeNull()
+
+    act(() => {
+      root.render(<ReasoningCombobox disabled />)
+    })
+
+    expect(menu()).toBeNull()
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
+    expect(trigger().disabled).toBe(true)
+  })
 })

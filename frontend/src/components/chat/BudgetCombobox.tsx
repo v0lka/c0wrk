@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -89,6 +89,17 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
       setCustomValue(current !== null && current > 0 ? String(current) : '')
     }
   }, [isOpen, goalBudget])
+
+  // Force-close when the selector locks. Radix keeps an open portaled panel
+  // open when its trigger turns disabled, and the portaled content mounts on
+  // <body> — outside the chat toolbar's `pointer-events-none` lock wrapper —
+  // so without this a panel open across a lock transition (pause/compaction/
+  // auto-resume flipping the toolbar's selectorsLocked) would stay fully
+  // interactive past the lock. Restores the close-on-disabled-flip invariant
+  // the pre-Radix useDropdown hook pinned.
+  useEffect(() => {
+    if (disabled) setIsOpen(false)
+  }, [disabled])
 
   const close = () => setIsOpen(false)
 

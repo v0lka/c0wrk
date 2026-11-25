@@ -9,7 +9,7 @@ The single surface for the outcome of every *funneled* user-triggered git mutati
 - `frontend/src/lib/gitOperation.ts` — `runGitOperation`, the single wrapper every call site funnels through; also `GitOperationOutcome`, `gitOperationErrorMessage`, `RunGitOperationArgs`
 - `frontend/src/stores/gitPanelStore.ts` — `operationByProject`, `GitOperationRecord`, `GitOperationKind`, `EMPTY_GIT_OPERATION`, `recordGitOperation`/`acknowledgeOperation`/`dropProjectOperation`, `selectLastOperation`
 - `frontend/src/components/GitPanel/GitPanelFooter.tsx` — hosts the button + popover, owns the mirrored open state and acknowledges on open (`handleLogOpenChange`); dismissal (trigger toggle, Escape, outside click) is Radix's, reported through `onOpenChange`
-- `frontend/src/components/GitPanel/GitOperationButton.tsx` — the footer affordance (tint + busy spinner + `aria-expanded`)
+- `frontend/src/components/GitPanel/GitOperationButton.tsx` — the footer affordance (tint + busy spinner); declares only `aria-label`/`title` — the trigger contract (`aria-haspopup`/`aria-expanded`/`aria-controls`) is composed by the surrounding Radix Popover when it renders as `PopoverTrigger asChild`
 - `frontend/src/components/GitPanel/GitOperationPopover.tsx` — the log panel (status header + `<pre>` of captured output) as a managed Radix Popover
 - `frontend/src/components/ui/popover.tsx` — the Radix popover primitives the panel is built on: mandatory `Portal` to `document.body`, geometry owned by Radix/floating-ui with the global zoom compensation (see [ui-scale.md](ui-scale.md))
 - Event source: `frontend/src/hooks/useGitStatusEvents.ts` — consumes `git:status_changed` so a console-recorded mutation auto-refreshes the store
@@ -48,7 +48,7 @@ GitPanelFooter ──selectLastOperation(state, activeProjectId)──▶ GitOpe
 | `ok` and unread | `text-success` |
 | `!ok` and unread | `text-destructive` |
 
-It carries `aria-label="Git operation log"`, `aria-haspopup="dialog"`, `aria-expanded={open}`, and `aria-controls` pointing at the popover's stable id.
+It carries only `aria-label="Git operation log"` and the matching `title` — no trigger contract of its own. `aria-haspopup="dialog"`, `aria-expanded`, and the Radix-generated `aria-controls` id are composed by the surrounding Radix Popover when the button renders as `PopoverTrigger asChild` (see [Popover](#popover) below); the standalone button pins those attributes as absent in `GitOperationButton.test.tsx`, so manual aria must not be re-added here.
 
 ### Popover
 

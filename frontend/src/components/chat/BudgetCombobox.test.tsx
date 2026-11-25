@@ -252,4 +252,21 @@ describe('BudgetCombobox disabled', () => {
 
     expect(menu()).toBeNull()
   })
+
+  it('force-closes an open menu when disabled flips while it is open', async () => {
+    // The portaled panel mounts on <body>, outside any pointer-events-none
+    // lock wrapper, so the pre-Radix useDropdown pinned close-on-disabled-flip:
+    // an open menu must not stay interactive past the toolbar's lock
+    // (session start / pause / compaction). Radix does not do this itself —
+    // the component owns open state and closes it here.
+    await openMenu()
+    expect(menu()).not.toBeNull()
+
+    act(() => {
+      root.render(<BudgetCombobox disabled />)
+    })
+
+    expect(menu()).toBeNull()
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
+  })
 })

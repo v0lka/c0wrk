@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import {
@@ -29,7 +29,10 @@ import { findModelInfo } from '@/lib/modelId'
  * ModelPickerMenu). Radix portals the content to <body> and positions it with
  * the popper, so the option list escapes the chat input panel's own overflow:
  * the inline `absolute bottom-full` menu it replaced was clipped whenever the
- * input panel was at its minimum height.
+ * input panel was at its minimum height. The menu is controlled (open state
+ * owned here) so it can force-close when the selector locks — a portaled
+ * panel is outside the toolbar's `pointer-events-none` lock wrapper and Radix
+ * would otherwise leave it open and clickable past the lock.
  */
 export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
@@ -60,6 +63,19 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
     }
   }, [selectedModel, defaultModel, allModels, selectedReasoning, setSelectedReasoning])
 
+  // The menu is controlled so the lock effect below can own the open state —
+  // an uncontrolled Radix DropdownMenu would stay open when its trigger turns
+  // disabled. Force-close when the selector locks: the portaled content mounts
+  // on <body>, outside the chat toolbar's `pointer-events-none` lock wrapper,
+  // so a panel open across a lock transition (pause/compaction/auto-resume
+  // flipping the toolbar's selectorsLocked) would otherwise remain fully
+  // interactive past the lock. Restores the close-on-disabled-flip invariant
+  // the pre-Radix useDropdown hook pinned.
+  const [isOpen, setIsOpen] = useState(false)
+  useEffect(() => {
+    if (disabled) setIsOpen(false)
+  }, [disabled])
+
   // Find reasoning info for the effective model.
   const effectiveModel = selectedModel ?? defaultModel
   const modelInfo = findModelInfo(allModels, effectiveModel)
@@ -76,7 +92,7 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
   const displayLabel = selectedReasoning ?? 'Default (provider)'
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
       <DropdownMenuTrigger asChild disabled={disabled}>
         <button
           type="button"
