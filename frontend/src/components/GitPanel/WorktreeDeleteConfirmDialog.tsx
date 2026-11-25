@@ -2,15 +2,13 @@ import { useEffect, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
 import {
   Dialog,
-  DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { PathWithBreaks } from '@/lib/wrapPath'
-import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import type { PendingWorktreeDelete } from '@/hooks/useWorktreeActions'
 
 interface WorktreeDeleteConfirmDialogProps {
@@ -63,7 +61,7 @@ export function WorktreeDeleteConfirmDialog({
 
   return (
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <DialogContent className="sm:max-w-md" style={WRAP_ANYWHERE}>
+      <PathDialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Delete worktree?</DialogTitle>
           <DialogDescription>
@@ -131,7 +129,7 @@ export function WorktreeDeleteConfirmDialog({
             Delete
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </PathDialogContent>
     </Dialog>
   )
 }

@@ -2,15 +2,13 @@ import { Loader2, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 import type { FileEntry } from '@/types/models'
-import { PathWithBreaks } from '@/lib/wrapPath'
-import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 
 interface FileTreeDeleteConfirmDialogProps {
   /** The tree entry pending deletion; null keeps the dialog closed. */
@@ -43,7 +41,7 @@ export function FileTreeDeleteConfirmDialog({
         if (!o && !deleting) onClose()
       }}
     >
-      <DialogContent className="sm:max-w-md" showCloseButton={false} style={WRAP_ANYWHERE}>
+      <PathDialogContent className="sm:max-w-md" showCloseButton={false}>
         <DialogHeader>
           <div className="flex items-center gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15">
@@ -75,7 +73,7 @@ export function FileTreeDeleteConfirmDialog({
             Delete
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </PathDialogContent>
     </Dialog>
   )
 }

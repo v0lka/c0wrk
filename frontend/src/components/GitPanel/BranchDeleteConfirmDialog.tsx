@@ -1,14 +1,12 @@
 import {
   Dialog,
-  DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { PathWithBreaks } from '@/lib/wrapPath'
-import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import type { PendingBranchDelete } from '@/hooks/useBranchActions'
 
 interface BranchDeleteConfirmDialogProps {
@@ -34,7 +32,7 @@ export function BranchDeleteConfirmDialog({
 
   return (
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <DialogContent className="sm:max-w-md" style={WRAP_ANYWHERE}>
+      <PathDialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{isLocal ? 'Delete branch?' : 'Delete remote branch?'}</DialogTitle>
           <DialogDescription>
@@ -78,7 +76,7 @@ export function BranchDeleteConfirmDialog({
             </Button>
           )}
         </DialogFooter>
-      </DialogContent>
+      </PathDialogContent>
     </Dialog>
   )
 }

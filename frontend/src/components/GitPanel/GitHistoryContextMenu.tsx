@@ -12,8 +12,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { PathWithBreaks } from '@/lib/wrapPath'
-import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import {
   Dialog,
@@ -579,7 +578,7 @@ export function GitHistoryContextMenu({
 
       {/* Hard reset confirmation dialog */}
       <Dialog open={resetConfirmOpen} onOpenChange={setResetConfirmOpen}>
-        <DialogContent showCloseButton={false} className="max-w-sm" style={WRAP_ANYWHERE}>
+        <PathDialogContent showCloseButton={false} className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-sm">
               <RotateCcw className="size-4 text-destructive" />
@@ -620,7 +619,7 @@ export function GitHistoryContextMenu({
               Hard Reset
             </Button>
           </DialogFooter>
-        </DialogContent>
+        </PathDialogContent>
       </Dialog>
     </>
   )

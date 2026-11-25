@@ -8,15 +8,13 @@ import { useProjectStore } from '@/stores/projectStore'
 import { runGitOperation } from '@/lib/gitOperation'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { PathWithBreaks } from '@/lib/wrapPath'
-import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import { stripRootPrefix } from '@/lib/gitStatus'
 import type { StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
@@ -253,7 +251,7 @@ export function GitFileContextMenu({
       )}
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent showCloseButton={false} className="max-w-sm" style={WRAP_ANYWHERE}>
+        <PathDialogContent showCloseButton={false} className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Discard changes?</DialogTitle>
             <DialogDescription>
@@ -278,7 +276,7 @@ export function GitFileContextMenu({
               Discard
             </Button>
           </DialogFooter>
-        </DialogContent>
+        </PathDialogContent>
       </Dialog>
     </>
   )

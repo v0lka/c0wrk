@@ -2,8 +2,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { PathWithBreaks } from './wrapPath'
-import { assertCopySafe } from '@/test/wrapAssertions'
+import type { CSSProperties } from 'react'
+import { PathDialogContent, PathWithBreaks } from './wrapPath'
+import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { assertCopySafe, assertTokenBreaks } from '@/test/wrapAssertions'
 
 describe('PathWithBreaks', () => {
   let container: HTMLElement
@@ -95,5 +97,54 @@ describe('PathWithBreaks', () => {
     const span = renderPath('/a/b', 'break-all text-xs')
     expect(span.className).toBe('break-all text-xs')
     assertCopySafe('/a/b', span)
+  })
+})
+
+describe('PathDialogContent', () => {
+  let container: HTMLElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.replaceChildren(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    document.body.replaceChildren()
+  })
+
+  function renderContent(style?: CSSProperties): HTMLElement {
+    act(() => {
+      root.render(
+        <Dialog open>
+          <PathDialogContent className="max-w-sm" style={style}>
+            <DialogTitle>Delete?</DialogTitle>
+            <DialogDescription>path follows</DialogDescription>
+            <PathWithBreaks path="/long/token/path.ts" />
+          </PathDialogContent>
+        </Dialog>,
+      )
+    })
+    const content = document.body.querySelector('[data-slot="dialog-content"]')
+    expect(content).not.toBeNull()
+    return content as HTMLElement
+  }
+
+  it('bakes overflow-wrap anywhere into the dialog grid track and pairs it with the token renderer', () => {
+    const content = renderContent()
+    expect(content.style.overflowWrap).toBe('anywhere')
+    assertTokenBreaks('/long/token/path.ts', content)
+  })
+
+  it('forwards className to DialogContent', () => {
+    const content = renderContent()
+    expect(content.className).toContain('max-w-sm')
+  })
+
+  it('a caller-supplied style wins per-property', () => {
+    const content = renderContent({ overflowWrap: 'break-word' })
+    expect(content.style.overflowWrap).toBe('break-word')
   })
 })

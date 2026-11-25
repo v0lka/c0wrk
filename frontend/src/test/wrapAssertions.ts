@@ -6,10 +6,13 @@ import { expect } from 'vitest'
  * not a character), with exactly one <wbr> per `/`/`\` separator, each
  * sitting immediately after its separator, and no injected zero-width chars.
  *
- * Shared by the dialog tests that wire PathWithBreaks into their copy.
- * `scope` defaults to the whole document body (Radix portals dialog content
- * into body); pass a narrower ParentNode — e.g. the dialog element — when
- * several PathWithBreaks instances stay mounted at the same time.
+ * Asserts EVERY span whose textContent equals the token — not just the first
+ * match — so a degraded copy cannot hide behind a healthy duplicate (a dialog
+ * may render the same token more than once). Shared by the dialog tests that
+ * wire PathWithBreaks into their copy. `scope` defaults to the whole document
+ * body (Radix portals dialog content into body); pass a narrower ParentNode —
+ * e.g. the dialog element — when several PathWithBreaks instances stay
+ * mounted at the same time.
  */
 export function assertTokenBreaks(token: string, scope: ParentNode = document.body): void {
   const text = scope.textContent ?? ''
@@ -18,13 +21,16 @@ export function assertTokenBreaks(token: string, scope: ParentNode = document.bo
   expect(text).not.toContain('\u200c')
   expect(text).not.toContain('\u200d')
   expect(text).not.toContain('\ufeff')
-  const span = Array.from(scope.querySelectorAll('span')).find((s) => s.textContent === token)
-  expect(span).not.toBeUndefined()
-  const wbrs = span!.querySelectorAll('wbr')
-  expect(wbrs.length).toBe((token.match(/[/\\]/g) ?? []).length)
-  for (const wbr of wbrs) {
-    const prev = (wbr.previousSibling?.textContent ?? '').slice(-1)
-    expect(prev === '/' || prev === '\\').toBe(true)
+  const spans = Array.from(scope.querySelectorAll('span')).filter((s) => s.textContent === token)
+  expect(spans.length).toBeGreaterThan(0)
+  const separatorCount = (token.match(/[/\\]/g) ?? []).length
+  for (const span of spans) {
+    const wbrs = span.querySelectorAll('wbr')
+    expect(wbrs.length).toBe(separatorCount)
+    for (const wbr of wbrs) {
+      const prev = (wbr.previousSibling?.textContent ?? '').slice(-1)
+      expect(prev === '/' || prev === '\\').toBe(true)
+    }
   }
 }
 
