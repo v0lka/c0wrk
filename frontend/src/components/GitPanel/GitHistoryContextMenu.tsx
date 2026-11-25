@@ -582,7 +582,9 @@ export function GitHistoryContextMenu({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-sm">
               <RotateCcw className="size-4 text-destructive" />
-              Hard reset <PathWithBreaks path={branchLabel} />?
+              <span>
+                Hard reset <PathWithBreaks path={branchLabel} />?
+              </span>
             </DialogTitle>
             <DialogDescription>
               This will reset{' '}

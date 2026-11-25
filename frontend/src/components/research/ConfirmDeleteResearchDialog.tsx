@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { PathWithBreaks } from '@/lib/wrapPath'
 import type { DeleteTarget } from './useResearchProjectActions'
 
 interface ConfirmDeleteResearchDialogProps {
@@ -50,8 +51,10 @@ export function ConfirmDeleteResearchDialog({
             <div className="flex flex-col gap-1">
               <DialogTitle>Delete research project?</DialogTitle>
               <DialogDescription>
-                {target?.id} — {target?.title}. Its directory tree, index rows, and pins
-                are removed permanently. This cannot be undone.
+                {target && <PathWithBreaks path={target.id} />} —{' '}
+                {target && <PathWithBreaks path={target.title} />}. Its directory
+                tree, index rows, and pins are removed permanently. This cannot
+                be undone.
               </DialogDescription>
             </div>
           </div>

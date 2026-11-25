@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { WorktreeDeleteConfirmDialog } from './WorktreeDeleteConfirmDialog'
 import type { PendingWorktreeDelete } from '@/hooks/useWorktreeActions'
 import type { GitWorktree } from '@/types/models'
+import { assertTokenBreaks } from '@/test/wrapAssertions'
 
 let onConfirm: (mode: 'safe' | 'force', unlock: boolean) => void
 let onCancel: () => void
@@ -55,29 +56,6 @@ function buttonByText(text: string): HTMLButtonElement | undefined {
 
 function unlockCheckbox(): HTMLInputElement {
   return document.body.querySelector('[data-testid="worktree-unlock-checkbox"]') as HTMLInputElement
-}
-
-/**
- * Long-token assertions for PathWithBreaks: the token renders as ONE span
- * whose textContent is char-identical to the source (a <wbr> is an element,
- * not a character), with exactly one <wbr> per `/`/`\` separator, each
- * sitting immediately after its separator, and no injected zero-width chars.
- */
-function assertTokenBreaks(token: string, scope: ParentNode = document.body): void {
-  const text = scope.textContent ?? ''
-  expect(text).toContain(token)
-  expect(text).not.toContain('\u200b')
-  expect(text).not.toContain('\u200c')
-  expect(text).not.toContain('\u200d')
-  expect(text).not.toContain('\ufeff')
-  const span = Array.from(scope.querySelectorAll('span')).find((s) => s.textContent === token)
-  expect(span).not.toBeUndefined()
-  const wbrs = span!.querySelectorAll('wbr')
-  expect(wbrs.length).toBe((token.match(/[/\\]/g) ?? []).length)
-  for (const wbr of wbrs) {
-    const prev = (wbr.previousSibling?.textContent ?? '').slice(-1)
-    expect(prev === '/' || prev === '\\').toBe(true)
-  }
 }
 
 beforeEach(() => {
