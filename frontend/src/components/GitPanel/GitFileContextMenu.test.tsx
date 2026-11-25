@@ -29,6 +29,7 @@ vi.mock('@/stores/fileViewerStore', () => ({
 }))
 
 import { GitFileContextMenu } from './GitFileContextMenu'
+import { assertCopySafe } from '@/test/wrapAssertions'
 import { useProjectStore } from '@/stores/projectStore'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
@@ -138,25 +139,10 @@ describe('GitFileContextMenu — Discard changes dialog', () => {
     const span = discardPathSpan(content)
 
     // Copy-safety: the accessible text is byte-identical to the path — a copy
-    // of the dialog text must never gain or lose a character. (textContent
-    // equality also rules out zero-width wrap characters.)
-    expect(span.textContent).toBe(LONG_PATH)
-    expect([...(span.textContent ?? '')]).not.toContain('\u200b')
-
-    // One <wbr> per separator, each immediately after its separator, in order.
-    const wbrs = span.querySelectorAll('wbr')
-    expect(wbrs.length).toBe(SEPARATOR_COUNT)
+    // of the dialog text must never gain or lose a character — and <wbr>s sit
+    // only after separators.
+    assertCopySafe(LONG_PATH, span)
     expect(SEPARATOR_COUNT).toBeGreaterThan(0)
-    let text = ''
-    for (const node of Array.from(span.childNodes)) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent ?? ''
-        continue
-      }
-      expect(node.nodeName.toLowerCase()).toBe('wbr')
-      expect(text).toMatch(/[/\\]$/)
-    }
-    expect(text).toBe(LONG_PATH)
 
     // The display classes moved from the old plain span onto PathWithBreaks.
     expect(span.classList.contains('font-mono')).toBe(true)

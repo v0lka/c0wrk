@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import type { FileEntry } from '@/types/models'
 import { PathWithBreaks } from '@/lib/wrapPath'
+import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
 
 interface FileTreeDeleteConfirmDialogProps {
   /** The tree entry pending deletion; null keeps the dialog closed. */
@@ -42,7 +43,7 @@ export function FileTreeDeleteConfirmDialog({
         if (!o && !deleting) onClose()
       }}
     >
-      <DialogContent className="sm:max-w-md" showCloseButton={false}>
+      <DialogContent className="sm:max-w-md" showCloseButton={false} style={WRAP_ANYWHERE}>
         <DialogHeader>
           <div className="flex items-center gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15">

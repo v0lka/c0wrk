@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { PathWithBreaks } from '@/lib/wrapPath'
+import { WRAP_ANYWHERE } from '@/lib/wrapAnywhere'
 import type { PendingSessionAction } from '@/hooks/useSessionActions'
 
 interface SessionActionConfirmDialogProps {
@@ -35,7 +36,7 @@ export function SessionActionConfirmDialog({ pending, onConfirm, onCancel }: Ses
   const noun = groupSize === 1 ? 'session' : 'sessions'
   return (
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" style={WRAP_ANYWHERE}>
         <DialogHeader>
           <DialogTitle>
             {isGroup

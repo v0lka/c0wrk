@@ -27,3 +27,35 @@ export function assertTokenBreaks(token: string, scope: ParentNode = document.bo
     expect(prev === '/' || prev === '\\').toBe(true)
   }
 }
+
+/**
+ * Stronger copy-safety assertion for one rendered span: walks its DOM in
+ * order, replaying the character stream a user would select/copy. Every text
+ * node must match the source at its offset; every `<wbr>` must sit
+ * immediately after a `/` or `\` — which keeps `textContent` char-identical
+ * to the input path, since a `<wbr>` contributes no characters at all
+ * (implying no injected zero-width characters either). Used by the unit tests
+ * of PathWithBreaks and by dialog/menu tests that render it.
+ */
+export function assertCopySafe(path: string, span: HTMLElement): void {
+  expect(span.textContent).toBe(path)
+  let offset = 0
+  let wbrCount = 0
+  for (const node of Array.from(span.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? ''
+      expect(path.startsWith(text, offset)).toBe(true)
+      offset += text.length
+    } else {
+      expect(node.nodeType).toBe(Node.ELEMENT_NODE)
+      expect((node as Element).tagName).toBe('WBR')
+      wbrCount++
+      expect(offset).toBeGreaterThan(0)
+      expect(path[offset - 1]).toMatch(/[/\\]/)
+    }
+  }
+  expect(offset).toBe(path.length)
+  const separators = path.match(/[/\\]/g) ?? []
+  expect(wbrCount).toBe(separators.length)
+  expect(span.querySelectorAll('wbr')).toHaveLength(wbrCount)
+}

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { PathWithBreaks } from './wrapPath'
+import { assertCopySafe } from '@/test/wrapAssertions'
 
 describe('PathWithBreaks', () => {
   let container: HTMLElement
@@ -25,36 +26,6 @@ describe('PathWithBreaks', () => {
     })
     expect(container.children).toHaveLength(1)
     return container.firstElementChild as HTMLElement
-  }
-
-  /**
-   * Copy-safety assertion: walks the rendered DOM in order, replaying the
-   * character stream a user would select/copy. Every text node must match the
-   * source at its offset; every `<wbr>` must sit immediately after a `/` or
-   * `\` — which keeps `textContent` char-identical to the input path, since a
-   * `<wbr>` contributes no characters at all.
-   */
-  function assertCopySafe(path: string, span: HTMLElement) {
-    expect(span.textContent).toBe(path)
-    let offset = 0
-    let wbrCount = 0
-    for (const node of Array.from(span.childNodes)) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.textContent ?? ''
-        expect(path.startsWith(text, offset)).toBe(true)
-        offset += text.length
-      } else {
-        expect(node.nodeType).toBe(Node.ELEMENT_NODE)
-        expect((node as Element).tagName).toBe('WBR')
-        wbrCount++
-        expect(offset).toBeGreaterThan(0)
-        expect(path[offset - 1]).toMatch(/[/\\]/)
-      }
-    }
-    expect(offset).toBe(path.length)
-    const separators = path.match(/[/\\]/g) ?? []
-    expect(wbrCount).toBe(separators.length)
-    expect(span.querySelectorAll('wbr')).toHaveLength(wbrCount)
   }
 
   it('leaves a path without separators as a single untouched text node', () => {
