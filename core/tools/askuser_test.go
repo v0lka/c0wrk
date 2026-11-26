@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
+	sdkllm "github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -678,12 +680,7 @@ func TestAskUserTool_Schema_OptionDescriptionAdmitted(t *testing.T) {
 	}
 }
 
-// TestAskUserTool_Schema_OptionRecommendedRoutedToTool pins the deliberate
-// schema declaration of option-level `recommended` (ADR-133): the key is
-// admitted past Gate 1 — the generic unknown-parameter rejection cannot name
-// the question-level placement — so Execute itself produces the actionable
-// error (covered by TestAskUserTool_Execute_OptionRecommendedRejected).
-func TestAskUserTool_Schema_OptionRecommendedRoutedToTool(t *testing.T) {
+func TestAskUserTool_Schema_RejectsOptionRecommended(t *testing.T) {
 	tool := NewAskUserTool(nil)
 	input, _ := json.Marshal(map[string]any{
 		"questions": []map[string]any{
@@ -696,8 +693,57 @@ func TestAskUserTool_Schema_OptionRecommendedRoutedToTool(t *testing.T) {
 			},
 		},
 	})
-	if verr := sdktools.ValidateToolInput("ask_user", tool.InputSchema(), input); verr != nil {
-		t.Fatalf("option-level recommended must pass Gate 1 and reach Execute's specific rejection, got: %v", verr)
+	err := sdktools.ValidateToolInput(tool.Name(), tool.InputSchema(), input)
+	if err == nil || !strings.Contains(err.Error(), `questions[0].options[0]`) ||
+		!strings.Contains(err.Error(), `unknown parameter "recommended"`) {
+		t.Fatalf("expected an error at option-level recommended, got %v", err)
+	}
+}
+
+func TestAskUserTool_ResponsesSchema(t *testing.T) {
+	var got AskUserRequest
+	tool := NewAskUserTool(func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		got = req
+		return AskUserResponse{}, nil
+	})
+
+	type schemaNode struct {
+		Type       string                `json:"type"`
+		Properties map[string]schemaNode `json:"properties"`
+		Required   []string              `json:"required"`
+		Items      *schemaNode           `json:"items"`
+	}
+	var schema schemaNode
+	if err := json.Unmarshal(sdkllm.SanitizeSchemaForOpenAI(tool.InputSchema()), &schema); err != nil {
+		t.Fatal(err)
+	}
+	question := schema.Properties["questions"].Items
+	if question == nil {
+		t.Fatal("missing questions items schema")
+	}
+	option := question.Properties["options"].Items
+	if option == nil {
+		t.Fatal("missing options items schema")
+	}
+	if _, exists := option.Properties["recommended"]; exists || slices.Contains(option.Required, "recommended") {
+		t.Fatalf("strict option schema exposes recommended: %+v", option)
+	}
+	if recommended := question.Properties["recommended"]; recommended.Type != "array" ||
+		recommended.Items == nil || recommended.Items.Type != "string" ||
+		!slices.Contains(question.Required, "recommended") {
+		t.Fatalf("expected strict question schema to require an array of recommended values, got %+v", recommended)
+	}
+
+	input := json.RawMessage(`{"questions":[{"id":"q1","question":"REST or GraphQL?","options":[{"label":"REST","value":"rest","description":"Familiar tooling"}],"multi_select":false,"recommended":["rest"]}]}`)
+	if err := sdktools.ValidateToolInput(tool.Name(), tool.InputSchema(), input); err != nil {
+		t.Fatalf("strict Responses arguments failed pre-dispatch validation: %v", err)
+	}
+	result, err := tool.Execute(t.Context(), input)
+	if err != nil || result.IsError {
+		t.Fatalf("strict Responses arguments failed execution: %+v, %v", result, err)
+	}
+	if len(got.Questions) != 1 || !slices.Equal(got.Questions[0].Recommended, []string{"rest"}) {
+		t.Fatalf("expected the question-level recommendation in the callback, got %+v", got)
 	}
 }
 

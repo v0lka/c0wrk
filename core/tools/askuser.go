@@ -51,10 +51,7 @@ func NewAskUserTool(fn AskUserFunc) *AskUserTool {
 								"properties": {
 									"label": {"type": "string", "description": "Display label for the option"},
 									"value": {"type": "string", "description": "Unique non-empty value identifier for the option. Must be unique within the question — do NOT reuse the same value across options."},
-									"description": {"type": "string", "description": "Optional one-line hint shown under the option label in the ask-user form"},
-									"recommended": {
-										"description": "Not accepted inside an option — always rejected; put recommended at the question level"
-									}
+									"description": {"type": "string", "description": "Optional one-line hint shown under the option label in the ask-user form"}
 								},
 								"required": ["label", "value"]
 							},

@@ -12,11 +12,8 @@ type AskUserOption struct {
 	// Description is an optional one-line hint rendered under the option's
 	// label in the ask-user form (muted, never part of the answer payload).
 	Description string `json:"description,omitempty"`
-	// Recommended is never consumed: the JSON schema declares the key at the
-	// option level ONLY so the closed-set pre-dispatch validator does not
-	// preempt the tool's own rejection — which names the question-level
-	// placement — with its generic unknown-parameter error. Execute turns a
-	// present key into that actionable validation error. See ADR-133.
+	// Recommended lets Execute reject misplaced values in direct calls.
+	// See specs/decisions/135-ask-user-responses-schema.md.
 	Recommended json.RawMessage `json:"recommended,omitempty"`
 }
 

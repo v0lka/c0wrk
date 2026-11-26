@@ -116,6 +116,8 @@ Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder`
 
 The `ask_user` tool and its UI types (`AskUserFunc`, `AskUserRequest`, `AskUserResponse`, `AskUserQuestion`, `AskUserAnswer`, `AskUserOption`) live in `core/tools/` — they were moved out of sp4rk per ADR-011 because they are host-application UI concerns. The tool is registered only when an `ask_user` func is provided.
 
+Each option has a `label`, a `value`, and an optional display-only `description`. The question-level `recommended` array contains the values of recommended options. The closed option schema rejects misplaced `recommended` keys during pre-dispatch validation. See [ADR-133](../../decisions/133-ask-user-option-descriptions.md) and [ADR-135](../../decisions/135-ask-user-responses-schema.md).
+
 ## Goal-Mode Tools (`propose_goal`, `declare_goal_status`, `declare_verification`)
 
 Goal mode adds three system-group coordination tools (`ToolGroup: sdktools.GroupSystem` — they bypass policy and the tool judge because they are coordination primitives, not user-facing capabilities). They are safe to register unconditionally and are no-ops outside a goal-mode run (the context value they read is nil).

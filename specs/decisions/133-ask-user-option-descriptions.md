@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-135](135-ask-user-responses-schema.md)
 
 ## Context
 
