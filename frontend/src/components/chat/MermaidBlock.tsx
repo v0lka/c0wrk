@@ -5,6 +5,7 @@ import { useThemeStore, selectActiveThemeType } from '@/stores/themeStore'
 import { Button } from '@/components/ui/button'
 import { DEFAULT_ZOOM_STEP, INITIAL_VIEW, usePanZoom } from '@/lib/usePanZoom'
 import { generateUUID } from '@/lib/ids'
+import { mermaidRenderConfig } from '@/lib/mermaidConfig'
 
 interface MermaidBlockProps {
   code: string
@@ -54,24 +55,9 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
       try {
         const { default: mermaid } = await import('mermaid')
         if (cancelled) return
-        mermaid.initialize({
-          startOnLoad: false,
-          // Pin 'strict' so mermaid encodes HTML and strips scripts in the
-          // generated SVG. The output is injected via dangerouslySetInnerHTML
-          // from attacker-controllable (assistant) input — never use 'loose'.
-          securityLevel: 'strict',
-          theme: theme === 'light' ? 'default' : 'dark',
-          // Render labels as SVG <text> instead of HTML inside <foreignObject>.
-          // The DOMPurify sink below uses the svg-only profile, which strips
-          // <foreignObject> and all of its HTML children. Mermaid defaults to
-          // htmlLabels:true, so without this every node/edge label would be
-          // emitted as HTML inside <foreignObject> and then deleted by the
-          // sanitizer — the diagram shapes stay visible but the text vanishes.
-          // SVG <text> survives the sanitizer and is colored via the embedded
-          // <style> (.nodeLabel fill), and it keeps a tighter injection surface
-          // (no HTML ever reaches the SVG).
-          flowchart: { htmlLabels: false },
-        })
+        // See mermaidRenderConfig for why htmlLabels:false (root-level) is a
+        // hard requirement: the svg-only DOMPurify sink strips <foreignObject>.
+        mermaid.initialize(mermaidRenderConfig(theme))
         renderId = `mermaid-${generateUUID()}`
         const { svg } = await mermaid.render(renderId, code.trim())
         if (cancelled) return
@@ -80,7 +66,8 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         // (mermaid depends on it). The svg-only profile strips <script>,
         // on* handlers, and any stray <foreignObject>/HTML payload before the
         // SVG reaches the dangerouslySetInnerHTML sink — which is exactly why
-        // htmlLabels must be false above, so labels are plain SVG <text>.
+        // mermaidRenderConfig pins htmlLabels:false, so labels are plain SVG
+        // <text>.
         setSvgHtml(
           DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }),
         )
