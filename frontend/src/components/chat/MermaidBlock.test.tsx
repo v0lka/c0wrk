@@ -102,15 +102,17 @@ describe('MermaidBlock', () => {
     expect(config.securityLevel).toBe('strict')
   })
 
-  it('disables flowchart htmlLabels so labels survive DOMPurify', async () => {
+  it('disables HTML labels at the root level so labels survive DOMPurify', async () => {
     renderMock.mockResolvedValue({ svg: SVG })
     await render('graph TD\nA-->B')
     const call = initializeMock.mock.calls[0]
-    const config = (call?.[0] ?? {}) as { flowchart?: { htmlLabels?: boolean } }
+    const config = (call?.[0] ?? {}) as { htmlLabels?: boolean }
     // Labels must render as SVG <text>, not HTML inside <foreignObject>: the
     // DOMPurify svg-only sink strips <foreignObject> + its HTML children, so
     // the default htmlLabels:true would delete every label (text invisible).
-    expect(config.flowchart?.htmlLabels).toBe(false)
+    // It must be the root-level key: mermaid 11's flowchart vertex-label path
+    // ignores the deprecated flowchart.htmlLabels and reads only this one.
+    expect(config.htmlLabels).toBe(false)
   })
 
   it('sanitizes the mermaid SVG output before injecting it', async () => {
