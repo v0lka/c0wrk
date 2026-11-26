@@ -231,6 +231,12 @@ go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
+On Windows the directory is `%USERPROFILE%\go\bin`, which is not on `PATH` by default either. Append it to your user `PATH` from PowerShell, then open a new terminal:
+
+```powershell
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$(go env GOPATH)\bin", 'User')
+```
+
 Then install the native libraries for your platform:
 
 - **Linux** — the WebKitGTK 4.1 / GTK 3 / X11 development packages listed in [Linux build dependencies](#linux-build-dependencies).
@@ -405,7 +411,10 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 - **Config not detected**: ensure the file is exactly at `~/.c0wrk/config.yaml`.
 - **App fails after build due to missing ONNX library**: run `make fetch-onnx`.
 - **Missing embedding model files**: run `make fetch-embedding-model`.
-- **`make: wails: No such file or directory`** (exit code 127) from `make dev-desktop` / `make build`, or **`make: golangci-lint: No such file or directory`** from `make lint`: the tool is not installed or not on `PATH`. Install it and add `$(go env GOPATH)/bin` to `PATH` — see [Install the toolchain](#2-install-the-toolchain).
+- **`wails` or `golangci-lint` not found**: the tool is not installed or not on `PATH`. Install it and add `$(go env GOPATH)/bin` to `PATH` — see [Install the toolchain](#2-install-the-toolchain). The message depends on the target and platform, and in every case `make` itself exits with status 2:
+  - `make dev-desktop` / `make lint`: `make: wails: No such file or directory` (or `make: golangci-lint: …`), followed by `make: *** [...] Error 127` (`Error 1` on macOS's stock GNU Make 3.81).
+  - `make build`: its quoted `-ldflags` argument sends the recipe through `/bin/sh`, so the shell reports it instead — `/bin/sh: wails: command not found` (`/bin/sh: 1: wails: not found` where `/bin/sh` is dash, as on Debian/Ubuntu), followed by `Error 127`.
+  - Windows (`./build.ps1`): PowerShell reports `The term 'wails' is not recognized …`; add `%USERPROFILE%\go\bin` to `PATH` as shown in the same step.
 - **`make dev-frontend` shows only the splash screen**: expected — it runs Vite alone, with no Wails runtime behind it. Use `make dev-desktop` for the full desktop loop.
 - **`wails dev` prints `Package 'webkit2gtk-4.0' not found` and never opens a window**: pass the Linux build tag (`wails dev -tags webkit2_41`), or just use `make dev-desktop`, which applies it for you. The command deliberately keeps running after a failed build, so the missing window is the only symptom.
 - **Generated Wails bindings drift** (`frontend/wailsjs/go/desktop/App.*`): regenerate via `wails build` or `wails dev` (do not hand-edit generated files).
