@@ -64,7 +64,7 @@ export function VectorIndexDevicePicker({
 }: VectorIndexDevicePickerProps) {
   const pinned = pinnedReason !== undefined
   const controlDisabled = disabled || pinned
-  const useDropdown = gpus.length > 0
+  const showDeviceDropdown = gpus.length > 0
   const options = gpus.map((gpu) => ({
     value: optionValue(gpu),
     label:
@@ -91,7 +91,7 @@ export function VectorIndexDevicePicker({
         <div className="flex h-9 items-center rounded-md border border-input bg-background px-3 text-sm text-muted-foreground">
           Detecting GPUs...
         </div>
-      ) : useDropdown ? (
+      ) : showDeviceDropdown ? (
         <Combobox
           ariaLabel="Embedder GPU device"
           value={selectedValue}
@@ -121,11 +121,11 @@ export function VectorIndexDevicePicker({
             ? 'Device applies only when the provider resolves to a GPU; CPU ignores it.'
             : !gpusLoaded
               ? 'Probing the drivers for visible GPUs...'
-              : useDropdown
+              : showDeviceDropdown
                 ? 'Driver-reported NVIDIA and Intel GPUs. The index is the ONNX device id used by the config, scoped to the execution provider.'
                 : 'No GPUs reported — enter the ONNX device index directly (0 = first GPU).'}
       </p>
-      {probeError && !useDropdown && <p className="text-xs text-warning">{probeError}</p>}
+      {probeError && !showDeviceDropdown && <p className="text-xs text-warning">{probeError}</p>}
       {error && !disabled && (
         <p className="text-xs text-destructive" role="alert">
           {error}

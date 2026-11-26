@@ -47,8 +47,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { getUiZoomFactor } from '@/stores/uiScaleStore'
 import { TOOLTIP_DELAY_MS } from '@/components/ui/tooltip'
 import { MentionInfoTooltip } from '@/components/chat/MentionInfoTooltip'
-import { getLayoutViewport, type BoxSize } from './layoutSpace'
-import type { CursorAnchor } from './cursorMenuPosition'
+import { getLayoutViewport, type BoxSize, type CursorAnchor } from './cursorMenuPosition'
 
 /** A `/`-mention completion carrying its full markdown description. */
 export type MentionCompletion = Completion & { mentionMarkdown?: string }

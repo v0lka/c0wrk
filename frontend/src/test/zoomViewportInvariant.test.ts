@@ -21,10 +21,12 @@
 // and `getBoundingClientRect()` report VISUAL px (layout px × zoom). Writing a
 // pointer coordinate straight into a fixed panel's `left`/`top` therefore
 // displaces it from the cursor by `coordinate × (zoom − 1)`. Pointer-anchored
-// panels must route through `lib/cursorMenuPosition` (or, for a
-// trigger-anchored dropdown, `lib/layoutSpace`), which converts to layout px
-// and fits the panel inside the visible window. See `lib/layoutSpace.ts` for
-// the measured coordinate model.
+// panels must route through `lib/cursorMenuPosition`, which converts to layout
+// px and fits the panel inside the visible window (the VISUAL-vs-LAYOUT
+// coordinate model is specified in `specs/domains/frontend/ui-scale.md`).
+// Trigger-anchored popovers and menus position through the Radix primitives
+// (`components/ui/popover`, `components/ui/dropdown-menu`) instead of manual
+// placement math.
 
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -168,7 +170,7 @@ const VIEWPORT_UNIT_UTILITY =
  * while the property it lands in is LAYOUT px, so the panel opens away from the
  * cursor by `coordinate × (zoom − 1)`. Route it through
  * `lib/cursorMenuPosition` instead. (`left: position.left` — already layout px,
- * e.g. from `lib/dropdownPosition` — deliberately does not match.)
+ * e.g. from `useCursorMenuPosition` — deliberately does not match.)
  */
 const RAW_ANCHOR_POSITION = /(?:^|[^-\w])(?:left|top)\s*:[^,;{}\n]*\.(?:clientX|clientY|x|y)\b/
 

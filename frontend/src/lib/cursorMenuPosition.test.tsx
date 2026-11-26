@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import {
   CURSOR_MENU_MARGIN,
   computeCursorMenuPlacement,
+  getLayoutViewport,
   useCursorMenuPosition,
 } from './cursorMenuPosition'
 import { useUiScaleStore } from '@/stores/uiScaleStore'
@@ -233,5 +234,51 @@ describe('useCursorMenuPosition', () => {
       expect(left + panelSize.width).toBeLessThanOrEqual(VIEWPORT.width)
       expect(top + panelSize.height).toBeLessThanOrEqual(VIEWPORT.height)
     }
+  })
+})
+
+describe('getLayoutViewport', () => {
+  // jsdom reports no geometry; the viewport extent is stubbed so the
+  // conversion can be asserted against concrete numbers.
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+
+  const setViewport = (width: number, height: number): void => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: height })
+  }
+
+  beforeEach(() => {
+    setViewport(1000, 800)
+    useUiScaleStore.setState({ scale: 100 })
+  })
+
+  afterEach(() => {
+    useUiScaleStore.setState({ scale: 100 })
+    if (originalInnerWidth) Object.defineProperty(window, 'innerWidth', originalInnerWidth)
+    if (originalInnerHeight) Object.defineProperty(window, 'innerHeight', originalInnerHeight)
+  })
+
+  it('is the identity at scale 100', () => {
+    expect(getLayoutViewport()).toEqual({ width: 1000, height: 800 })
+  })
+
+  it('divides the VISUAL viewport by the zoom factor', () => {
+    // window.innerWidth/innerHeight are visual px; a fixed element's
+    // left/top are layout px, so the layout viewport is the inner size / zoom.
+    useUiScaleStore.setState({ scale: 150 })
+    expect(getLayoutViewport()).toEqual({ width: 1000 / 1.5, height: 800 / 1.5 })
+
+    useUiScaleStore.setState({ scale: 50 })
+    expect(getLayoutViewport()).toEqual({ width: 2000, height: 1600 })
+  })
+
+  it('accepts an explicit zoom (pure, no store read)', () => {
+    expect(getLayoutViewport(2)).toEqual({ width: 500, height: 400 })
+  })
+
+  it('falls back to zoom 1 on corrupted persisted scale', () => {
+    useUiScaleStore.setState({ scale: Number.NaN })
+    expect(getLayoutViewport()).toEqual({ width: 1000, height: 800 })
   })
 })

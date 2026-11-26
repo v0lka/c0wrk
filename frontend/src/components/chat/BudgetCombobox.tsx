@@ -1,9 +1,6 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
-import { useDropdown } from '@/hooks/useDropdown'
-import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
-import { getLayoutViewport, toLayoutTriggerRect } from '@/lib/layoutSpace'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
 interface BudgetPreset {
@@ -61,13 +58,6 @@ function parseMaxTurns(value: string): number | null {
   }
 }
 
-// Portal positioning constants — mirror ModelCombobox so the menu opens upward
-// in the toolbar and is never clipped by the input's overflow-hidden ancestor.
-const MAX_DROPDOWN_HEIGHT = 256
-const MIN_WIDTH = 160
-const GAP = 6
-const Z_INDEX = 50
-
 /**
  * BudgetCombobox selects a goal budget override for the next sent message. It
  * offers a small set of turn-cap presets (∞ unlimited default, 3/5/10 turns)
@@ -76,18 +66,17 @@ const Z_INDEX = 50
  *
  * Only meaningful when goal mode is enabled — the parent hides it otherwise.
  *
- * The menu is rendered through a React portal to `document.body` with
- * `position: fixed` so it is never clipped by the message input area's
- * overflow-hidden ancestor (mirrors ModelCombobox).
+ * The menu is built on the project's Radix `popover` primitives (Popover, not
+ * Menu — the panel embeds a custom input row). Radix portals the content to
+ * <body> and positions it with the popper (collision-aware, zoom-patched
+ * globally), so the panel escapes the message input area's overflow-hidden
+ * ancestor and is never clipped when the input panel is at its minimum height.
  */
 export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
   const goalBudget = useInputModeStore((s) => s.goalBudget)
   const setGoalBudget = useInputModeStore((s) => s.setGoalBudget)
-  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown(disabled)
-
-  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [isOpen, setIsOpen] = useState(false)
   const customInputRef = useRef<HTMLInputElement>(null)
-  const [position, setPosition] = useState<DropdownPosition | null>(null)
   const [customValue, setCustomValue] = useState<string>('')
 
   const displayLabel = labelFor(goalBudget)
@@ -98,62 +87,21 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
     if (isOpen) {
       const current = parseMaxTurns(goalBudget)
       setCustomValue(current !== null && current > 0 ? String(current) : '')
-      // Focus the input on next tick so the menu has measured its position.
-      requestAnimationFrame(() => customInputRef.current?.focus())
     }
   }, [isOpen, goalBudget])
 
-  // Position the portaled menu whenever it is open, recomputing on resize and
-  // any scroll (capture phase so nested scroll containers are covered too).
-  useLayoutEffect(() => {
-    if (!isOpen) {
-      setPosition(null)
-      return
-    }
+  // Force-close when the selector locks. Radix keeps an open portaled panel
+  // open when its trigger turns disabled, and the portaled content mounts on
+  // <body> — outside the chat toolbar's `pointer-events-none` lock wrapper —
+  // so without this a panel open across a lock transition (pause/compaction/
+  // auto-resume flipping the toolbar's selectorsLocked) would stay fully
+  // interactive past the lock. Restores the close-on-disabled-flip invariant
+  // the pre-Radix useDropdown hook pinned.
+  useEffect(() => {
+    if (disabled) setIsOpen(false)
+  }, [disabled])
 
-    const recompute = () => {
-      const trigger = triggerRef.current
-      if (!trigger) return
-      // getBoundingClientRect() and window.innerWidth/innerHeight report VISUAL
-      // px (magnified by the UI-scale `zoom` on <html>), while the menu's
-      // style.left/top are LAYOUT px. `toLayoutTriggerRect`/`getLayoutViewport`
-      // move the viewport-derived inputs into layout px (offsetHeight already
-      // is) so the menu lands where intended at any scale — a raw visual rect
-      // would displace it by `coordinate × (zoom − 1)`.
-      const rect = trigger.getBoundingClientRect()
-      const menu = menuRef.current
-      const dropdownHeight = menu && menu.offsetHeight > 0 ? menu.offsetHeight : MAX_DROPDOWN_HEIGHT
-      const viewport = getLayoutViewport()
-      setPosition(
-        computeDropdownPosition({
-          triggerRect: toLayoutTriggerRect({
-            top: rect.top,
-            bottom: rect.bottom,
-            left: rect.left,
-            width: rect.width,
-          }),
-          dropdownHeight,
-          viewportHeight: viewport.height,
-          viewportWidth: viewport.width,
-          gap: GAP,
-          minWidth: MIN_WIDTH,
-        }),
-      )
-    }
-
-    recompute()
-    window.addEventListener('resize', recompute)
-    window.addEventListener('scroll', recompute, true)
-    return () => {
-      window.removeEventListener('resize', recompute)
-      window.removeEventListener('scroll', recompute, true)
-    }
-  }, [isOpen, menuRef])
-
-  const close = () => {
-    setIsOpen(false)
-    triggerRef.current?.focus()
-  }
+  const close = () => setIsOpen(false)
 
   // Apply a typed turn count. Guards against NaN and <= 0 (ignored). Commits
   // the goal.GoalBudget JSON and closes the menu, mirroring preset selection.
@@ -165,38 +113,40 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
   }
 
   return (
-    <div className="relative shrink-0" ref={containerRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        disabled={disabled}
-        className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[140px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
-        onClick={() => setIsOpen((v) => !v)}
-        onKeyDown={(e) => { if (e.key === 'Escape' && isOpen) { e.stopPropagation(); close() } }}
-        title={disabled ? 'Locked while the session is running' : `Budget: ${displayLabel}`}
-        aria-label="Select goal budget"
-      >
-        <span className="truncate">{displayLabel}</span>
-        <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
+    <div className="relative shrink-0">
+      <Popover open={isOpen} onOpenChange={setIsOpen}>
+        <PopoverTrigger asChild disabled={disabled}>
+          <button
+            type="button"
+            disabled={disabled}
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[140px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
+            title={disabled ? 'Locked while the session is running' : `Budget: ${displayLabel}`}
+            aria-label="Select goal budget"
+          >
+            <span className="truncate">{displayLabel}</span>
+            <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        </PopoverTrigger>
 
-      {isOpen && createPortal(
-        <div
-          ref={menuRef}
+        <PopoverContent
           role="listbox"
           aria-label="Select goal budget"
-          className="rounded-md border bg-popover shadow-md max-h-64 overflow-y-auto custom-scrollbar"
-          style={{
-            position: 'fixed',
-            top: position?.top ?? 0,
-            left: position?.left ?? 0,
-            width: position?.width ?? MIN_WIDTH,
-            visibility: position ? 'visible' : 'hidden',
-            zIndex: Z_INDEX,
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          className="w-40 p-0"
+          // The chat input's own Escape handling must not also fire while the
+          // menu consumes the keystroke to close itself (Radix still closes).
+          onEscapeKeyDown={(e) => e.stopPropagation()}
+          // Radix moves focus to the first focusable node in the content (the
+          // first preset button) by default; the custom turn-count input is the
+          // intended landing spot so typing starts immediately.
+          onOpenAutoFocus={(e) => {
+            e.preventDefault()
+            customInputRef.current?.focus()
           }}
-          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); close() } }}
         >
           {BUDGET_PRESETS.map((preset) => {
             const isSelected = goalBudget === preset.value
@@ -208,7 +158,7 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
                   'flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted',
                   isSelected && 'bg-primary/10 font-medium',
                 )}
-                onClick={() => { setGoalBudget(preset.value); setIsOpen(false) }}
+                onClick={() => { setGoalBudget(preset.value); close() }}
                 title={`Set the goal budget to ${preset.label}`}
               >
                 <span className="flex-1 text-left">{preset.label}</span>
@@ -219,8 +169,8 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
             )
           })}
 
-          {/* Custom turn-count input. Lives at the bottom of the portaled
-              menu; confirming a positive integer sets {"max_turns":N}. */}
+          {/* Custom turn-count input. Lives at the bottom of the menu;
+              confirming a positive integer sets {"max_turns":N}. */}
           <div className="border-t border-border px-3 py-1.5">
             <div className="flex items-center gap-1.5">
               <input
@@ -251,9 +201,8 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
               </button>
             </div>
           </div>
-        </div>,
-        document.body,
-      )}
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }

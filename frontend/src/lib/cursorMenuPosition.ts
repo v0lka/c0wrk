@@ -2,8 +2,7 @@
  * Placement of a pointer-anchored floating panel (context menu, cursor menu).
  *
  * Two problems are solved here, both caused by the app-wide UI scale being
- * applied as CSS `zoom` on `<html>` (see `layoutSpace.ts` for the measured
- * coordinate model):
+ * applied as CSS `zoom` on `<html>`:
  *
  * 1. **Unit mismatch.** `MouseEvent.clientX/clientY` reports VISUAL px
  *    (layout px × zoom), while `style.left/top` on a `position: fixed`
@@ -21,11 +20,33 @@
  *    {@link computeCursorMenuPlacement} measures it against the visible window
  *    and opens it to the left of / above the cursor when that is the side with
  *    room, then clamps as a last resort so the panel stays fully visible.
+ *
+ * Coordinate spaces (§ Coordinate model in `specs/domains/frontend/ui-scale.md`
+ * — the single source of truth): pointer coordinates, `getBoundingClientRect()`
+ * and `window.innerWidth/innerHeight` are VISUAL px (LAYOUT px × zoom Z), while
+ * `style.left/top`, `offsetWidth/offsetHeight` and transforms are LAYOUT px.
+ * Every VISUAL-px measurement is divided by the live `Z` here before it feeds
+ * `style.left/top` or a box-size comparison.
  */
 
 import { useLayoutEffect, useState, type RefObject } from 'react'
 import { getUiZoomFactor } from '@/stores/uiScaleStore'
-import { getLayoutViewport, type BoxSize } from './layoutSpace'
+
+/** A width/height pair. */
+export interface BoxSize {
+  width: number
+  height: number
+}
+
+/**
+ * The visible window in LAYOUT px — what a `position: fixed` element's
+ * `left/top` and `offsetWidth/offsetHeight` are measured against. The zoom
+ * factor is read live through {@link getUiZoomFactor} at every call — never
+ * cached, so a scale change is picked up by the next recompute.
+ */
+export function getLayoutViewport(zoom: number = getUiZoomFactor()): BoxSize {
+  return { width: window.innerWidth / zoom, height: window.innerHeight / zoom }
+}
 
 /** Viewport-space pointer coordinates from `MouseEvent.clientX/clientY` — VISUAL px. */
 export interface CursorAnchor {

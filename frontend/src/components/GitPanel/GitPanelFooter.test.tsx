@@ -21,6 +21,7 @@ import { GitPanelFooter } from './GitPanelFooter'
 import { useGitPanelStore, selectLastOperation } from '@/stores/gitPanelStore'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { withVirtualTimers } from '@/test/virtualTime'
 
 let container: HTMLDivElement
 let root: Root
@@ -174,31 +175,35 @@ describe('GitPanelFooter — log popover dismissal', () => {
     expect(panel()).toBeNull()
   })
 
-  it('closes on an outside click', () => {
+  it('closes on an outside click', async () => {
     seed()
     render()
-    act(() => {
+    // The click rides the virtual-time window: Radix's outside-interaction
+    // listener attaches from a setTimeout(0) and fires deterministically
+    // during the advance (see src/test/virtualTime.ts).
+    await withVirtualTimers(() => {
       logButton().click()
-    })
+    }, 10)
     expect(panel()).not.toBeNull()
 
+    // Radix's DismissableLayer dismisses on `pointerdown` outside the panel.
     act(() => {
-      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(panel()).toBeNull()
   })
 
-  it('stays open on a click inside the panel', () => {
+  it('stays open on a click inside the panel', async () => {
     seed()
     render()
-    act(() => {
+    await withVirtualTimers(() => {
       logButton().click()
-    })
+    }, 10)
     const p = panel()
     expect(p).not.toBeNull()
 
     act(() => {
-      p!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      p!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(panel()).not.toBeNull()
   })

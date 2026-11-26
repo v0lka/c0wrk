@@ -5,8 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { useShiftHeld } from './useShiftHeld'
 
 // Mutable handle the probe writes its hook state into on every render, so the
-// test can read the Shift state without DOM instrumentation (mirrors
-// useDropdown.test.tsx).
+// test can read the Shift state without DOM instrumentation.
 interface ProbeHandle {
   held: boolean
 }

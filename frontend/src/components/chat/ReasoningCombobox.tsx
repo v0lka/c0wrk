@@ -1,7 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
-import { useDropdown } from '@/hooks/useDropdown'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { cn } from '@/lib/utils'
 import { findModelInfo } from '@/lib/modelId'
 
 /**
@@ -18,6 +24,15 @@ import { findModelInfo } from '@/lib/modelId'
  * carry it) — never while the model list is still loading, or the wipe would
  * clobber the just-restored persisted value on every app start before the
  * async config fetch lands.
+ *
+ * The menu is built on the project's Radix `dropdown-menu` primitives (like
+ * ModelPickerMenu). Radix portals the content to <body> and positions it with
+ * the popper, so the option list escapes the chat input panel's own overflow:
+ * the inline `absolute bottom-full` menu it replaced was clipped whenever the
+ * input panel was at its minimum height. The menu is controlled (open state
+ * owned here) so it can force-close when the selector locks — a portaled
+ * panel is outside the toolbar's `pointer-events-none` lock wrapper and Radix
+ * would otherwise leave it open and clickable past the lock.
  */
 export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
@@ -25,7 +40,6 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
   const setSelectedReasoning = useInputModeStore((s) => s.setSelectedReasoning)
 
   const { allModels, defaultModel, loaded } = useConfigData()
-  const { isOpen, setIsOpen, containerRef } = useDropdown(disabled)
 
   // When selectedModel changes, reset reasoning if the new model's family doesn't support it.
   // selectedModel may be a composite "provider/name" id (see ModelCombobox) or
@@ -49,6 +63,19 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
     }
   }, [selectedModel, defaultModel, allModels, selectedReasoning, setSelectedReasoning])
 
+  // The menu is controlled so the lock effect below can own the open state —
+  // an uncontrolled Radix DropdownMenu would stay open when its trigger turns
+  // disabled. Force-close when the selector locks: the portaled content mounts
+  // on <body>, outside the chat toolbar's `pointer-events-none` lock wrapper,
+  // so a panel open across a lock transition (pause/compaction/auto-resume
+  // flipping the toolbar's selectorsLocked) would otherwise remain fully
+  // interactive past the lock. Restores the close-on-disabled-flip invariant
+  // the pre-Radix useDropdown hook pinned.
+  const [isOpen, setIsOpen] = useState(false)
+  useEffect(() => {
+    if (disabled) setIsOpen(false)
+  }, [disabled])
+
   // Find reasoning info for the effective model.
   const effectiveModel = selectedModel ?? defaultModel
   const modelInfo = findModelInfo(allModels, effectiveModel)
@@ -65,57 +92,60 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
   const displayLabel = selectedReasoning ?? 'Default (provider)'
 
   return (
-    <div className="relative shrink-0" ref={containerRef}>
-      <button
-        type="button"
-        disabled={disabled}
-        className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[150px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
-        onClick={() => setIsOpen((v) => !v)}
-        title={disabled ? 'Locked while the session is running' : `Reasoning: ${displayLabel}`}
-      >
-        <span className="truncate">{displayLabel}</span>
-        <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
+    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <button
+          type="button"
+          disabled={disabled}
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[150px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
+          title={disabled ? 'Locked while the session is running' : `Reasoning: ${displayLabel}`}
+        >
+          <span className="truncate">{displayLabel}</span>
+          <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+      </DropdownMenuTrigger>
 
-      {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-48 rounded-md border bg-popover shadow-md z-50 max-h-64 overflow-y-auto custom-scrollbar">
-          {/* Default option */}
-          <button
-            type="button"
-            className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${!selectedReasoning ? 'bg-primary/10 font-medium' : ''}`}
-            onClick={() => { setSelectedReasoning(null); setIsOpen(false) }}
-            title="No reasoning level is sent — the provider's server-side default applies"
-          >
-            <span className="flex-1 text-left">
-              Default (provider)
-            </span>
-            {!selectedReasoning && (
-              <span className="text-xs text-primary">active</span>
-            )}
-          </button>
+      <DropdownMenuContent align="start" className="w-48">
+        {/* Default option */}
+        <DropdownMenuItem
+          className={cn(
+            'gap-2 px-3 py-1.5 text-xs',
+            !selectedReasoning && 'bg-primary/10 font-medium',
+          )}
+          title="No reasoning level is sent — the provider's server-side default applies"
+          onSelect={() => setSelectedReasoning(null)}
+        >
+          <span className="flex-1 text-left">
+            Default (provider)
+          </span>
+          {!selectedReasoning && (
+            <span className="text-xs text-primary">active</span>
+          )}
+        </DropdownMenuItem>
 
-          {/* Specific options */}
-          {options.map((opt) => {
-            const isSelected = selectedReasoning === opt
-            return (
-              <button
-                key={opt}
-                type="button"
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${isSelected ? 'bg-primary/10 font-medium' : ''}`}
-                onClick={() => { setSelectedReasoning(opt); setIsOpen(false) }}
-                title={`Set reasoning effort to ${opt}`}
-              >
-                <span className="flex-1 text-left">{opt}</span>
-                {isSelected && (
-                  <span className="text-xs text-primary">selected</span>
-                )}
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </div>
+        {/* Specific options */}
+        {options.map((opt) => {
+          const isSelected = selectedReasoning === opt
+          return (
+            <DropdownMenuItem
+              key={opt}
+              className={cn(
+                'gap-2 px-3 py-1.5 text-xs',
+                isSelected && 'bg-primary/10 font-medium',
+              )}
+              title={`Set reasoning effort to ${opt}`}
+              onSelect={() => setSelectedReasoning(opt)}
+            >
+              <span className="flex-1 text-left">{opt}</span>
+              {isSelected && (
+                <span className="text-xs text-primary">selected</span>
+              )}
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

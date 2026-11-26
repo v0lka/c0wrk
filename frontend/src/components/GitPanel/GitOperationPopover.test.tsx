@@ -1,21 +1,33 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { act, createRef, type RefObject } from 'react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { GitOperationPopover } from './GitOperationPopover'
+import { GitOperationButton } from './GitOperationButton'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
+import { withVirtualTimers } from '@/test/virtualTime'
+
+// Radix popper positioning (autoUpdate) observes the trigger/content with
+// ResizeObserver, which jsdom does not provide.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
 
 let container: HTMLDivElement
 let root: Root
-let triggerRef: RefObject<HTMLButtonElement | null>
-let panelRef: RefObject<HTMLDivElement | null>
+let openState: boolean
+let lastRecord: GitOperationRecord | undefined
 
 beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  triggerRef = createRef<HTMLButtonElement>()
-  panelRef = createRef<HTMLDivElement>()
+  openState = false
 })
 
 afterEach(() => {
@@ -39,107 +51,165 @@ function record(overrides: Partial<GitOperationRecord> = {}): GitOperationRecord
   }
 }
 
-function render(rec: GitOperationRecord | undefined): void {
+/** Rerender with the given record/open state. The trigger is the real
+ *  `GitOperationButton` — the footer's exact trigger — so the aria/interaction
+ *  assertions below exercise the production `PopoverTrigger asChild` Slot
+ *  composition, not a stand-in button. */
+function render(rec: GitOperationRecord | undefined, open = openState): void {
+  lastRecord = rec
   act(() => {
     root.render(
-      <div>
-        <button ref={triggerRef} type="button">
-          trigger
-        </button>
-        <GitOperationPopover
-          record={rec}
-          id="test-log"
-          triggerRef={triggerRef}
-          panelRef={panelRef}
-        />
-      </div>,
+      <GitOperationPopover record={rec} open={open} onOpenChange={setOpen}>
+        <GitOperationButton record={rec} busy={false} />
+      </GitOperationPopover>,
     )
   })
 }
 
-// The panel is portaled to document.body, so it is NOT under `container`.
-function panel(): HTMLElement {
-  const el = document.querySelector<HTMLElement>('[role="dialog"]')
+/** Controlled-open mirror: exactly what the footer does with its own state. */
+function setOpen(next: boolean): void {
+  openState = next
+  render(lastRecord, next)
+}
+
+function content(): HTMLElement {
+  const el = document.body.querySelector<HTMLElement>('[data-slot="popover-content"]')
+  expect(el).not.toBeNull()
+  return el!
+}
+
+function trigger(): HTMLButtonElement {
+  const el = container.querySelector<HTMLButtonElement>('button')
   expect(el).not.toBeNull()
   return el!
 }
 
 function header(): HTMLElement {
-  const el = panel().querySelector<HTMLElement>('span')
+  const el = content().querySelector<HTMLElement>('span')
   expect(el).not.toBeNull()
   return el!
 }
 
 function pre(): HTMLElement {
-  const el = panel().querySelector<HTMLElement>('pre')
+  const el = content().querySelector<HTMLElement>('pre')
   expect(el).not.toBeNull()
   return el!
 }
 
-describe('GitOperationPopover — placement (zoom-safe, clipped-ancestor-proof)', () => {
-  it('is portaled to document.body and fixed-positioned (not an in-flow anchored panel)', () => {
-    render(record())
-    const el = panel()
+describe('GitOperationPopover — portal placement (clipped-ancestor-proof)', () => {
+  it('mounts the panel through the Radix portal outside the React tree', () => {
+    render(record(), true)
+    const el = content()
     // Portaled out of the component tree, so the Git panel's overflow-hidden
     // ancestor can never clip it or scroll under it.
     expect(container.contains(el)).toBe(false)
     expect(document.body.contains(el)).toBe(true)
-    expect(el.parentElement).toBe(document.body)
-    // Fixed positioning is applied via the computed style, not `absolute
-    // bottom-full left-0` classes (which would be clipped/scroll the panel).
-    expect(el.style.position).toBe('fixed')
-    expect(el.className).not.toContain('absolute')
-    expect(el.className).not.toContain('bottom-full')
+    // Radix owns the panel as a dialog.
+    expect(el.getAttribute('role')).toBe('dialog')
+    expect(el.getAttribute('aria-label')).toBe('Git operation log')
+    expect(el.id).not.toBe('')
   })
 
-  it('is layered above the app and capped so it never leaves the window', () => {
-    render(record())
-    const el = panel()
-    expect(el.style.zIndex).toBe('50')
-    // Height/width come from the layout-px placement computation (no raw
-    // viewport units), and the panel is capped in absolute (layout) px.
-    expect(el.style.maxHeight).not.toBe('')
-    expect(el.style.width).not.toBe('')
+  it('carries no manual positioning — geometry belongs to Radix/floating-ui', () => {
+    render(record(), true)
+    const el = content()
+    // No side-pinning classes (which would be clipped / scroll the panel).
+    for (const cls of ['absolute', 'fixed', 'top-0', 'left-0', 'bottom-full', 'left-full']) {
+      expect(el.className).not.toContain(cls)
+    }
+    // No inline geometry either: sizing is token/class-driven (w-96 and the
+    // Radix available-space caps), never computed px.
+    expect(el.style.width).toBe('')
+    expect(el.style.maxHeight).toBe('')
+    expect(el.className).toContain('w-96')
+    expect(el.className).toContain('max-h-[min(var(--radix-popover-content-available-height),22.5rem)]')
+    expect(el.className).toContain('max-w-(--radix-popover-content-available-width)')
+    // Anchored above, left-aligned to the trigger; layered above the app.
+    expect(el.getAttribute('data-side')).toBe('top')
+    expect(el.getAttribute('data-align')).toBe('start')
+    expect(el.className).toContain('z-50')
   })
 
   it('matches the app tooltip surface (bg-background), not the darker popover', () => {
-    render(record())
-    const cls = panel().className
+    render(record(), true)
+    const cls = content().className
     expect(cls).toContain('bg-background')
     expect(cls).not.toContain('bg-popover')
   })
 
   it('scrolls its body with the custom scrollbar', () => {
-    render(record())
+    render(record(), true)
     const cls = pre().className
     expect(cls).toContain('custom-scrollbar')
     expect(cls).toContain('overflow-auto')
   })
 })
 
+describe('GitOperationPopover — aria contract', () => {
+  it('wires the trigger to the panel: aria-controls, aria-expanded, haspopup', () => {
+    render(record(), true)
+    const el = content()
+    expect(trigger().getAttribute('aria-expanded')).toBe('true')
+    expect(trigger().getAttribute('aria-haspopup')).toBe('dialog')
+    // The trigger's `aria-controls` names the portaled panel's id.
+    expect(trigger().getAttribute('aria-controls')).toBe(el.id)
+    expect(el.getAttribute('data-state')).toBe('open')
+  })
+
+  it('reflects the closed state on the trigger', () => {
+    render(record(), false)
+    expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
+    expect(trigger().getAttribute('data-state')).toBe('closed')
+  })
+})
+
+describe('GitOperationPopover — trigger interaction', () => {
+  it('opens on trigger click and closes on Escape, restoring focus to the trigger', async () => {
+    render(record(), false)
+    expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
+
+    // Dispatch inside the virtual-time window: Radix's outside-interaction
+    // listener attaches from a setTimeout(0) after the content mounts and
+    // fires deterministically during the advance (see src/test/virtualTime.ts).
+    await withVirtualTimers(() => {
+      trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    }, 10)
+    expect(document.body.querySelector('[data-slot="popover-content"]')).not.toBeNull()
+    expect(trigger().getAttribute('data-state')).toBe('open')
+
+    await withVirtualTimers(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    }, 10)
+    expect(document.body.querySelector('[data-slot="popover-content"]')).toBeNull()
+    // Radix-managed focus: back on the trigger after the dismiss.
+    expect(document.activeElement).toBe(trigger())
+  })
+})
+
 describe('GitOperationPopover — header status and output', () => {
   it('shows a green header and the captured output on success', () => {
-    render(record({ ok: true, label: 'Pull', output: 'Already up to date.' }))
+    render(record({ ok: true, label: 'Pull', output: 'Already up to date.' }), true)
     expect(header().textContent).toBe('Pull')
     expect(header().className).toContain('text-success')
     expect(pre().textContent).toContain('Already up to date.')
-    expect(panel().querySelector('.text-success')).not.toBeNull()
+    expect(content().querySelector('.text-success')).not.toBeNull()
   })
 
   it('shows a red header and the failure message on error', () => {
-    render(record({ ok: false, label: 'Push', output: '', error: 'rejected: non-fast-forward' }))
+    render(record({ ok: false, label: 'Push', output: '', error: 'rejected: non-fast-forward' }), true)
     expect(header().textContent).toBe('Push')
     expect(header().className).toContain('text-destructive')
     expect(pre().textContent).toContain('rejected: non-fast-forward')
   })
 
   it('falls back to "No output" when a successful op captured nothing', () => {
-    render(record({ ok: true, output: '' }))
+    render(record({ ok: true, output: '' }), true)
     expect(pre().textContent).toBe('No output')
   })
 
   it('renders a neutral empty state when there is no record', () => {
-    render(undefined)
+    render(undefined, true)
     expect(header().textContent).toBe('No git operations yet')
     expect(header().className).toContain('text-muted-foreground')
     expect(pre().textContent).toBe('No output')
