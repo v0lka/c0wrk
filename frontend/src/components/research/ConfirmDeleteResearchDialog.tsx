@@ -2,12 +2,12 @@ import { Loader2, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import type { DeleteTarget } from './useResearchProjectActions'
 
 interface ConfirmDeleteResearchDialogProps {
@@ -41,7 +41,7 @@ export function ConfirmDeleteResearchDialog({
         if (!o && !deleting) onClose()
       }}
     >
-      <DialogContent className="sm:max-w-md" showCloseButton={false}>
+      <PathDialogContent className="sm:max-w-md" showCloseButton={false}>
         <DialogHeader>
           <div className="flex items-center gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15">
@@ -50,8 +50,10 @@ export function ConfirmDeleteResearchDialog({
             <div className="flex flex-col gap-1">
               <DialogTitle>Delete research project?</DialogTitle>
               <DialogDescription>
-                {target?.id} — {target?.title}. Its directory tree, index rows, and pins
-                are removed permanently. This cannot be undone.
+                {target && <PathWithBreaks path={target.id} />} —{' '}
+                {target && <PathWithBreaks path={target.title} />}. Its directory
+                tree, index rows, and pins are removed permanently. This cannot
+                be undone.
               </DialogDescription>
             </div>
           </div>
@@ -72,7 +74,7 @@ export function ConfirmDeleteResearchDialog({
             Delete
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </PathDialogContent>
     </Dialog>
   )
 }

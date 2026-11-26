@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { assertTokenBreaks } from '@/test/wrapAssertions'
 
 // --- Mock the git API + runtime + stores so tests never touch Wails ---
 const { gitMocks } = vi.hoisted(() => ({
@@ -363,6 +364,19 @@ describe('GitHistoryContextMenu — Reset', () => {
   it('labels the Reset submenu with the current branch name', () => {
     renderMenu({ refs: [], currentBranch: 'feature' })
     expect(findItem('Reset feature to This Commit')).toBeTruthy()
+  })
+
+  it('wraps the branch token in the hard-reset dialog at separators without altering the text', () => {
+    const longBranch = 'release/2.x/very/long/branch-name'
+    renderMenu({ refs: [], currentBranch: longBranch })
+    hoverSubTrigger('Reset')
+    clickItem('Hard')
+    const dialog = document.body.querySelector('[role="dialog"]') as HTMLElement
+    expect(dialog).toBeTruthy()
+    assertTokenBreaks(longBranch, dialog)
+    // Char-identical context in both the title and the description.
+    expect(dialog.textContent).toContain(`Hard reset ${longBranch}?`)
+    expect(dialog.textContent).toContain(`This will reset ${longBranch} to commit`)
   })
 })
 

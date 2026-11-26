@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import {
   Dialog,
@@ -577,15 +578,17 @@ export function GitHistoryContextMenu({
 
       {/* Hard reset confirmation dialog */}
       <Dialog open={resetConfirmOpen} onOpenChange={setResetConfirmOpen}>
-        <DialogContent showCloseButton={false} className="max-w-sm">
+        <PathDialogContent showCloseButton={false} className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-sm">
               <RotateCcw className="size-4 text-destructive" />
-              Hard reset {branchLabel}?
+              <span>
+                Hard reset <PathWithBreaks path={branchLabel} />?
+              </span>
             </DialogTitle>
             <DialogDescription>
               This will reset{' '}
-              <span className="font-mono text-foreground">{branchLabel}</span>{' '}
+              <PathWithBreaks path={branchLabel} className="font-mono text-foreground" />{' '}
               to commit{' '}
               <span className="font-mono text-foreground">
                 {resetTargetSha.slice(0, 7)}
@@ -616,7 +619,7 @@ export function GitHistoryContextMenu({
               Hard Reset
             </Button>
           </DialogFooter>
-        </DialogContent>
+        </PathDialogContent>
       </Dialog>
     </>
   )

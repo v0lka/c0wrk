@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { BranchDeleteConfirmDialog } from './BranchDeleteConfirmDialog'
 import type { PendingBranchDelete } from '@/hooks/useBranchActions'
+import { assertTokenBreaks } from '@/test/wrapAssertions'
 
 let onConfirm: (mode: 'safe' | 'force') => void
 let onCancel: () => void
@@ -96,5 +97,26 @@ describe('BranchDeleteConfirmDialog', () => {
       buttonByText('Delete')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(onConfirm).toHaveBeenCalledWith('safe')
+  })
+
+  it('wraps long branch tokens at separators without altering the text', () => {
+    const longName = 'feature/very/deeply/nested/long-branch-name'
+
+    // Local: <wbr> break points inside the quoted `pending.name` token.
+    renderDialog({ kind: 'local', name: longName })
+    assertTokenBreaks(longName)
+    expect(document.body.textContent).toContain(
+      `"${longName}" will be deleted locally. Safe delete (git branch -d)`,
+    )
+    act(() => {
+      root.unmount()
+    })
+
+    // Remote: the quoted `remote/name` token breaks after every separator.
+    renderDialog({ kind: 'remote', name: longName, remote: 'origin' })
+    assertTokenBreaks(`origin/${longName}`)
+    expect(document.body.textContent).toContain(
+      `"origin/${longName}" will be deleted from the remote.`,
+    )
   })
 })

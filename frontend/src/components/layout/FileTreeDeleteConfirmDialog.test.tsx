@@ -9,6 +9,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { FileTreeDeleteConfirmDialog } from './FileTreeDeleteConfirmDialog'
 import type { FileEntry } from '@/types/models'
+import { assertTokenBreaks } from '@/test/wrapAssertions'
 
 const fileEntry: FileEntry = { name: 'main.go', path: '/ws/main.go', is_dir: false }
 const dirEntry: FileEntry = { name: 'src', path: '/ws/src', is_dir: true }
@@ -71,6 +72,15 @@ describe('FileTreeDeleteConfirmDialog', () => {
     render(dirEntry)
     expect(document.body.textContent).toContain('src')
     expect(document.body.textContent).toContain('everything inside it')
+  })
+
+  it('wraps a long nested target name at separators without altering the text', () => {
+    const longName = 'deeply/nested/very-long-directory-name'
+    render({ name: longName, path: `/ws/${longName}`, is_dir: true })
+    assertTokenBreaks(longName)
+    expect(document.body.textContent).toContain(
+      `${longName} and everything inside it will be removed permanently.`,
+    )
   })
 
   it('Cancel closes without confirming', () => {

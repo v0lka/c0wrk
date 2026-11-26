@@ -1,12 +1,12 @@
 import {
   Dialog,
-  DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import type { PendingSessionAction } from '@/hooks/useSessionActions'
 
 interface SessionActionConfirmDialogProps {
@@ -34,7 +34,7 @@ export function SessionActionConfirmDialog({ pending, onConfirm, onCancel }: Ses
   const noun = groupSize === 1 ? 'session' : 'sessions'
   return (
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <DialogContent className="sm:max-w-md">
+      <PathDialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {isGroup
@@ -42,18 +42,32 @@ export function SessionActionConfirmDialog({ pending, onConfirm, onCancel }: Ses
               : isArchive ? 'Archive session?' : 'Delete session?'}
           </DialogTitle>
           <DialogDescription>
-            {pending
-              ? isGroup
-                ? isArchive
+            {pending ? (
+              isGroup ? (
+                isArchive ? (
                   // Conditionally-neutral claim: a multi-member group confirms
                   // even when nobody is busy (blast radius), so the copy must
                   // not assert that a task IS in progress.
-                  ? `Branch "${pending.sessionName}" groups ${groupSize} ${noun}. Archiving will cancel any tasks in progress and make the ${noun} read-only.`
-                  : `Branch "${pending.sessionName}" groups ${groupSize} ${noun}. Deleting will cancel any running tasks and permanently remove the ${noun} and ${groupSize === 1 ? 'its' : 'their'} files.`
-                : isArchive
-                  ? `"${pending.sessionName}" has a task in progress or unfinished. Archiving will cancel it and make the session read-only.`
-                  : `"${pending.sessionName}" has a task in progress or unfinished. Deleting will cancel it and permanently remove the session and its files.`
-              : ''}
+                  <>
+                    Branch "<PathWithBreaks path={pending.sessionName} />" groups {groupSize} {noun}. Archiving will cancel any tasks in progress and make the {noun} read-only.
+                  </>
+                ) : (
+                  <>
+                    Branch "<PathWithBreaks path={pending.sessionName} />" groups {groupSize} {noun}. Deleting will cancel any running tasks and permanently remove the {noun} and {groupSize === 1 ? 'its' : 'their'} files.
+                  </>
+                )
+              ) : isArchive ? (
+                <>
+                  "<PathWithBreaks path={pending.sessionName} />" has a task in progress or unfinished. Archiving will cancel it and make the session read-only.
+                </>
+              ) : (
+                <>
+                  "<PathWithBreaks path={pending.sessionName} />" has a task in progress or unfinished. Deleting will cancel it and permanently remove the session and its files.
+                </>
+              )
+            ) : (
+              ''
+            )}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -62,7 +76,7 @@ export function SessionActionConfirmDialog({ pending, onConfirm, onCancel }: Ses
             {isArchive ? 'Archive' : 'Delete'}
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </PathDialogContent>
     </Dialog>
   )
 }

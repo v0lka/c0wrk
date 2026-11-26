@@ -1,12 +1,12 @@
 import {
   Dialog,
-  DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { PathDialogContent, PathWithBreaks } from '@/lib/wrapPath'
 import type { PendingBranchDelete } from '@/hooks/useBranchActions'
 
 interface BranchDeleteConfirmDialogProps {
@@ -32,15 +32,23 @@ export function BranchDeleteConfirmDialog({
 
   return (
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <DialogContent className="sm:max-w-md">
+      <PathDialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{isLocal ? 'Delete branch?' : 'Delete remote branch?'}</DialogTitle>
           <DialogDescription>
-            {pending
-              ? isLocal
-                ? `"${pending.name}" will be deleted locally. Safe delete (git branch -d) keeps git's protection against deleting a branch that isn't fully merged; force delete (git branch -D) discards it regardless.`
-                : `"${pending.remote}/${pending.name}" will be deleted from the remote.`
-              : ''}
+            {pending ? (
+              isLocal ? (
+                <>
+                  "<PathWithBreaks path={pending.name} />" will be deleted locally. Safe delete (git branch -d) keeps git's protection against deleting a branch that isn't fully merged; force delete (git branch -D) discards it regardless.
+                </>
+              ) : (
+                <>
+                  "<PathWithBreaks path={`${pending.remote}/${pending.name}`} />" will be deleted from the remote.
+                </>
+              )
+            ) : (
+              ''
+            )}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -68,7 +76,7 @@ export function BranchDeleteConfirmDialog({
             </Button>
           )}
         </DialogFooter>
-      </DialogContent>
+      </PathDialogContent>
     </Dialog>
   )
 }

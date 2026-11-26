@@ -8,6 +8,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { ConfirmDeleteResearchDialog } from './ConfirmDeleteResearchDialog'
+import { assertTokenBreaks } from '@/test/wrapAssertions'
 
 // Radix Dialog positioning observes content with ResizeObserver, which jsdom
 // does not provide (same stub as the picker tests).
@@ -84,6 +85,15 @@ describe('ConfirmDeleteResearchDialog', () => {
     expect(text).toContain('R-007')
     expect(text).toContain('Fork investigation')
     expect(text).toContain('cannot be undone')
+  })
+
+  it('wraps a long title at separators without altering the rendered text', () => {
+    renderDialog({ target: { id: 'R-007', title: 'very/long/user/authored research title' } })
+    assertTokenBreaks('very/long/user/authored research title')
+    // The surrounding copy stays char-identical to the pre-PathWithBreaks text.
+    expect(dialogEl()!.textContent).toContain(
+      'R-007 — very/long/user/authored research title. Its directory tree',
+    )
   })
 
   it('confirm and cancel invoke their callbacks', () => {

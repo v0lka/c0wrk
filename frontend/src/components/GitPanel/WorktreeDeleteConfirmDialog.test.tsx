@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { WorktreeDeleteConfirmDialog } from './WorktreeDeleteConfirmDialog'
 import type { PendingWorktreeDelete } from '@/hooks/useWorktreeActions'
 import type { GitWorktree } from '@/types/models'
+import { assertTokenBreaks } from '@/test/wrapAssertions'
 
 let onConfirm: (mode: 'safe' | 'force', unlock: boolean) => void
 let onCancel: () => void
@@ -86,6 +87,25 @@ describe('WorktreeDeleteConfirmDialog', () => {
     expect(document.body.textContent).toContain('s-abc12345')
     expect(document.body.textContent).toContain('sess/s-abc12345')
     expect(document.body.textContent).toContain('/repo/.worktrees/s-abc12345')
+  })
+
+  it('wraps long name and branch tokens at separators without altering the text', () => {
+    const longName = 'an-extremely-long-managed-worktree-session-name'
+    const longBranch = 'feature/very/deeply/nested/long-branch-name'
+    renderDialog({
+      worktree: makeWorktree({
+        name: longName,
+        branch: longBranch,
+        path: `/repo/.worktrees/${longName}`,
+      }),
+    })
+    // The name token has no separators: text stays char-identical, zero <wbr>.
+    assertTokenBreaks(longName)
+    // The branch token breaks after every `/` separator.
+    assertTokenBreaks(longBranch)
+    expect(document.body.textContent).toContain(
+      `${longName}${longBranch}`,
+    )
   })
 
   it('offers safe and force delete plus cancel', () => {
